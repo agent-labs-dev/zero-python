@@ -20,3 +20,5 @@ for await (const line of lines) {
   }
   process.stdout.write(JSON.stringify(response) + '\n');
 }
+// Open database pools would otherwise keep the process alive once stdin closes.
+process.exit(0);

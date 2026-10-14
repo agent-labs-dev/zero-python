@@ -41,5 +41,8 @@ class Harness:
     def close(self) -> None:
         if self._process.stdin is not None:
             self._process.stdin.close()
-        self._process.wait(timeout=10)
+        try:
+            self._process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self._process.kill()
         self._log.close()
