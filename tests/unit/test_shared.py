@@ -60,10 +60,17 @@ def test_error_message_falls_back_to_the_cause() -> None:
     assert get_error_message(error) == "root"
 
 
-def test_error_message_with_an_empty_cause() -> None:
+def test_error_message_of_an_empty_error_is_its_properties() -> None:
     error = Exception()
     error.__cause__ = Exception()
-    assert get_error_message(error).startswith("Unknown error of type Exception")
+    assert get_error_message(error) == "Parsed message: {}"
+    error = Exception()
+    error.code = 5  # ty: ignore[unresolved-attribute]
+    assert get_error_message(error) == 'Parsed message: {"code":5}'
+    error.code = object()  # ty: ignore[unresolved-attribute]
+    assert get_error_message(error) == (
+        "Unknown error of type object was thrown and the message could not be determined. See cause for details."
+    )
 
 
 def test_error_message_detects_cycles() -> None:
@@ -77,6 +84,7 @@ def test_error_message_from_objects() -> None:
     assert get_error_message({"message": ""}) == 'Parsed message: {"message":""}'
     assert get_error_message([1, "é"]) == 'Parsed message: [1,"é"]'
     assert get_error_message(object()).startswith("Unknown error of type object was thrown")
+    assert get_error_message(print).startswith("Unknown error of type function was thrown")
 
 
 def test_error_details() -> None:
@@ -114,3 +122,11 @@ def test_js_sort_long_arrays_use_timsort() -> None:
     items = list(range(70, 0, -1))
     assert js_sort(items, lambda a, b: a - b) == sorted(items)
     assert js_sort([1], lambda a, b: 0) == [1]
+
+
+def test_js_stringify() -> None:
+    from zero_python.shared.js import js_stringify
+
+    assert js_stringify({"a": [1.0, True, False, None, "é"], "b": 2.5}) == '{"a":[1,true,false,null,"é"],"b":2.5}'
+    with pytest.raises(TypeError, match="not a JSON value"):
+        js_stringify(object())

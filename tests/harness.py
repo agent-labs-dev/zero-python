@@ -15,11 +15,14 @@ class HarnessError(Exception):
 
 class Harness:
     def __init__(self) -> None:
+        # Upstream logs every failure it handles; they land here rather than in the test output.
+        self._log = (HARNESS / "runner.log").open("w")
         self._process = subprocess.Popen(
             ["node", "runner.ts"],
             cwd=HARNESS,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
+            stderr=self._log,
             text=True,
             bufsize=1,
         )
@@ -39,3 +42,4 @@ class Harness:
         if self._process.stdin is not None:
             self._process.stdin.close()
         self._process.wait(timeout=10)
+        self._log.close()

@@ -8,9 +8,9 @@ JavaScript's `Error` is Python's `Exception`: an error whose class is exactly `E
 its upstream counterpart reports, which is `"Error"` for the upstream classes that never set `this.name`.
 """
 
-import json
 from typing import Any
 
+from zero_python.shared.js import js_stringify
 from zero_python.shared.json import JSONValue, is_json_value
 
 
@@ -37,13 +37,29 @@ def _message(error: object, seen: set[int]) -> str:
         if isinstance(message, str) and message:
             return message
 
-    if is_json_value(error):
-        return f"Parsed message: {json.dumps(error, separators=(',', ':'), ensure_ascii=False)}"
+    as_object = enumerable_properties(error) if isinstance(error, BaseException) else error
+    if is_json_value(as_object):
+        return f"Parsed message: {js_stringify(as_object)}"
 
     return (
-        f"Unknown error of type {type(error).__name__} was thrown and the message could not be determined. "
+        f"Unknown error of type {js_typeof(error)} was thrown and the message could not be determined. "
         "See cause for details."
     )
+
+
+def enumerable_properties(error: BaseException) -> dict[str, Any]:
+    """What `JSON.stringify` would see of an error: its own attributes, less those JavaScript hides.
+
+    `message` is never enumerable on a JavaScript error, and `ApplicationError` keeps its details in a
+    private field.
+    """
+    hidden = {"message", "details"} if type(error).__name__ == "ApplicationError" else {"message"}
+    return {k: v for k, v in vars(error).items() if not k.startswith("_") and k not in hidden}
+
+
+def js_typeof(value: object) -> str:
+    """`typeof` for what reaches the unknown-error path, which is never a JSON value."""
+    return "function" if callable(value) else "object"
 
 
 def _exception_message(error: BaseException) -> str:

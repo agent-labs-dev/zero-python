@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@rocicorp/zero": "1.10.0"
+    "@rocicorp/zero": "1.10.0",
+    "postgres": "3.4.7"
   }
 }
