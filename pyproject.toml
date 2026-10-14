@@ -17,6 +17,35 @@ classifiers = [
 ]
 dependencies = []
 
+[dependency-groups]
+dev = [
+    "hypothesis>=6.169",
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+    "pytest-cov>=7.1",
+    "ruff>=0.17",
+    "ty>=0.0.87",
+]
+
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]
 build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "ASYNC", "PT"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+addopts = "--cov=zero_python --cov-branch --cov-report=term-missing"
+
+[tool.coverage.report]
+fail_under = 100
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "@overload", "raise NotImplementedError", "\\.\\.\\."]
