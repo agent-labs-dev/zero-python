@@ -12,4 +12,4 @@ def test_zero_version_is_one_semver() -> None:
 def test_package_imports() -> None:
     import zero_python
 
-    assert zero_python.__version__
+    assert zero_python.__version__.count(".") == 2
