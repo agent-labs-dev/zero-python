@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from tests.postgres import postgres_server
+from tests.wire import seed
 
 DDL = [
     "CREATE SCHEMA zero_0",
@@ -88,6 +89,43 @@ class WireDB:
                 return dumped
 
         return self.run(dump())
+
+
+@dataclass
+class SqlDB:
+    """One seeded database both sides read: the SQL tier only reads."""
+
+    runner: asyncio.Runner
+    url: str
+    engine: AsyncEngine
+
+    def run(self, coro: Any) -> Any:
+        return self.runner.run(coro)
+
+
+@pytest.fixture(scope="session")
+def sql_db(wire_db: WireDB) -> Iterator[SqlDB]:
+    base = wire_db.ts_url.rsplit("/", 1)[0]
+
+    async def setup() -> AsyncEngine:
+        admin = create_async_engine(
+            f"postgresql+asyncpg://{base.split('://', 1)[1]}/postgres", isolation_level="AUTOCOMMIT"
+        )
+        async with admin.connect() as conn:
+            await conn.execute(text("DROP DATABASE IF EXISTS zp_sql"))
+            await conn.execute(text("CREATE DATABASE zp_sql"))
+        await admin.dispose()
+        engine = create_async_engine(f"postgresql+asyncpg://{base.split('://', 1)[1]}/zp_sql")
+        async with engine.begin() as conn:
+            for statement in seed.DDL:
+                await conn.execute(text(statement))
+            for statement, params in seed.inserts():
+                await conn.execute(text(statement), params)
+        return engine
+
+    engine = wire_db.run(setup())
+    yield SqlDB(runner=wire_db.runner, url=f"{base}/zp_sql", engine=engine)
+    wire_db.run(engine.dispose())
 
 
 @pytest.fixture(scope="session")

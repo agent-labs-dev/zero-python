@@ -85,6 +85,9 @@ async def rename_project(*, tx: Any, ctx: Any, args: Any) -> None:
 
 
 async def create_task(*, tx: Any, ctx: Any, args: Any) -> None:
+    project = await tx.run(zql.project.where("id", args["projectID"]).one())
+    if project is None or project["ownerID"] != ctx["userID"]:
+        raise ApplicationError("Not your project", details={"projectID": args["projectID"]})
     await tx.mutate.task.insert({**args, "done": False})
 
 

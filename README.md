@@ -2,11 +2,9 @@
 
 A community Python server SDK for [Zero](https://zero.rocicorp.dev/). It is not affiliated with or endorsed by Rocicorp.
 
-It ports what `@rocicorp/zero/server` gives a TypeScript backend: the query endpoint (`ZERO_QUERY_URL`), the mutate endpoint (`ZERO_MUTATE_URL`), the ZQL query builder, `defineQueries` and `defineMutators`, and `tx.mutate` on Postgres. The client and `zero-cache` stay in TypeScript, and a Python backend serves the same TypeScript client a TypeScript backend would.
+It ports what `@rocicorp/zero/server` gives a TypeScript backend: the query endpoint (`ZERO_QUERY_URL`), the mutate endpoint (`ZERO_MUTATE_URL`), the ZQL query builder, `defineQueries` and `defineMutators`, and `tx.mutate` and `tx.run` on Postgres. The client and `zero-cache` stay in TypeScript, and a Python backend serves the same TypeScript client a TypeScript backend would.
 
 Compatibility is pinned to one Zero release at a time. This version is tested against `@rocicorp/zero` **1.10.0** (see `ZERO_VERSION`).
-
-Server-side ZQL (`tx.run(query)`) is not ported yet.
 
 ## Usage
 
@@ -94,6 +92,7 @@ Install with the SQLAlchemy provider: `pip install "zero-python[sqlalchemy]"`.
 The published npm package is the definition of correct. Every test diffs Python against it:
 
 - **Wire.** `harness/` runs the real `handleMutateRequest`, `handleQueryRequest`, `PushProcessor` and the query builder under Node. Hypothesis generates pushes (with duplicates, gaps, refusals and cleanup mutations) and builder programs, sends each through both sides against identical Postgres databases, and diffs the responses and every row written.
+- **SQL.** The same generated queries run through upstream's `ZQLDatabase.run` and through `tx.run` against one seeded database, and the result rows are compared, never the SQL text.
 - **End to end.** `e2e/run.py` starts Postgres, two `rocicorp/zero` containers at the pinned version, the TypeScript reference app server and the Python one. An unmodified Zero client runs the same script through each, and the run fails if the client ends up with different data or the databases differ.
 
 Run them with `uv run pytest` (needs Node 24 and Docker, or `ZERO_PYTHON_PG` pointing at a Postgres) and `uv run --group e2e python e2e/run.py`.

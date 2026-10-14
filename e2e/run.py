@@ -2,7 +2,8 @@
 
 Starts Postgres and two zero-cache instances (docker compose), the TypeScript reference app server and
 the Python one on the host, runs `client.ts` through each, and diffs what the client ended up with and
-what each upstream database holds. Exits non-zero on any difference.
+what each upstream database holds, and checks the reference run against `expected.json`. Exits non-zero
+on any difference.
 
     uv run --group e2e python e2e/run.py [--keep]
 """
@@ -81,6 +82,7 @@ def client(port: int) -> dict[str, Any]:
     out = subprocess.run(
         ["node", "client.ts", f"http://localhost:{port}"], cwd=HERE, capture_output=True, text=True, timeout=180
     )
+    (BUILD / f"client-{port}.log").write_text(out.stderr)
     if out.returncode != 0:
         raise RuntimeError(f"client against {port} failed:\n{out.stderr}")
     return json.loads(out.stdout)
@@ -165,7 +167,11 @@ def main() -> int:
                     subprocess.run(["docker", "compose", "logs", name], cwd=HERE, stdout=log, stderr=subprocess.STDOUT)
         (BUILD / "client-ts.json").write_text(json.dumps(ts, indent=2))
         (BUILD / "client-py.json").write_text(json.dumps(py, indent=2))
-        same = diff("client", ts, py)
+        # Identical is not enough: both sides could be wrong the same way. The reference run must also
+        # produce the outcome the script was written for. After changing the app or the script, review
+        # build/client-ts.json and copy it over expected.json.
+        same = diff("reference against expected.json", json.loads((HERE / "expected.json").read_text()), ts)
+        same = diff("client", ts, py) and same
         same = diff("upstream rows", dump("e2e_ts", "zts"), dump("e2e_py", "zpy")) and same
     return 0 if same else 1
 

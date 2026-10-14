@@ -25,7 +25,21 @@ const issueLabel = table('issueLabel')
   .from('issue_label')
   .columns({issueID: string().from('issue_id'), labelID: string().from('label_id')})
   .primaryKey('issueID', 'labelID');
-const audit = table('audit').columns({id: string(), at: number()}).primaryKey('id');
+// One column per kind of value the SQL compiler converts on the way out.
+const audit = table('audit')
+  .columns({
+    id: string(),
+    at: number(),
+    day: number().optional(),
+    tm: number().optional(),
+    ttz: number().optional(),
+    plain: number().optional(),
+    stamps: json().optional(),
+    tags: json().optional(),
+    mood: string().optional(),
+  })
+  .primaryKey('id');
+const counter = table('counter').columns({id: string(), n: number()}).primaryKey('id');
 
 const userRelationships = relationships(user, ({many}) => ({
   issues: many({sourceField: ['id'], destField: ['ownerID'], destSchema: issue}),
@@ -51,6 +65,6 @@ const labelRelationships = relationships(label, ({many}) => ({
 }));
 
 export const schema = createSchema({
-  tables: [user, issue, comment, label, issueLabel, audit],
+  tables: [user, issue, comment, label, issueLabel, audit, counter],
   relationships: [userRelationships, issueRelationships, commentRelationships, labelRelationships],
 });

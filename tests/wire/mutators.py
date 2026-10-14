@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from zero_python.mutators import define_mutator, define_mutators
 from zero_python.protocol.application_error import ApplicationError
 from zero_python.protocol.mutation import CustomMutation, MutationResponse
+from zero_python.query.builder import create_builder
+from zero_python.schema import Schema
 from zero_python.server.process_mutations import (
     Database,
     TransactFn,
@@ -66,7 +68,21 @@ def crud(kind: str) -> Callable[[Tx, dict[str, Any]], Awaitable[None]]:
     return run
 
 
+_zql: Any = None
+
+
+def use_schema(schema: Schema) -> None:
+    global _zql
+    _zql = create_builder(schema)
+
+
+async def count(tx: Tx, args: dict[str, Any]) -> None:
+    rows = await tx.run(_zql.item.where("value", "!=", _js_string(args.get("value"), "")).order_by("value", "desc"))
+    await put(tx, {"id": "count", "value": ",".join(r["id"] for r in rows)})
+
+
 MUTATORS: dict[str, Callable[[Tx, dict[str, Any]], Awaitable[None]]] = {
+    "item.count": count,
     **{f"crud.{kind}": crud(kind) for kind in ("insert", "upsert", "update", "delete")},
     "item.put": put,
     "item.appError": app_error,

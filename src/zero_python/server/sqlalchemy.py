@@ -12,12 +12,13 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from zero_python.protocol.mutation import CleanupResultsArg, CleanupResultsBulkArg, MutationResponse
+from zero_python.query.builder import Query
 from zero_python.schema import Schema
-from zero_python.server.crud import Mutate, ident
 from zero_python.server.process_mutations import TransactionProviderHooks, TransactionProviderInput
 from zero_python.server.server_schema import ServerSchema, get_server_schema
 from zero_python.server.transaction import Row, ServerTransaction
 from zero_python.shared.js import js_stringify
+from zero_python.z2s.sql import ident
 
 
 class PostgresError(Exception):
@@ -96,8 +97,8 @@ class _Hooks:
 class SQLAlchemyDatabase:
     """Runs each mutation in one transaction on `engine`, which must use the asyncpg driver.
 
-    With a `schema`, mutators get `tx.mutate`, and the first transaction checks the schema against the
-    database's columns, as `ZQLDatabase` does upstream.
+    With a `schema`, mutators get `tx.mutate` and `tx.run`, and the first transaction checks the schema
+    against the database's columns, as `ZQLDatabase` does upstream.
     """
 
     def __init__(self, engine: AsyncEngine, schema: Schema | None = None) -> None:
@@ -115,10 +116,17 @@ class SQLAlchemyDatabase:
         )
         async with self.engine.begin() as connection:
             tx = SQLAlchemyTransaction(connection)
-            mutate = None
-            if self.schema is not None:
-                if self._server_schema is None:
-                    self._server_schema = await get_server_schema(tx, self.schema)
-                mutate = Mutate(self.schema, tx, self._server_schema)
-            server_tx = ServerTransaction(tx, transaction_input.client_id, int(transaction_input.mutation_id), mutate)
+            if self.schema is not None and self._server_schema is None:
+                self._server_schema = await get_server_schema(tx, self.schema)
+            server_tx = ServerTransaction(
+                tx, transaction_input.client_id, int(transaction_input.mutation_id), self.schema, self._server_schema
+            )
             return await callback(server_tx, _Hooks(tx, transaction_input))
+
+    async def run(self, query: Query) -> Any:
+        """Run a ZQL query in a transaction of its own."""
+
+        async def run(tx: ServerTransaction[AsyncConnection], _hooks: TransactionProviderHooks) -> Any:
+            return await tx.run(query)
+
+        return await self.transaction(run)
