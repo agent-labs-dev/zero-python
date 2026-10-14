@@ -1,0 +1,174 @@
+"""The Python-side API around the ported code: loaders, registries, builders and their refusals."""
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+from pydantic import BaseModel, TypeAdapter
+
+from zero_python.mutators import define_mutator, define_mutators, get_mutator, must_get_mutator
+from zero_python.query.builder import create_builder
+from zero_python.query.registry import (
+    InputValidationError,
+    QueryParseError,
+    define_queries,
+    define_query,
+    get_query,
+    must_get_query,
+)
+from zero_python.schema import load_schema, server_to_client
+from zero_python.server.process_queries import handle_query_request
+from zero_python.server.server_schema import get_server_schema
+from zero_python.server.transaction import ServerTransaction
+
+SCHEMA = {
+    "tables": {
+        "issue": {
+            "name": "issue",
+            "serverName": "issues",
+            "columns": {"id": {"type": "string"}, "ownerID": {"type": "string", "serverName": "owner_id"}},
+            "primaryKey": ["id"],
+        },
+        "plain": {"name": "plain", "columns": {"id": {"type": "string"}}, "primaryKey": ["id"]},
+    },
+    "relationships": {},
+}
+
+
+def test_load_schema_from_text_path_or_object(tmp_path: Path) -> None:
+    path = tmp_path / "schema.json"
+    path.write_text(json.dumps(SCHEMA))
+    assert load_schema(path) == load_schema(json.dumps(SCHEMA)) == load_schema(SCHEMA)
+
+
+def test_name_mapper() -> None:
+    schema = load_schema(SCHEMA)
+    mapper = server_to_client(schema.tables)
+    assert mapper.table_name("issues") == "issue"
+    assert mapper.table_name_if_known("issues") == "issue"
+    assert mapper.table_name_if_known("nope") is None
+    assert mapper.row("issues", {"owner_id": 1, "extra": 2}) == {"ownerID": 1, "extra": 2}
+    assert mapper.row("plain", {"id": 1}) == {"id": 1}
+    assert mapper.columns("issues", ("owner_id", "x")) == ("ownerID", "x")
+    assert mapper.columns("plain", ("id",)) == ("id",)
+    with pytest.raises(Exception, match=r'unknown table "nope" in \{"at":1\}'):
+        mapper.table_name("nope", {"at": 1})
+
+
+def test_builder_tables() -> None:
+    zql = create_builder(load_schema(SCHEMA))
+    assert zql.issue.table == "issue"
+    condition: Any = zql.issue.expression_builder().eb.cmp("id", 1).to_json()
+    assert condition["op"] == "="
+    with pytest.raises(AttributeError):
+        _ = zql.nope
+
+
+class Args(BaseModel):
+    id: str
+
+
+def test_validators() -> None:
+    zql = create_builder(load_schema(SCHEMA))
+    queries = define_queries(
+        {
+            "byModel": define_query(Args, lambda *, args, ctx: zql.issue.where("id", args.id)),
+            "byAdapter": define_query(TypeAdapter(int), lambda *, args, ctx: zql.issue.limit(args)),
+        }
+    )
+    assert must_get_query(queries, "byModel").fn(args={"id": "a"}).ast.where is not None
+    assert must_get_query(queries, "byAdapter").fn(args=3).ast.limit == 3
+    with pytest.raises(InputValidationError) as raised:
+        must_get_query(queries, "byModel").fn(args={})
+    assert raised.value.details["result"]["issues"][0]["path"] == ["id"]
+    assert str(raised.value).startswith("Validation failed for query byModel: Field required")
+
+
+def test_query_registry() -> None:
+    zql = create_builder(load_schema(SCHEMA))
+    base = define_queries({"issue": {"all": define_query(lambda *, args, ctx: zql.issue)}})
+    merged = define_queries(base, {"issue": {"one": define_query(lambda *, args, ctx: zql.issue.one())}, "x": {}})
+    assert sorted(merged.issue) == ["all", "one"]
+    assert len(merged) == 2
+    assert get_query(merged, "issue") is None
+    assert get_query(merged, "issue.nope.deeper") is None
+    request = merged.issue.one({"a": 1})
+    assert (request.query, request.args) == (merged.issue.one, {"a": 1})
+    with pytest.raises(AttributeError):
+        _ = merged.nope
+
+
+async def test_mutator_registry() -> None:
+    seen: list[Any] = []
+
+    async def record(*, args: Any, ctx: Any, tx: Any) -> None:
+        seen.append((args, ctx, tx))
+
+    mutators = define_mutators({"issue": {"create": define_mutator(TypeAdapter(int), record)}})
+    mutators = define_mutators(mutators, {"issue": {"delete": define_mutator(record)}})
+    await must_get_mutator(mutators, "issue.create").fn(args=1, ctx="c", tx="t")
+    assert seen == [(1, "c", "t")]
+    assert get_mutator(mutators, "issue|create") is None
+    assert get_mutator(mutators, "issue") is None
+    request = mutators.issue.delete(5)
+    assert (request.mutator, request.args) == (mutators.issue.delete, 5)
+    with pytest.raises(Exception, match=r"Mutator not found: nope"):
+        must_get_mutator(mutators, "nope")
+    assert define_mutators(mutators) is mutators
+
+
+def test_query_parse_error_message() -> None:
+    assert str(QueryParseError()) == "Failed to parse arguments for query"
+    assert str(QueryParseError(ValueError("bad"))) == "Failed to parse arguments for query: bad"
+
+
+def test_mutate_needs_a_schema() -> None:
+    with pytest.raises(RuntimeError, match=r"tx\.mutate needs a schema"):
+        _ = ServerTransaction(db_transaction=None, client_id="c", mutation_id=1).mutate  # ty: ignore[invalid-argument-type]
+
+
+async def test_server_schema_of_no_tables() -> None:
+    assert await get_server_schema(None, load_schema({"tables": {}})) == {}  # ty: ignore[invalid-argument-type]
+
+
+async def test_query_endpoint_takes_raw_bytes_and_async_handlers() -> None:
+    schema = load_schema(SCHEMA)
+    zql = create_builder(schema)
+
+    async def handler(name: str, args: Any) -> Any:
+        return zql.issue.where("ownerID", args)
+
+    body = json.dumps(["transform", [{"id": "1", "name": "q", "args": ["u"]}]]).encode()
+    response: Any = (await handle_query_request(handler=handler, schema=schema, body=body, user_id=None)).to_json()
+    assert response["queries"][0]["ast"]["table"] == "issues"
+
+    failed = await handle_query_request(handler=handler, schema=schema, body=b"[", user_id=None)
+    assert failed.to_json()["details"] == {"name": "SyntaxError"}
+
+    def not_a_query(name: str, args: Any) -> Any:
+        return "nope"
+
+    internal = await handle_query_request(handler=not_a_query, schema=schema, body=json.loads(body), user_id="u")
+    assert internal.to_json()["reason"] == "internal"
+
+
+def test_simplify_unwraps_single_conditions() -> None:
+    from zero_python.protocol.ast import Conjunction, Disjunction
+    from zero_python.query.expression import FALSE, TRUE, cmp, simplify_condition
+
+    eq = cmp("id", 1)
+    assert simplify_condition(Conjunction(conditions=(eq,))) == eq
+    assert simplify_condition(Conjunction(conditions=(eq, Disjunction(conditions=())))) == FALSE
+    assert simplify_condition(Disjunction(conditions=(eq, Conjunction(conditions=())))) == TRUE
+
+
+def test_mutate_by_attribute() -> None:
+    from zero_python.server.crud import Mutate, TableCRUD
+    from zero_python.server.server_schema import ServerColumnSchema
+
+    column = ServerColumnSchema(type="text", is_enum=False, is_array=False)
+    mutate = Mutate(load_schema(SCHEMA), None, {"issues": {"id": column, "owner_id": column}})  # ty: ignore[invalid-argument-type]
+    assert isinstance(mutate.issue, TableCRUD)
+    with pytest.raises(AttributeError):
+        _ = mutate.nope

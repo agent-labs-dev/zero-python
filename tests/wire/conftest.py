@@ -24,9 +24,27 @@ DDL = [
         "result"         JSON NOT NULL,
         PRIMARY KEY("clientGroupID", "clientID", "mutationID"))""",
     "CREATE TABLE item (id TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    "CREATE TYPE mood AS ENUM ('happy', 'sad')",
+    """CREATE TABLE things (
+        id TEXT PRIMARY KEY,
+        n INTEGER,
+        f DOUBLE PRECISION,
+        b BOOLEAN,
+        j JSONB,
+        happened_at TIMESTAMPTZ,
+        d DATE,
+        s VARCHAR(8),
+        tags TEXT[],
+        u UUID,
+        mood mood,
+        tm TIME,
+        ttz TIMETZ,
+        amount NUMERIC(10, 2),
+        ip INET)""",
+    "CREATE TABLE pair (a TEXT, b INTEGER, note TEXT, PRIMARY KEY (a, b))",
 ]
 
-RESET = 'TRUNCATE item, zero_0."clients", zero_0."mutations"'
+RESET = 'TRUNCATE item, things, pair, zero_0."clients", zero_0."mutations"'
 
 
 @dataclass
@@ -57,6 +75,10 @@ class WireDB:
                     "mutations": 'SELECT "clientGroupID", "clientID", "mutationID", "result"::text AS result '
                     'FROM zero_0."mutations" ORDER BY 1, 2, 3',
                     "item": "SELECT * FROM item ORDER BY id",
+                    "things": "SELECT id, n, f, b, j::text AS j, happened_at::text AS t, d::text AS d, s, "
+                    "tags::text AS tags, u::text AS u, mood::text AS mood, tm::text AS tm, ttz::text AS ttz, "
+                    "amount::text AS amount, ip::text AS ip FROM things ORDER BY id",
+                    "pair": "SELECT * FROM pair ORDER BY a, b",
                 }
                 dumped = {
                     name: [dict(row) for row in (await conn.execute(text(sql))).mappings()]

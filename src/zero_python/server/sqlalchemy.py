@@ -12,7 +12,10 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from zero_python.protocol.mutation import CleanupResultsArg, CleanupResultsBulkArg, MutationResponse
+from zero_python.schema import Schema
+from zero_python.server.crud import Mutate, ident
 from zero_python.server.process_mutations import TransactionProviderHooks, TransactionProviderInput
+from zero_python.server.server_schema import ServerSchema, get_server_schema
 from zero_python.server.transaction import Row, ServerTransaction
 from zero_python.shared.js import js_stringify
 
@@ -23,11 +26,6 @@ class PostgresError(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
-
-
-def ident(name: str) -> str:
-    """Quote an identifier as upstream's `sql.ident` does, splitting a dotted name into its parts."""
-    return ".".join('"' + part.replace('"', '""') + '"' for part in name.split("."))
 
 
 class SQLAlchemyTransaction:
@@ -43,7 +41,9 @@ class SQLAlchemyTransaction:
             result = await self._connection.exec_driver_sql(sql, tuple(params))
         except DBAPIError as error:
             cause = error.orig.__cause__ if error.orig is not None and error.orig.__cause__ is not None else error.orig
-            raise PostgresError(str(cause)) from error
+            # asyncpg's `message` is the primary message alone, which is all postgres.js reports.
+            message = getattr(cause, "message", None)
+            raise PostgresError(message if isinstance(message, str) else str(cause)) from error
         return [dict(row) for row in result.mappings()] if result.returns_rows else []
 
 
@@ -94,10 +94,16 @@ class _Hooks:
 
 
 class SQLAlchemyDatabase:
-    """Runs each mutation in one transaction on `engine`, which must use the asyncpg driver."""
+    """Runs each mutation in one transaction on `engine`, which must use the asyncpg driver.
 
-    def __init__(self, engine: AsyncEngine) -> None:
+    With a `schema`, mutators get `tx.mutate`, and the first transaction checks the schema against the
+    database's columns, as `ZQLDatabase` does upstream.
+    """
+
+    def __init__(self, engine: AsyncEngine, schema: Schema | None = None) -> None:
         self.engine = engine
+        self.schema = schema
+        self._server_schema: ServerSchema | None = None
 
     async def transaction[R](
         self,
@@ -109,5 +115,10 @@ class SQLAlchemyDatabase:
         )
         async with self.engine.begin() as connection:
             tx = SQLAlchemyTransaction(connection)
-            server_tx = ServerTransaction(tx, transaction_input.client_id, int(transaction_input.mutation_id))
+            mutate = None
+            if self.schema is not None:
+                if self._server_schema is None:
+                    self._server_schema = await get_server_schema(tx, self.schema)
+                mutate = Mutate(self.schema, tx, self._server_schema)
+            server_tx = ServerTransaction(tx, transaction_input.client_id, int(transaction_input.mutation_id), mutate)
             return await callback(server_tx, _Hooks(tx, transaction_input))

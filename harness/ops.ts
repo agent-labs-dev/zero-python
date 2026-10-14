@@ -9,7 +9,8 @@ import {
   transformRequestMessageSchema,
   v,
 } from './zero.ts';
-import {mutate} from './mutate.ts';
+import {mutate, mutateWithSchema, pushProcessor, wireSchema} from './mutate.ts';
+import {query, schemaJSON} from './query.ts';
 
 // The schemas upstream parses requests with, and the mode it parses each in.
 const schemas = {
@@ -22,6 +23,11 @@ const schemas = {
 
 export const ops = {
   mutate,
+  pushProcessor,
+  mutateWithSchema,
+  query,
+  schema: schemaJSON,
+  wireSchema: () => JSON.parse(JSON.stringify(wireSchema)),
 
   /** Whether upstream accepts `value` as a `schema`. */
   accepts({schema, value}: {schema: keyof typeof schemas; value: unknown}) {
