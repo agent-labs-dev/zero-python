@@ -105,7 +105,16 @@ params = st.builds(
     st.sampled_from(["authData", "preMutationRow"]),
     st.sampled_from(["sub", "role"]),
 )
-values = scalars | st.lists(st.text(max_size=2) | st.integers(-3, 3) | st.booleans(), max_size=3) | params
+# An array led by a boolean, compared with a text column, is left out: upstream hands the raw array to
+# postgres.js, which binds it as the boolean `false`. That is the JavaScript driver's choice, not Zero's;
+# zero-python binds `String(array)` as postgres.js does for every other array.
+values = (
+    scalars
+    | st.lists(st.text(max_size=2) | st.integers(-3, 3) | st.booleans(), max_size=3).filter(
+        lambda xs: not xs or not isinstance(xs[0], bool)
+    )
+    | params
+)
 
 
 def programs(schema: Schema, depth: int = 2) -> st.SearchStrategy[dict[str, Any]]:

@@ -137,14 +137,16 @@ type ExistsFn = Callable[..., Condition]
 class ExpressionBuilder:
     """What a `where` callback receives. `and`, `or` and `not` gain a trailing underscore in Python."""
 
-    def __init__(self, exists: ExistsFn) -> None:
+    def __init__(self, exists: ExistsFn, check_column: Callable[[str], None] | None = None) -> None:
         self._exists = exists
+        self._check_column = check_column or (lambda _column: None)
 
     @property
     def eb(self) -> "ExpressionBuilder":
         return self
 
     def cmp(self, field: str, op_or_value: Any, value: Any = MISSING) -> Condition:
+        self._check_column(field)
         return cmp(field, op_or_value, value)
 
     def cmp_lit(self, left: Any, op: SimpleOperator, right: Any) -> Condition:

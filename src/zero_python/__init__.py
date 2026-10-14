@@ -1,6 +1,6 @@
 """Community Python server SDK for Rocicorp Zero. Not affiliated with Rocicorp.
 
-The SQLAlchemy transaction provider lives in `zero_python.server.sqlalchemy` and needs the
+The SQLAlchemy transaction provider lives in `zero_python.server.adapters.sqlalchemy` and needs the
 `zero-python[sqlalchemy]` extra.
 """
 

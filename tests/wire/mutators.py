@@ -16,8 +16,8 @@ from zero_python.server.process_mutations import (
     TransactionProviderHooks,
     TransactionProviderInput,
 )
-from zero_python.server.sqlalchemy import SQLAlchemyDatabase
 from zero_python.server.transaction import ServerTransaction
+from zero_python.server.zql_database import ZQLDatabase
 
 type Tx = ServerTransaction[AsyncConnection]
 
@@ -60,10 +60,12 @@ async def db_error(tx: Tx, _args: dict[str, Any]) -> None:
 
 def crud(kind: str) -> Callable[[Tx, dict[str, Any]], Awaitable[None]]:
     async def run(tx: Tx, args: dict[str, Any]) -> None:
-        if args.get("table") is None:
-            # What `tx.mutate[undefined].insert` throws in the TypeScript twin.
+        # `tx.mutate[table]` in the TypeScript twin: the key is `String(table)`, and an unknown table is
+        # undefined, which throws when its method is read.
+        table = "undefined" if args.get("table") is None else _js_string(args["table"], "")
+        if _zql is None or table not in _zql._schema.tables:
             raise TypeError(f"Cannot read properties of undefined (reading '{kind}')")
-        await getattr(tx.mutate[args["table"]], kind)(args.get("row"))
+        await getattr(tx.mutate[table], kind)(args.get("row"))
 
     return run
 
@@ -118,7 +120,7 @@ async def handler(transact: TransactFn[Tx], mutation: CustomMutation) -> Mutatio
 class FailingForCfail:
     """Fails to open any transaction for client `cfail`, as the TypeScript twin does."""
 
-    def __init__(self, db: SQLAlchemyDatabase) -> None:
+    def __init__(self, db: ZQLDatabase[Any]) -> None:
         self.db = db
 
     async def transaction(
@@ -131,7 +133,7 @@ class FailingForCfail:
         return await self.db.transaction(callback, transaction_input)
 
 
-def provider(db: SQLAlchemyDatabase) -> Database[Tx]:
+def provider(db: ZQLDatabase[Any]) -> Database[Tx]:
     return FailingForCfail(db)
 
 

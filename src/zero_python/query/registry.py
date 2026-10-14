@@ -11,7 +11,7 @@ Standard Schema validator; the error it raises has the same shape.
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, overload
 
 from pydantic import ValidationError
 
@@ -72,11 +72,30 @@ class QueryDefinition:
     validator: Any = None
 
 
-def define_query(fn_or_validator: Any, fn: QueryFn | None = None) -> QueryDefinition:
-    """`define_query(fn)` or `define_query(validator, fn)`. `fn` is called as `fn(args=..., ctx=...)`."""
-    if fn is None:
-        return QueryDefinition(fn=fn_or_validator)
-    return QueryDefinition(fn=fn, validator=fn_or_validator)
+def is_schema_validator(value: object) -> bool:
+    """A Pydantic model class or `TypeAdapter`, as opposed to a function."""
+    return hasattr(value, "validate_python") or (isinstance(value, type) and hasattr(value, "model_validate"))
+
+
+@overload
+def define_query(fn_or_validator: QueryFn, fn: None = None) -> QueryDefinition: ...
+@overload
+def define_query(fn_or_validator: Any, fn: QueryFn) -> QueryDefinition: ...
+@overload
+def define_query(fn_or_validator: Any, fn: None = None) -> Callable[[QueryFn], QueryDefinition]: ...
+def define_query(fn_or_validator: Any, fn: QueryFn | None = None) -> Any:
+    """Define a query, called as `fn(args=..., ctx=...)`. Three forms:
+
+    - `define_query(fn)`, or `@define_query` on `fn`: no validation, `args` as the client sent them.
+    - `define_query(validator, fn)`: `args` parsed by `validator` first.
+    - `@define_query(ArgsModel)` on `fn`: the same, for a Pydantic model or `TypeAdapter`. A plain
+      function validator needs the two-argument form, since it cannot be told apart from `fn`.
+    """
+    if fn is not None:
+        return QueryDefinition(fn=fn, validator=fn_or_validator)
+    if is_schema_validator(fn_or_validator):
+        return lambda decorated: QueryDefinition(fn=decorated, validator=fn_or_validator)
+    return QueryDefinition(fn=fn_or_validator)
 
 
 @dataclass(frozen=True)

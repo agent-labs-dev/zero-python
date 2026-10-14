@@ -8,11 +8,10 @@ from hypothesis import given
 
 from tests.harness import Harness
 from tests.strategies import as_js
-from tests.wire.conftest import SqlDB
+from tests.wire.conftest import ADAPTERS, SqlDB
 from tests.wire.programs import apply, programs
 from zero_python.query.builder import create_builder
 from zero_python.schema import Schema, load_schema
-from zero_python.server.sqlalchemy import SQLAlchemyDatabase
 
 
 @pytest.fixture(scope="session")
@@ -20,8 +19,8 @@ def schema(harness: Harness) -> Schema:
     return load_schema(harness.call("schema"))
 
 
-def run_python(sql_db: SqlDB, schema: Schema, program: dict[str, Any]) -> dict[str, Any]:
-    db = SQLAlchemyDatabase(sql_db.engine, schema)
+def run_python(sql_db: SqlDB, schema: Schema, program: dict[str, Any], adapter: str = "sqlalchemy") -> dict[str, Any]:
+    db = sql_db.py[adapter](schema)
     try:
         query = apply(create_builder(schema).table(program["table"]), program["ops"])
         return {"rows": sql_db.run(db.run(query))}
@@ -29,11 +28,12 @@ def run_python(sql_db: SqlDB, schema: Schema, program: dict[str, Any]) -> dict[s
         return {"error": str(error)}
 
 
-def test_queries_return_upstreams_rows(harness: Harness, sql_db: SqlDB, schema: Schema) -> None:
+@pytest.mark.parametrize("adapter", ADAPTERS)
+def test_queries_return_upstreams_rows(harness: Harness, sql_db: SqlDB, schema: Schema, adapter: str) -> None:
     @given(programs(schema))
     def check(program: dict[str, Any]) -> None:
         expected = harness.call("runQuery", url=sql_db.url, program=program)
-        assert as_js(run_python(sql_db, schema, program)) == as_js(expected)
+        assert as_js(run_python(sql_db, schema, program, adapter)) == as_js(expected)
 
     check()
 
@@ -64,14 +64,16 @@ PINNED = [
     _q("issue", ["related", "labels", {"ops": [["where", "name", "!=", "a"], ["start", {"id": "l1"}, None]]}]),
     _q("issue", ["related", "owner", None], ["one"]),
     _q("user", ["where", "id", "nobody"], ["one"]),
+    _q("issue", ["limit", 0]),
     # The second null reuses the first's placeholder, which Postgres has already typed as text.
     _q("comment", ["where", "authorID", None], ["where", "authorID", "IN", None]),
 ]
 
 
+@pytest.mark.parametrize("adapter", ADAPTERS)
 @pytest.mark.parametrize("program", PINNED)
 def test_pinned_queries_return_upstreams_rows(
-    harness: Harness, sql_db: SqlDB, schema: Schema, program: dict[str, Any]
+    harness: Harness, sql_db: SqlDB, schema: Schema, adapter: str, program: dict[str, Any]
 ) -> None:
     expected = harness.call("runQuery", url=sql_db.url, program=program)
-    assert as_js(run_python(sql_db, schema, program)) == as_js(expected)
+    assert as_js(run_python(sql_db, schema, program, adapter)) == as_js(expected)

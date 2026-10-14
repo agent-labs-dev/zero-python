@@ -15,14 +15,23 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
 ]
-dependencies = ["pydantic>=2.14"]
+dependencies = ["pydantic>=2.14", "typing-extensions>=4.12"]
+
+[project.scripts]
+zero-python = "zero_python.codegen:main"
 
 [project.optional-dependencies]
 sqlalchemy = ["sqlalchemy[asyncio]>=2.1", "asyncpg>=0.32"]
+asyncpg = ["asyncpg>=0.32"]
+psycopg = ["psycopg>=3.3", "psycopg-pool>=3.3"]
+starlette = ["starlette>=1.8"]
 
 [dependency-groups]
 dev = [
-    "zero-python[sqlalchemy]",
+    "zero-python[sqlalchemy,asyncpg,psycopg,starlette]",
+    "httpx2>=2.13",
+    # psycopg's prebuilt libpq, so the tests need no system libpq.
+    "psycopg[binary]>=3.3",
     "hypothesis>=6.169",
     "pytest>=9.1",
     "pytest-asyncio>=1.4",

@@ -3,17 +3,18 @@ the responses and of every row either side wrote."""
 
 from typing import Any
 
+import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
-from tests.harness import Harness
+from tests.harness import Harness, HarnessError
 from tests.strategies import as_js, cleanup_args, corrupted, json_values, mutation_ids
-from tests.wire.conftest import WireDB
+from tests.wire.conftest import ADAPTERS, WireDB
 from tests.wire.mutators import REGISTRY, handler, provider, use_schema
 from zero_python.schema import load_schema
 from zero_python.server.process_mutations import handle_mutate_request
 from zero_python.server.push_processor import PushProcessor
-from zero_python.server.sqlalchemy import SQLAlchemyDatabase
+from zero_python.shared.asserts import AssertionFailedError
 
 NAMES = [
     "item.put", "item.put", "item.put", "item.count", "item.appError", "item.error", "item.typeError", "item.dbError",
@@ -220,7 +221,17 @@ BRANCHES = {
         _push(_m(1, "item.appError"), _m(1, "item.appError", client="c2")),
         _push(_cleanup({"type": "bulk", "clientGroupID": "cg1", "clientIDs": ["c2", "c1"]})),
     ),
+    "nul byte": _scenario(_push(_m(1, id="n", value="a\x00b"))),
+    "malformed body": [({**_push(_m(1)), "clientGroupID": 1}, VALID_QUERY, None)],
     "bad query params": [(_push(_m(1)), {"schema": "zero_0"}, None)],
+    "crud rows that are not objects": _scenario(
+        _push(
+            *(
+                {**_m(n + 1, "crud.insert"), "args": [{"table": "thing", "row": row}]}
+                for n, row in enumerate([None, "ab", ["x"], 7, {"id": "ok"}])
+            )
+        )
+    ),
     "cleanup invalid and failing": _scenario(
         _push(_cleanup({"type": "bulk", "clientGroupID": "cg1", "clientIDs": []}), _m(1)),
         _push(_cleanup({"clientGroupID": "cg1", "clientID": "cfail", "upToMutationID": 2}), _m(2)),
@@ -234,13 +245,14 @@ def _with_branches(test: Any) -> Any:
     return test
 
 
+@pytest.mark.parametrize("adapter", ADAPTERS)
 @_with_branches
 @given(scenarios())
-def test_pushes_match_upstream(harness: Harness, wire_db: WireDB, pushes: list[Any]) -> None:
+def test_pushes_match_upstream(harness: Harness, wire_db: WireDB, adapter: str, pushes: list[Any]) -> None:
     wire_db.reset()
     schema = load_schema(harness.call("wireSchema"))
     use_schema(schema)
-    py_db = provider(SQLAlchemyDatabase(wire_db.py_engine, schema))
+    py_db = provider(wire_db.py[adapter](schema))
     for body, query, user_id in pushes:
         expected = harness.call("mutate", url=wire_db.ts_url, query=query, body=body, userID=user_id)
         actual = wire_db.run(
@@ -250,13 +262,17 @@ def test_pushes_match_upstream(harness: Harness, wire_db: WireDB, pushes: list[A
     assert as_js(wire_db.dump(wire_db.py_engine)) == as_js(wire_db.dump(wire_db.ts_engine))
 
 
-def test_transaction_exposes_the_connection(wire_db: WireDB) -> None:
+@pytest.mark.parametrize(
+    ("adapter", "wrapped"),
+    [("sqlalchemy", "AsyncConnection"), ("asyncpg", "PoolConnectionProxy"), ("psycopg", "AsyncConnection")],
+)
+def test_transaction_exposes_the_driver_connection(wire_db: WireDB, adapter: str, wrapped: str) -> None:
     async def check() -> None:
         async def callback(tx: Any, _hooks: Any) -> Any:
             return tx.db_transaction.wrapped_transaction
 
-        connection = await SQLAlchemyDatabase(wire_db.py_engine).transaction(callback)
-        assert connection.__class__.__name__ == "AsyncConnection"
+        connection = await wire_db.py[adapter](None).transaction(callback)
+        assert type(connection).__name__ == wrapped
 
     wire_db.run(check())
 
@@ -264,12 +280,20 @@ def test_transaction_exposes_the_connection(wire_db: WireDB) -> None:
 PROCESSOR_NAMES = ["item.put", "item|put", "item.appError", "legacy.put", "legacy|put", "item", "nope"]
 
 
+@pytest.mark.parametrize("adapter", ADAPTERS)
+@example([(None, VALID_QUERY, None)])
 @given(scenarios(PROCESSOR_NAMES))
-def test_push_processor_matches_upstream(harness: Harness, wire_db: WireDB, pushes: list[Any]) -> None:
+def test_push_processor_matches_upstream(harness: Harness, wire_db: WireDB, adapter: str, pushes: list[Any]) -> None:
     wire_db.reset()
-    processor = PushProcessor(provider(SQLAlchemyDatabase(wire_db.py_engine)), context={"tag": "ctx"})
+    processor = PushProcessor(provider(wire_db.py[adapter](None)), context={"tag": "ctx"})
     for body, query, _user_id in pushes:
-        expected = harness.call("pushProcessor", url=wire_db.ts_url, query=query, body=body)
+        try:
+            expected: Any = harness.call("pushProcessor", url=wire_db.ts_url, query=query, body=body)
+        except HarnessError as error:
+            # Upstream throws rather than answering, for a body of null.
+            with pytest.raises(AssertionFailedError, match=str(error).split("\n")[0].removeprefix("Error: ")):
+                wire_db.run(processor.process(REGISTRY, query, body))
+            continue
         actual = wire_db.run(processor.process(REGISTRY, query, body)).to_json()
         assert comparable(actual) == comparable(expected)
     assert as_js(wire_db.dump(wire_db.py_engine)) == as_js(wire_db.dump(wire_db.ts_engine))
