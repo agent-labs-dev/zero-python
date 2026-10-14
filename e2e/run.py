@@ -133,7 +133,18 @@ def main() -> int:
         server(
             stack,
             "py-server",
-            [sys.executable, "-m", "uvicorn", "py_server:app", "--port", "3002", "--log-level", "warning"],
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "py_server:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "3002",
+                "--log-level",
+                "warning",
+            ],
             {"SCHEMA_JSON": str(schema_json), "UPSTREAM_DB": f"postgresql+asyncpg://{PG}/e2e_py"},
         )
         step("waiting for the app servers")

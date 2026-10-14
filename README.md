@@ -24,8 +24,17 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from zero_python import (
-    ApplicationError, create_builder, define_mutator, define_mutators, define_queries, define_query,
-    handle_mutate_request, handle_query_request, load_schema, must_get_mutator, must_get_query,
+    ApplicationError,
+    create_builder,
+    define_mutator,
+    define_mutators,
+    define_queries,
+    define_query,
+    handle_mutate_request,
+    handle_query_request,
+    load_schema,
+    must_get_mutator,
+    must_get_query,
 )
 from zero_python.server.sqlalchemy import SQLAlchemyDatabase
 
@@ -33,9 +42,11 @@ schema = load_schema(Path("schema.json"))
 zql = create_builder(schema)
 db = SQLAlchemyDatabase(create_async_engine("postgresql+asyncpg://..."), schema)
 
-queries = define_queries({
-    "projects": {"mine": define_query(lambda *, args, ctx: zql.project.where("ownerID", ctx["userID"]))},
-})
+queries = define_queries(
+    {
+        "projects": {"mine": define_query(lambda *, args, ctx: zql.project.where("ownerID", ctx["userID"]))},
+    }
+)
 
 
 async def create_project(*, tx, ctx, args):
@@ -51,7 +62,9 @@ async def query_endpoint(body: bytes, user_id: str | None) -> dict:
     ctx = {"userID": user_id}
     response = await handle_query_request(
         handler=lambda name, args: must_get_query(queries, name).fn(args=args, ctx=ctx),
-        schema=schema, body=body, user_id=user_id,
+        schema=schema,
+        body=body,
+        user_id=user_id,
     )
     return response.to_json()
 
@@ -63,7 +76,11 @@ async def mutate_endpoint(query_string: dict[str, str], body: bytes, user_id: st
         return await transact(lambda tx, name, args: must_get_mutator(mutators, name).fn(tx=tx, ctx=ctx, args=args))
 
     response = await handle_mutate_request(
-        db_provider=db, handler=handler, query=query_string, body=body, user_id=user_id,
+        db_provider=db,
+        handler=handler,
+        query=query_string,
+        body=body,
+        user_id=user_id,
     )
     return response.to_json()
 ```
