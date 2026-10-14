@@ -13,3 +13,13 @@ def test_package_imports() -> None:
     import zero_python
 
     assert zero_python.__version__.count(".") == 2
+
+
+def test_harness_runs_the_pinned_zero() -> None:
+    import json
+
+    version = (ROOT / "ZERO_VERSION").read_text().strip()
+    package = json.loads((ROOT / "harness" / "package.json").read_text())
+    lock = json.loads((ROOT / "harness" / "package-lock.json").read_text())
+    assert package["dependencies"]["@rocicorp/zero"] == version
+    assert lock["packages"]["node_modules/@rocicorp/zero"]["version"] == version

@@ -1,0 +1,8 @@
+{
+  "name": "zero-python-harness",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@rocicorp/zero": "1.10.0"
+  }
+}
