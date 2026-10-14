@@ -128,5 +128,6 @@ def test_js_stringify() -> None:
     from zero_python.shared.js import js_stringify
 
     assert js_stringify({"a": [1.0, True, False, None, "é"], "b": 2.5}) == '{"a":[1,true,false,null,"é"],"b":2.5}'
+    assert js_stringify({"b": 1, "10": 2, "2": 3, "01": 4, "": 5}) == '{"2":3,"10":2,"b":1,"01":4,"":5}'
     with pytest.raises(TypeError, match="not a JSON value"):
         js_stringify(object())

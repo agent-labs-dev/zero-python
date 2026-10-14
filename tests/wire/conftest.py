@@ -54,14 +54,16 @@ class WireDB:
             async with engine.connect() as conn:
                 queries = {
                     "clients": 'SELECT * FROM zero_0."clients" ORDER BY 1, 2',
-                    "mutations": 'SELECT "clientGroupID", "clientID", "mutationID", "result"::jsonb AS result '
+                    "mutations": 'SELECT "clientGroupID", "clientID", "mutationID", "result"::text AS result '
                     'FROM zero_0."mutations" ORDER BY 1, 2, 3',
                     "item": "SELECT * FROM item ORDER BY id",
                 }
-                return {
+                dumped = {
                     name: [dict(row) for row in (await conn.execute(text(sql))).mappings()]
                     for name, sql in queries.items()
                 }
+                # Compared as the exact text each side stored: `json` keeps it verbatim.
+                return dumped
 
         return self.run(dump())
 
