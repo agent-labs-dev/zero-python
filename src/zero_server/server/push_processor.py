@@ -13,7 +13,7 @@ from typing import Any
 from zero_server.mutators import Mutator
 from zero_server.protocol.mutation import CustomMutation, MutationResponse
 from zero_server.server.process_mutations import Database, MutateResponse, TransactFn, handle_mutate
-from zero_server.shared.asserts import check
+from zero_server.shared.asserts import AssertionFailedError, check
 from zero_server.shared.json import JSONValue
 from zero_server.shared.registry import Registry, value_at_path
 
@@ -42,7 +42,8 @@ class PushProcessor[T]:
 
     async def _dispatch(self, mutators: Mapping[str, Any], tx: T, key: str, args: JSONValue | None) -> None:
         mutator = value_at_path(mutators, key, SEPARATOR)
-        check(callable(mutator) and not isinstance(mutator, Mapping), f"could not find mutator {key}")
+        if not callable(mutator) or isinstance(mutator, Mapping):  # `check`, formatting only on failure
+            raise AssertionFailedError(f"could not find mutator {key}")
         if isinstance(mutator, Mutator):
             await mutator.fn(args=args, ctx=self._context, tx=tx)
         else:

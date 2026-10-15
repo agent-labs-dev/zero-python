@@ -44,16 +44,11 @@ _PLACEHOLDER = "\x00"  # never in a type name
 
 
 @functools.cache
-def _cast_around(column: ServerColumnSchema, comparison: bool) -> tuple[str, str]:
-    """The SQL before and after a value's placeholder that casts it to `column`'s type."""
+def _binding(column: ServerColumnSchema, comparison: bool) -> tuple[bool, str, str]:
+    """How a value for `column` is bound: whether a scalar goes as the text postgres.js sends rather than
+    as JSON, and the SQL before and after its placeholder that casts it to the column's type."""
     before, after = _cast(_PLACEHOLDER, column, comparison).split(_PLACEHOLDER)
-    return before, after
-
-
-@functools.cache
-def _binds_text(column: ServerColumnSchema) -> bool:
-    """Whether a scalar for `column` is bound as the text postgres.js sends, rather than as JSON."""
-    return column.is_enum or is_string(column.type)
+    return column.is_enum or is_string(column.type), before, after
 
 
 def _cast(placeholder: str, column: ServerColumnSchema, comparison: bool) -> str:
@@ -148,18 +143,18 @@ class Params:
     def column(self, column: ServerColumnSchema, value: Any, *, plural: bool = False, comparison: bool) -> str:
         """A value compared with or written to `column`, cast to the column's type."""
         plural = plural or column.is_array
+        as_text, before, after = _binding(column, comparison)
         if value is None:
             bound = None
         elif plural:
             bound = js_stringify(value)
-        elif _binds_text(column):
+        elif as_text:
             bound = value if isinstance(value, str) else _driver_text(value)
         else:
             bound = js_stringify(value)
         index = self._bind(value, column.type, bound)
         if value is None and plural:
             return f"${index}"
-        before, after = _cast_around(column, comparison)
         if plural:
             return _plural(index, f"{before}value{after}")
         return f"{before}${index}{after}"
