@@ -323,10 +323,14 @@ def test_transaction_exposes_the_driver_connection(wire_db: WireDB, adapter: str
     wire_db.run(check())
 
 
-def test_asyncpg_reports_a_refused_argument_as_sqlalchemy_does(wire_db: WireDB) -> None:
+@pytest.mark.parametrize("first", [True, False])
+def test_asyncpg_reports_a_refused_argument_as_sqlalchemy_does(wire_db: WireDB, first: bool) -> None:
     # A lone surrogate cannot be encoded, so asyncpg refuses it before Postgres sees the statement.
+    # SQLAlchemy runs a transaction's first statement itself and hands the rest to asyncpg.
     async def message(adapter: str) -> str:
         async def callback(tx: Any, _hooks: Any) -> Any:
+            if not first:
+                await tx.db_transaction.query("SELECT 1")
             await tx.db_transaction.query("SELECT $1::text", ["a\ud800"])
 
         with pytest.raises(PostgresError) as error:

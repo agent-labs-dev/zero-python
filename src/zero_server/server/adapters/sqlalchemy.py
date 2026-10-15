@@ -17,21 +17,29 @@ from zero_server.server.zql_database import PostgresError, ZQLDatabase
 class SQLAlchemyTransaction:
     """One transaction of an `AsyncConnection`.
 
-    On asyncpg a statement goes through `exec_driver_sql`, which hands the `$1` placeholders to asyncpg
-    as they are. psycopg's paramstyle is `%s`, so on psycopg it goes through psycopg's raw cursor on the
-    same connection, inside the transaction SQLAlchemy opened.
+    psycopg's paramstyle is `%s`, so on psycopg a statement goes through psycopg's raw cursor on the
+    same connection, inside the transaction SQLAlchemy opened. On asyncpg, SQLAlchemy defers `BEGIN` to
+    the first statement it runs itself, so until the transaction is open a statement goes through
+    `exec_driver_sql`, which hands the `$1` placeholders to asyncpg as they are. After that, statements
+    go straight to the asyncpg connection, as the asyncpg adapter sends them.
     """
 
-    def __init__(self, connection: AsyncConnection, driver_transaction: DBTransaction[Any] | None = None) -> None:
+    def __init__(
+        self,
+        connection: AsyncConnection,
+        driver_transaction: DBTransaction[Any] | None = None,
+        driver_in_transaction: Callable[[], bool] = lambda: True,
+    ) -> None:
         self._connection = connection
         self._driver_transaction = driver_transaction
+        self._driver_in_transaction = driver_in_transaction
 
     @property
     def wrapped_transaction(self) -> AsyncConnection:
         return self._connection
 
     async def query(self, sql: str, params: Sequence[Any] = ()) -> list[Row]:
-        if self._driver_transaction is not None:
+        if self._driver_transaction is not None and self._driver_in_transaction():
             return await self._driver_transaction.query(sql, params)
         try:
             result = await self._connection.exec_driver_sql(sql, tuple(params))
@@ -46,16 +54,20 @@ class SQLAlchemyTransaction:
 async def sqlalchemy_transaction(connection: AsyncConnection) -> SQLAlchemyTransaction:
     """Wrap a connection that is already in a transaction, such as one an `AsyncSession` holds."""
     driver = connection.dialect.driver
+    if driver not in ("asyncpg", "psycopg"):
+        raise ValueError(f"SQLAlchemy driver {driver!r} is not supported; use asyncpg or psycopg")
+    driver_connection = (await connection.get_raw_connection()).driver_connection
+    # `None` only once SQLAlchemy has invalidated the connection, which it never does mid-transaction.
+    assert driver_connection is not None
     if driver == "asyncpg":
-        return SQLAlchemyTransaction(connection)
-    if driver == "psycopg":
-        from zero_server.server.adapters.psycopg import PsycopgTransaction
+        from zero_server.server.adapters.asyncpg import AsyncpgTransaction
 
-        driver_connection = (await connection.get_raw_connection()).driver_connection
-        # `None` only once SQLAlchemy has invalidated the connection, which it never does mid-transaction.
-        assert driver_connection is not None
-        return SQLAlchemyTransaction(connection, PsycopgTransaction(driver_connection))
-    raise ValueError(f"SQLAlchemy driver {driver!r} is not supported; use asyncpg or psycopg")
+        return SQLAlchemyTransaction(
+            connection, AsyncpgTransaction(driver_connection), driver_connection.is_in_transaction
+        )
+    from zero_server.server.adapters.psycopg import PsycopgTransaction
+
+    return SQLAlchemyTransaction(connection, PsycopgTransaction(driver_connection))
 
 
 class SQLAlchemyConnection:
