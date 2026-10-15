@@ -9,7 +9,7 @@ Compatibility is pinned to one Zero release at a time. This version is tested ag
 ## Usage
 
 ```sh
-pip install "zero-server[sqlalchemy,starlette]"   # or [asyncpg], or [psycopg]
+pip install "zero-server[sqlalchemy,asyncpg,starlette]"   # or [asyncpg], or [psycopg]
 ```
 
 The schema stays in your TypeScript `schema.ts`, because the client needs it. Emit it as JSON, and generate Python types from it:
@@ -76,7 +76,7 @@ app = Starlette(
 
 Point `ZERO_QUERY_URL` and `ZERO_MUTATE_URL` at `/query` and `/mutate`. With FastAPI, `app.router.routes.extend(zero_routes(...))`. With another framework, call `handle_query_request` and `handle_mutate_request` yourself; `zero_server/integrations/starlette.py` is short enough to copy.
 
-- **Databases.** `SQLAlchemyDatabase` (SQLAlchemy's asyncio engine on asyncpg), `AsyncpgDatabase` (an asyncpg pool) and `PsycopgDatabase` (a psycopg 3 async pool), under `zero_server.server.adapters`. Another driver plugs into `ZQLDatabase` as a `DBConnection` whose `query` takes `$1` placeholders.
+- **Databases.** `SQLAlchemyDatabase` (SQLAlchemy's asyncio engine on asyncpg or psycopg; the `sqlalchemy` extra installs neither driver), `AsyncpgDatabase` (an asyncpg pool) and `PsycopgDatabase` (a psycopg 3 async pool), under `zero_server.server.adapters`. Another driver plugs into `ZQLDatabase` as a `DBConnection` whose `query` takes `$1` placeholders.
 - **Validation.** `@define_query(Model)` and `@define_mutator(Model)` parse args with a Pydantic model or `TypeAdapter` first; a failure reaches the client as upstream's validation error.
 - **Strict building.** `create_builder(schema, strict=True)` refuses an unknown column when the query is built. Upstream only refuses it when the endpoint maps the query, failing the whole batch, so this is for your tests.
 

@@ -18,6 +18,7 @@ from zero_server.query.registry import (
     must_get_query,
 )
 from zero_server.schema import load_schema, server_to_client
+from zero_server.server.adapters.sqlalchemy import sqlalchemy_transaction
 from zero_server.server.process_queries import handle_query_request
 from zero_server.server.server_schema import get_server_schema
 from zero_server.server.transaction import ServerTransaction
@@ -172,3 +173,14 @@ def test_mutate_by_attribute() -> None:
     assert isinstance(mutate.issue, TableCRUD)
     with pytest.raises(AttributeError):
         _ = mutate.nope
+
+
+async def test_sqlalchemy_refuses_an_unsupported_driver() -> None:
+    class Dialect:
+        driver = "pg8000"
+
+    class Connection:
+        dialect = Dialect()
+
+    with pytest.raises(ValueError, match="'pg8000' is not supported"):
+        await sqlalchemy_transaction(Connection())  # ty: ignore[invalid-argument-type]

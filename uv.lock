@@ -887,7 +887,7 @@ wheels = [
 
 [[package]]
 name = "zero-server"
-version = "0.0.1"
+version = "0.0.2"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
@@ -903,7 +903,6 @@ psycopg = [
     { name = "psycopg-pool" },
 ]
 sqlalchemy = [
-    { name = "asyncpg" },
     { name = "sqlalchemy", extra = ["asyncio"] },
 ]
 starlette = [
@@ -929,13 +928,12 @@ e2e = [
 
 [package.metadata]
 requires-dist = [
-    { name = "asyncpg", marker = "extra == 'asyncpg'", specifier = ">=0.32" },
-    { name = "asyncpg", marker = "extra == 'sqlalchemy'", specifier = ">=0.32" },
-    { name = "psycopg", marker = "extra == 'psycopg'", specifier = ">=3.3" },
-    { name = "psycopg-pool", marker = "extra == 'psycopg'", specifier = ">=3.3" },
-    { name = "pydantic", specifier = ">=2.14" },
-    { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'sqlalchemy'", specifier = ">=2.1" },
-    { name = "starlette", marker = "extra == 'starlette'", specifier = ">=1.8" },
+    { name = "asyncpg", marker = "extra == 'asyncpg'", specifier = ">=0.30" },
+    { name = "psycopg", marker = "extra == 'psycopg'", specifier = ">=3.2.10" },
+    { name = "psycopg-pool", marker = "extra == 'psycopg'", specifier = ">=3.2.6" },
+    { name = "pydantic", specifier = ">=2.12" },
+    { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'sqlalchemy'", specifier = ">=2.0.40" },
+    { name = "starlette", marker = "extra == 'starlette'", specifier = ">=1.6" },
     { name = "typing-extensions", specifier = ">=4.12" },
 ]
 provides-extras = ["sqlalchemy", "asyncpg", "psycopg", "starlette"]
@@ -944,7 +942,7 @@ provides-extras = ["sqlalchemy", "asyncpg", "psycopg", "starlette"]
 dev = [
     { name = "httpx2", specifier = ">=2.13" },
     { name = "hypothesis", specifier = ">=6.169" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.3" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2.10" },
     { name = "pytest", specifier = ">=9.1" },
     { name = "pytest-asyncio", specifier = ">=1.4" },
     { name = "pytest-cov", specifier = ">=7.1" },
@@ -953,6 +951,6 @@ dev = [
     { name = "zero-server", extras = ["sqlalchemy", "asyncpg", "psycopg", "starlette"] },
 ]
 e2e = [
-    { name = "starlette", specifier = ">=1.8" },
+    { name = "starlette", specifier = ">=1.6" },
     { name = "uvicorn", specifier = ">=0.54" },
 ]

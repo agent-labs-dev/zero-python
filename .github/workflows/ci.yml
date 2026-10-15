@@ -40,6 +40,35 @@ jobs:
       - run: uv run ty check
       - run: uv run pytest
 
+  # The suite again with every direct dependency at the lowest version pyproject.toml allows, so a floor
+  # is never lower than what has been tested.
+  floors:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      ZERO_SERVER_PG: postgresql://postgres:postgres@localhost:5432
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - run: npm ci
+        working-directory: harness
+      - run: uv sync --resolution lowest-direct
+      - run: uv run --no-sync pytest --no-cov
+
   # An unmodified Zero client syncing through zero-cache, once with the TypeScript reference app server
   # and once with the Python one. Fails on any difference in what the client ends up with.
   e2e:
