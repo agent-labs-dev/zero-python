@@ -1,0 +1,28 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+
+  # @rocicorp/zero is the oracle and moves only with ZERO_VERSION, by hand.
+  - package-ecosystem: npm
+    directories: [/harness, /e2e]
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: "@rocicorp/zero"
+    groups:
+      npm:
+        patterns: ["*"]
