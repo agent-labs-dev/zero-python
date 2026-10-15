@@ -94,6 +94,18 @@ PINNED = [
     _q("user", ["related", "manager", {"ops": [["related", "reports", None]]}]),
     _q("issue", ["related", "label", None], ["whereExists", "label", None, None]),
     _q("gadget", ["where", "serial", "IN", []], ["related", "owner", None]),
+    # Two unknown columns: upstream maps a query's own condition before its relationships, at every level.
+    _q("comment", ["where", "nope", None], ["related", "author", {"ops": [["where", "nope", None]]}]),
+    _q("issue", ["related", "labels", {"ops": [["where", "nope", None]]}], ["where", "nope", None]),
+    _q(
+        "issue",
+        [
+            "whereExists",
+            "owner",
+            {"ops": [["related", "issues", {"ops": [["where", "nope", None]]}], ["where", "nope", None]]},
+            None,
+        ],
+    ),
 ]
 
 

@@ -160,7 +160,10 @@ def _transform_ast(ast: AST, transform: _Transform) -> AST:
     def col(column: str) -> str:
         return transform.column_name(ast.table, column)
 
+    # Mapped in upstream's order, so a batch with two unknown names fails on the same one.
     where = transform.where(ast.where) if ast.where is not None else None
+    table = transform.table_name(ast.table)
+    where = _transform_where(where, ast.table, transform) if where is not None else None
     related = (
         tuple(
             transform.related(
@@ -183,9 +186,9 @@ def _transform_ast(ast: AST, transform: _Transform) -> AST:
     )
     return AST(
         schema=ast.schema_,
-        table=transform.table_name(ast.table),
+        table=table,
         alias=ast.alias,
-        where=_transform_where(where, ast.table, transform) if where is not None else None,
+        where=where,
         related=related,
         start=(
             Bound(row={col(name): value for name, value in _entries(ast.start.row)}, exclusive=ast.start.exclusive)
