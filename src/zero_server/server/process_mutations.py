@@ -15,7 +15,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -155,6 +155,14 @@ def _parse_failure(
     )
 
 
+def _parse_push_body(json_body: object) -> PushBody | ServerPushFailed:
+    try:
+        return PushBody.from_json(json_body)
+    except ValidationError as error:
+        logger.error("Failed to parse push body", exc_info=error)
+        return _parse_failure("push body", error, [])
+
+
 async def handle_mutate_request[T](
     *,
     db_provider: Database[T],
@@ -165,9 +173,13 @@ async def handle_mutate_request[T](
 ) -> MutateResponse:
     """Process one `/mutate` request from zero-cache.
 
-    `query` is the request's query string and `body` its JSON, either raw bytes or already parsed.
+    `query` is the request's query string and `body` its JSON: raw bytes, decoded JSON, or a `PushBody`.
     `user_id` is the authenticated user, `None` when logged out; reporting it back is what makes
     zero-cache treat the connection's user as server-validated.
+
+    A caller that needs push-level fields such as `timestamp` parses once with `PushBody.from_json` and
+    passes the result. If that parse fails, pass the raw body instead and return the parse failure this
+    produces.
     """
     return await handle_mutate(db_provider, handler, query, body, user_id, report_user_id=True)
 
@@ -182,21 +194,21 @@ async def handle_mutate[T](
     report_user_id: bool,
 ) -> MutateResponse:
     """`handle_mutate_request`, and the legacy form that reports no user ID at all."""
-    json_body: Any = body
-    if isinstance(body, bytes):
-        try:
-            json_body = json.loads(body, parse_constant=_refuse_constant)
-        except ValueError as error:
-            logger.error("Failed to parse push body", exc_info=error)
-            return _parse_failure("push body", error, [], syntax=True)
-
-    mutation_ids: list[MutationID] = []
-    try:
-        push_body = PushBody.from_json(json_body)
-        mutation_ids = [MutationID(id=m.id, clientID=m.client_id) for m in push_body.mutations]
-    except ValidationError as error:
-        logger.error("Failed to parse push body", exc_info=error)
-        return _parse_failure("push body", error, mutation_ids)
+    match body:
+        case PushBody():
+            push_body = body
+        case bytes():
+            try:
+                json_body = json.loads(body, parse_constant=_refuse_constant)
+            except ValueError as error:
+                logger.error("Failed to parse push body", exc_info=error)
+                return _parse_failure("push body", error, [], syntax=True)
+            push_body = _parse_push_body(json_body)
+        case _:
+            push_body = _parse_push_body(body)
+    if isinstance(push_body, ServerPushFailed):
+        return push_body
+    mutation_ids = [MutationID(id=m.id, clientID=m.client_id) for m in push_body.mutations]
 
     try:
         params = MutateParams.from_json(dict(query))
