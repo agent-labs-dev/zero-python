@@ -23,6 +23,12 @@
      "type": "boolean",
      "optional": false,
      "customType": null
+    },
+    "managerID": {
+     "type": "string",
+     "optional": true,
+     "customType": null,
+     "serverName": "manager_id"
     }
    },
    "primaryKey": [
@@ -209,6 +215,61 @@
    "primaryKey": [
     "id"
    ]
+  },
+  "gadget": {
+   "name": "gadget",
+   "columns": {
+    "id": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "ownerID": {
+     "type": "string",
+     "optional": false,
+     "customType": null,
+     "serverName": "owner_id"
+    },
+    "serial": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "ip": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "amount": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    },
+    "code": {
+     "type": "string",
+     "optional": true,
+     "customType": null
+    },
+    "mood": {
+     "type": "string",
+     "optional": true,
+     "customType": null
+    },
+    "moods": {
+     "type": "json",
+     "optional": true,
+     "customType": null
+    },
+    "seen": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    }
+   },
+   "primaryKey": [
+    "id"
+   ],
+   "serverName": "extra.gadgets"
   }
  },
  "relationships": {
@@ -222,6 +283,42 @@
       "ownerID"
      ],
      "destSchema": "issue",
+     "cardinality": "many"
+    }
+   ],
+   "manager": [
+    {
+     "sourceField": [
+      "managerID"
+     ],
+     "destField": [
+      "id"
+     ],
+     "destSchema": "user",
+     "cardinality": "one"
+    }
+   ],
+   "reports": [
+    {
+     "sourceField": [
+      "id"
+     ],
+     "destField": [
+      "managerID"
+     ],
+     "destSchema": "user",
+     "cardinality": "many"
+    }
+   ],
+   "gadgets": [
+    {
+     "sourceField": [
+      "id"
+     ],
+     "destField": [
+      "ownerID"
+     ],
+     "destSchema": "gadget",
      "cardinality": "many"
     }
    ]
@@ -286,6 +383,28 @@
      "destSchema": "label",
      "cardinality": "many"
     }
+   ],
+   "label": [
+    {
+     "sourceField": [
+      "id"
+     ],
+     "destField": [
+      "issueID"
+     ],
+     "destSchema": "issueLabel",
+     "cardinality": "one"
+    },
+    {
+     "sourceField": [
+      "labelID"
+     ],
+     "destField": [
+      "id"
+     ],
+     "destSchema": "label",
+     "cardinality": "one"
+    }
    ]
   },
   "comment": {
@@ -335,6 +454,20 @@
      ],
      "destSchema": "issue",
      "cardinality": "many"
+    }
+   ]
+  },
+  "gadget": {
+   "owner": [
+    {
+     "sourceField": [
+      "ownerID"
+     ],
+     "destField": [
+      "id"
+     ],
+     "destSchema": "user",
+     "cardinality": "one"
     }
    ]
   }
