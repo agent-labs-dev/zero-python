@@ -28,6 +28,7 @@ from bench.workloads import (
 )
 from tests.wire import mutators
 from tests.wire.programs import apply, make_handler
+from zero_server.protocol.ast import map_ast
 from zero_server.protocol.custom_queries import TransformRequestMessage
 from zero_server.protocol.push import PushBody
 from zero_server.protocol.wire import parse_wire
@@ -101,4 +102,12 @@ async def cases() -> dict[str, Callable[[], Any]]:
     }.items():
         q = apply(zql.table(program["table"]), program["ops"])
         out[f"z2s.{name}"] = lambda q=q: compile_query(server_schema, query_schema, q.ast, q.format)
+
+    # The query endpoint's two stages on their own: building a program's query, and mapping its AST to
+    # server names.
+    for kind in ("simple", "complex"):
+        program = W["programs"][kind]
+        ast = apply(zql.table(program["table"]), program["ops"]).ast
+        out[f"build.{kind}"] = lambda p=program: apply(zql.table(p["table"]), p["ops"])
+        out[f"map.{kind}"] = lambda ast=ast: map_ast(ast, query_schema.client_to_server_mapper)
     return out

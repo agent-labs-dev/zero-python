@@ -78,7 +78,7 @@ function cpuGroup(group: string) {
 /** Each group's cases. A case's group is its name's first part. */
 const groups: Record<string, () => Promise<void>> = {
   ...Object.fromEntries(
-    ['query', 'query_json', 'parse', 'parse_json', 'mutate_cpu', 'z2s'].map(g => [g, cpuGroup(g)]),
+    ['query', 'query_json', 'build', 'map', 'parse', 'parse_json', 'mutate_cpu', 'z2s'].map(g => [g, cpuGroup(g)]),
   ),
   // tx.run end to end: compile, query, decode.
   async run() {

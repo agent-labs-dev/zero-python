@@ -119,6 +119,11 @@ _encode_string = json.JSONEncoder(ensure_ascii=False).encode
 
 def js_stringify(value: object) -> str:
     """`JSON.stringify(value)` for a JSON value: compact, numbers written as JavaScript writes them."""
+    if type(value) is str:
+        return _encode_string(value) if value.isascii() else _quote(value)
+    kind = type(value)
+    if kind is int and -_MAX_EXACT < value < _MAX_EXACT:  # ty: ignore[unsupported-operator]
+        return str(value)
     match value:
         case None:
             return "null"
@@ -129,7 +134,7 @@ def js_stringify(value: object) -> str:
         case float():
             # `JSON.parse("1e400")` is Infinity, which `JSON.stringify` writes as null.
             return js_number(value) if math.isfinite(value) else "null"
-        case str():
+        case str():  # python-only: a str subclass, such as a StrEnum
             return _encode_string(value) if value.isascii() else _quote(value)
         case list() | tuple():
             return "[" + ",".join([js_stringify(item) for item in value]) + "]"

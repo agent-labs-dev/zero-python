@@ -58,7 +58,15 @@ def value_at_path(root: object, path: str, separator: str | re.Pattern[str]) -> 
     parts = separator.split(path) if isinstance(separator, re.Pattern) else path.split(separator)
     current: Any = root
     for part in parts:
-        if not isinstance(current, Mapping) or part not in current:
+        if type(current) is Registry:
+            current = current._entries.get(part, _ABSENT)
+            if current is _ABSENT:
+                return None
+        elif isinstance(current, Mapping) and part in current:
+            current = current[part]
+        else:
             return None
-        current = current[part]
     return current
+
+
+_ABSENT = object()

@@ -8,6 +8,7 @@ Values are bound as `zero_server.z2s.sql` binds them.
 """
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Generic
 
 from typing_extensions import TypeVar
@@ -17,7 +18,7 @@ from zero_server.server.server_schema import ServerSchema, ServerTableSchema
 from zero_server.server.transaction import DBTransaction
 from zero_server.shared.asserts import AssertionFailedError
 from zero_server.shared.js import js_keys
-from zero_server.z2s.sql import Params, ident
+from zero_server.z2s.sql import Binding, Params, binding, ident
 
 
 def _as_row(value: object) -> dict[str, Any]:
@@ -56,8 +57,35 @@ def _server_name(table: TableSchema) -> str:
 def _server_column(table: TableSchema, column: str) -> str:
     schema = table.columns.get(column)
     if schema is None:  # `check`, without formatting the message for every column that passes
-        raise AssertionFailedError(f"Column {column} was not found in the Zero schema for the table {table.name}")
+        raise _unknown_column(table, column)
     return schema.server_name if schema.server_name is not None else column
+
+
+@dataclass(slots=True)
+class _Column:
+    server: str
+    ident: str
+    # Looked up on first write, as the server schema need not have a column no row writes.
+    write: Binding | None = None
+
+
+_plans: dict[tuple[int, int], tuple[TableSchema, ServerTableSchema, dict[str, _Column]]] = {}
+
+
+def _write_plan(table: TableSchema, server_table: ServerTableSchema) -> dict[str, _Column]:
+    """Each client column of `table`, as an insert writes it. Built once per table and server schema."""
+    key = (id(table), id(server_table))
+    entry = _plans.get(key)
+    # The entry holds both objects, so neither id is reused while it lives.
+    if entry is not None and entry[0] is table and entry[1] is server_table:
+        return entry[2]
+    plan = {name: _Column(server, ident(server)) for name in table.columns for server in (_server_column(table, name),)}
+    _plans[key] = (table, server_table, plan)
+    return plan
+
+
+def _unknown_column(table: TableSchema, column: str) -> AssertionFailedError:
+    return AssertionFailedError(f"Column {column} was not found in the Zero schema for the table {table.name}")
 
 
 I = TypeVar("I", default=Mapping[str, Any])  # noqa: E741 - the insert row type
@@ -89,27 +117,38 @@ class TableCRUD(Generic[I, U, K]):
     async def upsert(self, value: I) -> None:
         await self._insert(_as_row(value), upsert=True)
 
+    def _bind(self, params: Params, column: _Column, value: Any) -> str:
+        write = column.write
+        if write is None:
+            write = column.write = binding(self._server_table[column.server], False)
+        return params.bind(write, value)
+
     async def _insert(self, value: dict[str, Any], *, upsert: bool) -> None:
         keys = js_keys(value)
-        targeted = [_server_column(self._table, k) for k in keys]
+        plan = _write_plan(self._table, self._server_table)
+        targeted: list[_Column] = []
+        for k in keys:
+            column = plan.get(k)
+            if column is None:
+                raise _unknown_column(self._table, k)
+            targeted.append(column)
         pk = [_server_column(self._table, k) for k in self._table.primary_key]
         params = Params()
-        values = ", ".join(
-            [
-                params.column(self._server_table[server], value[k], comparison=False)
-                for k, server in zip(keys, targeted, strict=True)
-            ]
-        )
+        values = ", ".join([self._bind(params, column, value[k]) for k, column in zip(keys, targeted, strict=True)])
         action = "DO NOTHING"
-        updated = [k for k in keys if k not in self._table.primary_key]
-        if upsert and updated:
+        if upsert:
+            primary_key = self._table.primary_key
             sets = ", ".join(
-                f"{ident(server)} = {params.column(self._server_table[server], value[k], comparison=False)}"
-                for k, server in ((k, _server_column(self._table, k)) for k in updated)
+                [
+                    f"{column.ident} = {self._bind(params, column, value[k])}"
+                    for k, column in zip(keys, targeted, strict=True)
+                    if k not in primary_key
+                ]
             )
-            action = f"DO UPDATE SET {sets}"
+            if sets:
+                action = f"DO UPDATE SET {sets}"
         sql = (
-            f"INSERT INTO {ident(_server_name(self._table))} ({','.join([ident(c) for c in targeted])}) "
+            f"INSERT INTO {ident(_server_name(self._table))} ({','.join([c.ident for c in targeted])}) "
             f"VALUES ({values}) ON CONFLICT ({', '.join(ident(c) for c in pk)}) {action}"
         )
         await self._tx.query(sql, params.values)

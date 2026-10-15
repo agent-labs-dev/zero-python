@@ -68,12 +68,16 @@ def literal_type(value: object) -> LiteralType:
 _PLACEHOLDER = "\x00"  # never in a type name
 
 
+type Binding = tuple[str, bool, bool, str, str]
+"""How a value for a column is bound: the column's type and whether it is an array, whether a scalar goes
+as the text postgres.js sends rather than as JSON, and the SQL before and after its placeholder that
+casts it to the column's type."""
+
+
 @functools.cache
-def _binding(column: ServerColumnSchema, comparison: bool) -> tuple[bool, str, str]:
-    """How a value for `column` is bound: whether a scalar goes as the text postgres.js sends rather than
-    as JSON, and the SQL before and after its placeholder that casts it to the column's type."""
+def binding(column: ServerColumnSchema, comparison: bool) -> Binding:
     before, after = _cast(_PLACEHOLDER, column, comparison).split(_PLACEHOLDER)
-    return column.is_enum or is_string(column.type), before, after
+    return column.type, column.is_array, column.is_enum or is_string(column.type), before, after
 
 
 def _cast(placeholder: str, column: ServerColumnSchema, comparison: bool) -> str:
@@ -105,8 +109,12 @@ def _plural(index: int, select: str) -> str:
     return f"ARRAY(SELECT {select} FROM jsonb_array_elements_text(${index}::text::jsonb))"
 
 
+# A tuple, not a union, as `isinstance` checks a tuple faster.
+_ARRAYS = (list, tuple)
+
+
 def _first_leaf(value: object) -> object:
-    while isinstance(value, list | tuple) and value:
+    while isinstance(value, _ARRAYS) and value:
         value = value[0]
     return value
 
@@ -114,7 +122,7 @@ def _first_leaf(value: object) -> object:
 def _driver_text(value: object) -> str:
     """The text postgres.js sends for a raw value: `String(value)`, but an array typed by its first leaf,
     so one led by a boolean is the boolean `false` (it is not `true`)."""
-    if isinstance(value, list | tuple) and isinstance(_first_leaf(value), bool):
+    if isinstance(value, _ARRAYS) and isinstance(_first_leaf(value), bool):
         return "false"
     return js_string(value)
 
@@ -124,14 +132,19 @@ def _same_value_key(value: object) -> object:
 
     The builder gives every literal its own list, as every JavaScript array literal is its own object.
     """
+    kind = type(value)
+    if kind is str:
+        return ("string", value)
+    if kind is int or kind is float:
+        return ("number", float(value))  # ty: ignore[invalid-argument-type]
     match value:
         case None:
             return ("null",)
         case bool():
             return ("boolean", value)
-        case int() | float():
+        case int() | float():  # python-only: an int subclass, such as an IntEnum
             return ("number", float(value))
-        case str():
+        case str():  # python-only: a str subclass, such as a StrEnum
             return ("string", value)
         case _:
             return ("object", id(value))
@@ -167,8 +180,12 @@ class Params:
 
     def column(self, column: ServerColumnSchema, value: Any, *, plural: bool = False, comparison: bool) -> str:
         """A value compared with or written to `column`, cast to the column's type."""
-        plural = plural or column.is_array
-        as_text, before, after = _binding(column, comparison)
+        return self.bind(binding(column, comparison), value, plural=plural)
+
+    def bind(self, cast: "Binding", value: Any, *, plural: bool = False) -> str:
+        """`column` with the column's `binding` already looked up."""
+        type_key, is_array, as_text, before, after = cast
+        plural = plural or is_array
         if value is None:
             bound = None
         elif plural:
@@ -177,7 +194,14 @@ class Params:
             bound = value if isinstance(value, str) else _driver_text(value)
         else:
             bound = js_stringify(value)
-        index = self._bind(value, column.type, bound)
+        # `_bind`, inline: this runs for every value a mutation writes.
+        key = (_same_value_key(value), type_key)
+        index = self._seen.get(key)
+        if index is None:
+            self._held.append(value)
+            values = self.values
+            values.append(bound)
+            index = self._seen[key] = len(values)
         if value is None and plural:
             return f"${index}"
         if plural:

@@ -147,7 +147,7 @@ jobs:
       matrix:
         include:
           - name: cpu
-            groups: query,query_json,parse,parse_json,mutate_cpu,z2s,startup
+            groups: query,query_json,build,map,parse,parse_json,mutate_cpu,z2s,startup
           - name: postgres
             groups: run,mutate,pushproc
     services:

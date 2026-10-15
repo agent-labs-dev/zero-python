@@ -178,7 +178,7 @@ def cpu_group(group: str) -> Callable[[Bench], Coroutine[Any, Any, None]]:
 
 
 GROUPS: dict[str, Callable[[Bench], Coroutine[Any, Any, None]]] = {
-    **{g: cpu_group(g) for g in ("query", "query_json", "parse", "parse_json", "mutate_cpu", "z2s")},
+    **{g: cpu_group(g) for g in ("query", "query_json", "build", "map", "parse", "parse_json", "mutate_cpu", "z2s")},
     "run": run,
     "mutate": mutate,
     "pushproc": pushproc,
