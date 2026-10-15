@@ -331,7 +331,7 @@ def _correlation(transform: _Transform, parent: str, related: CorrelatedSubquery
         key = (parent, child, correlation.parent_field, correlation.child_field)
         try:
             mapped = cache.get(key)
-        except TypeError:  # A key the builder was handed as a list.
+        except TypeError:  # python-only: the correlation cache, handed a key the builder got as a list
             key = None
         else:
             if mapped is not None:
@@ -342,7 +342,7 @@ def _correlation(transform: _Transform, parent: str, related: CorrelatedSubquery
         child_field=_key(column_name, child, correlation.child_field),
     )
     if cache is not None and key is not None:
-        if len(cache) >= _MAX_CORRELATIONS:
+        if len(cache) >= _MAX_CORRELATIONS:  # python-only: the correlation cache, full
             cache.clear()
         cache[key] = mapped
     return mapped

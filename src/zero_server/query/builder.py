@@ -144,15 +144,13 @@ class Query(Generic[R, C]):
         cond: Condition
         # Anything but a function is a field, as upstream has it: a number fails once the column is looked up.
         if isinstance(field_or_factory, str) or not callable(field_or_factory):
-            if self._strict:
+            if self._strict:  # python-only: strict mode
                 self._check_column(field_or_factory)
-            n = len(args)
-            if n == 1:
+            if len(args) == 1:
                 cond = SimpleCondition(op="=", left=ColumnReference(name=field_or_factory), right=_position(args[0]))
-            elif n:
-                cond = cmp(field_or_factory, args[0], args[1])
             else:
-                raise AssertionFailedError("Invalid condition. Too few arguments.")
+                check(len(args) >= 2, "Invalid condition. Too few arguments.")
+                cond = cmp(field_or_factory, args[0], args[1])
         else:
             cond = field_or_factory(self.expression_builder())
         if self._ast.where is not None:
@@ -255,7 +253,7 @@ class Query(Generic[R, C]):
         return self._with("limit", limit)
 
     def order_by[Q: Query[Any, Any]](self: Q, field: C, direction: Direction) -> Q:
-        if self._strict:
+        if self._strict:  # python-only: strict mode
             self._check_column(field)
         if self._junction:
             raise NotImplementedError(

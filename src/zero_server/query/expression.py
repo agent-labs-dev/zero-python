@@ -151,7 +151,7 @@ class ExpressionBuilder:
         return self
 
     def cmp(self, field: str, op_or_value: Any, value: Any = MISSING) -> Condition:
-        if self._check_column is not None:
+        if self._check_column is not None:  # python-only: strict mode
             self._check_column(field)
         return cmp(field, op_or_value, value)
 

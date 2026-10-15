@@ -165,7 +165,8 @@ def _returns(args: Any) -> Any:
 
 def make_handler(schema: Schema) -> Any:
     """Queries by name through the registry, except `raw`, which returns `RETURNS[args]` itself, and
-    `gate.wait`, which finishes only once `gate.open` has run in the same request. One per request."""
+    `gate.wait`, which finishes only once `gate.open` has run in the same request, and the coroutines
+    `async.now`, which never suspends, and `async.throw`. One per request."""
     queries = make_queries(schema)
     zql = create_builder(schema)
     gate = asyncio.Event()
@@ -173,6 +174,12 @@ def make_handler(schema: Schema) -> Any:
     async def wait() -> Any:
         await gate.wait()
         return zql.issue
+
+    async def now() -> Any:
+        return zql.issue
+
+    async def throw() -> Any:
+        raise Exception("nope")
 
     # Synchronous except for `gate.wait`, as a Python handler may be.
     def handler(name: str, args: Any) -> Any:
@@ -183,6 +190,10 @@ def make_handler(schema: Schema) -> Any:
         if name == "gate.open":
             gate.set()
             return zql.user
+        if name == "async.now":
+            return now()
+        if name == "async.throw":
+            return throw()
         return must_get_query(queries, name).fn(args=args, ctx=None)
 
     return handler

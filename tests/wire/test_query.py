@@ -153,6 +153,7 @@ PINNED = [
     _q("issue", ["orderBy", "title", None], ["orderBy", "id", 1]),
     _q("issue", ["where", "title", {"$param": ["x", "y"]}], ["where", "id", {"$param": "ab"}]),
     _q("issue", ["limit", 2.0], ["where", ["title"], "x"]),
+    _q("issue", ["whereFn", ["cmpLit", "a", "=", None]]),
     _q("user", ["related", "manager", {"ops": [["related", "reports", None]]}]),
     _q("issue", ["related", "label", None], ["whereExists", "label", None, None]),
     _q("gadget", ["where", "serial", "IN", []], ["related", "owner", None]),
@@ -172,6 +173,15 @@ PINNED = [
     # Object.entries puts an index-like key first, so upstream maps `1` before `nope`.
     _q("comment", ["start", {"nope": None, "1": None}, None]),
 ]
+
+
+def test_async_handlers_match_upstream(harness: Harness, schema: Schema) -> None:
+    """A coroutine that finishes without suspending, and one that raises."""
+    names = ["async.now", "async.throw"]
+    body = ["transform", [{"id": str(n), "name": name, "args": []} for n, name in enumerate(names)]]
+    expected = harness.call("query", body=body, userID="u")
+    actual = asyncio.run(handle_query_request(handler=make_handler(schema), schema=schema, body=body, user_id="u"))
+    assert _comparable(actual.to_json()) == _comparable(expected)
 
 
 def test_each_thrown_shape_matches_upstream(harness: Harness, schema: Schema) -> None:

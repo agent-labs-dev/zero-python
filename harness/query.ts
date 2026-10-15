@@ -159,6 +159,8 @@ function makeHandler() {
       open();
       return zql.user;
     }
+    if (name === 'async.now') return zql.issue;
+    if (name === 'async.throw') throw new Error('nope');
     return mustGetQuery(queries, name).fn({args, ctx: undefined} as never);
   };
 }

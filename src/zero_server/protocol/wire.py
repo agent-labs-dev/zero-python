@@ -180,7 +180,7 @@ class RefusesNullOffWire(WireModel):
     @model_validator(mode="before")
     @classmethod
     def _refuse_null_for_optional(cls, data: Any, info: ValidationInfo) -> Any:
-        if _off_the_wire(info) and isinstance(data, dict):
+        if _off_the_wire(info) and isinstance(data, dict):  # python-only: the server writes these, never parses them
             for key in _optional_keys(cls):
                 if key in data and data[key] is None:
                     raise ValueError(f"{key} may be absent but not null")

@@ -30,12 +30,12 @@ class QuerySuccess:
         self._user_id = user_id
 
     @property
-    def user_id(self) -> str | None:
+    def user_id(self) -> str | None:  # python-only: reading the response back in Python
         return None if self._user_id is _UNSET else self._user_id
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {"kind": "QueryResponse", "queries": [q.to_json() for q in self.queries]}
-        if self._user_id is not _UNSET:
+        if self._user_id is not _UNSET:  # python-only: a response built in Python without a user ID
             out["userID"] = dump_json(self._user_id)
         return out
 
