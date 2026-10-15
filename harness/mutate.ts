@@ -80,6 +80,11 @@ const mutators: Record<string, (tx: Tx, args: Args) => Promise<void>> = {
     await put(tx, args);
     throw new TypeError(String(args.message ?? 'bad type'));
   },
+  // A `details` property only when the args have one, which may be null.
+  'item.detailsError': async (tx, args) => {
+    await put(tx, args);
+    throw Object.assign(new TypeError('with details'), 'details' in args ? {details: args.details} : {});
+  },
   'crud.insert': (tx, args) => tx.mutate[args.table!].insert(args.row),
   'crud.upsert': (tx, args) => tx.mutate[args.table!].upsert(args.row),
   'crud.update': (tx, args) => tx.mutate[args.table!].update(args.row),
@@ -145,6 +150,24 @@ export function mutate({
   userID: string | null;
 }) {
   return handleMutateRequest({dbProvider: provider(url), handler, query, body: body as never, userID, logLevel: 'error'});
+}
+
+/** handleMutateRequest over a raw request, its body given as base64, answered as the text a server would send. */
+export async function mutateRequest({
+  url,
+  search,
+  body,
+  userID,
+}: {
+  url: string;
+  search: string;
+  body: string;
+  userID: string | null;
+}) {
+  const request = new Request(`http://localhost/mutate?${search}`, {method: 'POST', body: Buffer.from(body, 'base64')});
+  return JSON.stringify(
+    await handleMutateRequest({dbProvider: provider(url), handler, request, userID, logLevel: 'error'}),
+  );
 }
 
 export type {TransactionProviderHooks};

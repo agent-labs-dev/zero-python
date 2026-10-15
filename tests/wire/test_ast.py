@@ -3,7 +3,7 @@
 from typing import Any
 
 import pytest
-from hypothesis import given
+from hypothesis import example, given
 from pydantic import ValidationError
 
 from tests.harness import Harness, HarnessError
@@ -29,7 +29,21 @@ def test_round_trips(value: Any) -> None:
     assert AST.from_json(value).to_json() == value
 
 
+def _eq(left: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "simple", "op": "=", "left": left, "right": {"type": "literal", "value": 1}}
+
+
 @given(asts() | asts(static=True))
+@example(
+    {
+        "table": "t",
+        "where": {
+            "type": "and",
+            "conditions": [_eq({"type": "column", "name": n}) for n in ("b\ud800", "a")]
+            + [_eq({"type": "literal", "value": "a"})],
+        },
+    }
+)
 def test_normalizes_like_upstream(harness: Harness, value: Any) -> None:
     try:
         expected: Any = harness.call("normalizeAST", ast=value)

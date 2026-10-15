@@ -55,6 +55,14 @@ async def type_error(tx: Tx, args: dict[str, Any]) -> None:
     raise TypeError(_js_string(args.get("message"), "bad type"))
 
 
+async def details_error(tx: Tx, args: dict[str, Any]) -> None:
+    await put(tx, args)
+    error = TypeError("with details")
+    if "details" in args:
+        error.details = args["details"]  # ty: ignore[unresolved-attribute]
+    raise error
+
+
 async def db_error(tx: Tx, _args: dict[str, Any]) -> None:
     await tx.db_transaction.query("SELECT * FROM missing_table")
 
@@ -91,6 +99,7 @@ MUTATORS: dict[str, Callable[[Tx, dict[str, Any]], Awaitable[None]]] = {
     "item.appError": app_error,
     "item.error": error,
     "item.typeError": type_error,
+    "item.detailsError": details_error,
     "item.dbError": db_error,
 }
 

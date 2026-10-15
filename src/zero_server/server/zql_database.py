@@ -8,7 +8,7 @@ A driver plugs in as a `DBConnection`: something that opens a transaction and ha
 supported driver.
 """
 
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, Protocol, overload
 
@@ -17,8 +17,8 @@ from zero_server.query.builder import OneQuery, Query
 from zero_server.schema import Schema
 from zero_server.server.process_mutations import TransactionProviderHooks, TransactionProviderInput
 from zero_server.server.server_schema import ServerSchema, get_server_schema
-from zero_server.server.transaction import DBTransaction, ServerTransaction
-from zero_server.shared.js import js_number, js_stringify
+from zero_server.server.transaction import DBTransaction, Row, ServerTransaction
+from zero_server.shared.js import js_number, js_stringify, to_well_formed
 from zero_server.z2s.sql import ident
 
 
@@ -42,6 +42,33 @@ class DBConnection[W](Protocol):
     """
 
     async def transaction[R](self, fn: Callable[[DBTransaction[W]], Awaitable[R]]) -> R: ...
+
+
+def _well_formed(value: Any) -> Any:
+    match value:
+        case str():
+            return to_well_formed(value)
+        case list() | tuple():
+            return [_well_formed(item) for item in value]
+        case _:
+            return value
+
+
+class _WellFormedTransaction[W]:
+    """Binds each string with its lone surrogates replaced by U+FFFD.
+
+    postgres.js encodes a string parameter to UTF-8, which replaces them; Python's drivers refuse them.
+    """
+
+    def __init__(self, tx: DBTransaction[W]) -> None:
+        self._tx = tx
+
+    @property
+    def wrapped_transaction(self) -> W:
+        return self._tx.wrapped_transaction
+
+    async def query(self, sql: str, params: Sequence[Any] = ()) -> list[Row]:
+        return await self._tx.query(sql, [_well_formed(p) for p in params])
 
 
 class _SessionOpener[W](Protocol):
@@ -139,7 +166,8 @@ class ZQLDatabase[W]:
             upstream_schema="", client_group_id="", client_id="", mutation_id=0
         )
 
-        async def run(tx: DBTransaction[W]) -> R:
+        async def run(driver_tx: DBTransaction[W]) -> R:
+            tx = _WellFormedTransaction(driver_tx)
             if self.schema is not None and self._server_schema is None:
                 self._server_schema = await get_server_schema(tx, self.schema)
             server_tx = ServerTransaction(

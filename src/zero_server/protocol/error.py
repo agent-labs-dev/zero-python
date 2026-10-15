@@ -6,7 +6,7 @@ Ported from rocicorp/mono `packages/zero-protocol/src/error.ts`, `error-kind-enu
 """
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, StrictStr
 
@@ -65,16 +65,26 @@ type ZeroCacheFailedReason = Literal[ErrorReason.TIMEOUT, ErrorReason.PARSE, Err
 
 
 class _PushFailedBase(WireModel):
+    """Fields in the order upstream writes them; each subclass narrows `origin` and `reason` in place."""
+
     kind: Literal[ErrorKind.PUSH_FAILED] = ErrorKind.PUSH_FAILED
-    details: JSONValue | None = None
+    origin: ErrorOrigin
+    reason: ErrorReason
+    message: StrictStr
     # The mutations that went unprocessed, which can be a tail of the request's.
     mutation_ids: list[MutationID] = Field(alias="mutationIDs")
-    message: StrictStr
+    details: JSONValue | None = None
 
 
 class ServerPushFailed(_PushFailedBase):
     origin: Literal[ErrorOrigin.SERVER] = ErrorOrigin.SERVER
     reason: ServerPushFailedReason
+
+    def _ordered(self, dumped: dict[str, Any]) -> dict[str, Any]:
+        if self.reason == ErrorReason.UNSUPPORTED_PUSH_VERSION:
+            # Upstream writes this one failure with `message` last.
+            dumped["message"] = dumped.pop("message")
+        return dumped
 
 
 class ZeroCachePushHTTPFailed(_PushFailedBase):
@@ -93,10 +103,14 @@ type PushFailedBody = ServerPushFailed | ZeroCachePushHTTPFailed | ZeroCachePush
 
 
 class _TransformFailedBase(WireModel):
+    """Fields in the order upstream writes them; each subclass narrows `origin` and `reason` in place."""
+
     kind: Literal[ErrorKind.TRANSFORM_FAILED] = ErrorKind.TRANSFORM_FAILED
-    details: JSONValue | None = None
-    query_ids: list[StrictStr] = Field(alias="queryIDs")
+    origin: ErrorOrigin
+    reason: ErrorReason
     message: StrictStr
+    query_ids: list[StrictStr] = Field(alias="queryIDs")
+    details: JSONValue | None = None
 
 
 class ServerTransformFailed(_TransformFailedBase):

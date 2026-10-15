@@ -1,7 +1,7 @@
 // The query half of the wire tier: the published handleQueryRequest over queries that interpret a
 // builder program, which tests/wire/programs.py interprets the same way in Python.
 import {createBuilder, defineQueries, defineQuery, mustGetQuery} from '@rocicorp/zero';
-import {handleQueryRequest} from '@rocicorp/zero/server';
+import {ApplicationError, handleQueryRequest} from '@rocicorp/zero/server';
 import {zeroPostgresJS} from '@rocicorp/zero/server/adapters/postgresjs';
 import postgres from 'postgres';
 import {QueryParseError} from './node_modules/@rocicorp/zero/out/zql/src/query/error.js';
@@ -106,17 +106,46 @@ const queries = defineQueries({
   appError: defineQuery(() => {
     throw new Error('nope');
   }),
+  appDetails: defineQuery((({args}: {args: unknown}) => {
+    throw new ApplicationError('app', {details: args as never});
+  }) as never),
+  returns: defineQuery((({args}: {args: string}) => RETURNS[args]) as never),
 });
 
+/** What a query function may return in place of a query, by name. */
+const RETURNS: Record<string, unknown> = {number: 5, fraction: 1.5, string: 'x', boolean: true, object: {}, array: []};
+
+/**
+ * Queries by name through the registry, except `raw`, which returns `RETURNS[args]` itself, and `gate.wait`,
+ * which finishes only once `gate.open` has run in the same request.
+ */
+function makeHandler() {
+  let open!: () => void;
+  const gate = new Promise<void>(resolve => (open = resolve));
+  return async (name: string, args: unknown) => {
+    if (name === 'raw') return RETURNS[args as string] as never;
+    if (name === 'gate.wait') {
+      await gate;
+      return zql.issue;
+    }
+    if (name === 'gate.open') {
+      open();
+      return zql.user;
+    }
+    return mustGetQuery(queries, name).fn({args, ctx: undefined} as never);
+  };
+}
+
 export function query({body, userID}: {body: unknown; userID: string | null}) {
-  return handleQueryRequest({
-    handler: (name, args) => mustGetQuery(queries, name).fn({args, ctx: undefined} as never),
-    schema,
-    body: body as never,
-    query: {},
-    userID,
-    logLevel: 'error',
-  });
+  const handler = makeHandler();
+  return handleQueryRequest({handler, schema, body: body as never, query: {}, userID, logLevel: 'error'});
+}
+
+/** handleQueryRequest over a raw request body, given as base64, answered as the text a server would send. */
+export async function queryRequest({body, userID}: {body: string; userID: string | null}) {
+  const request = new Request('http://localhost/query', {method: 'POST', body: Buffer.from(body, 'base64')});
+  const handler = makeHandler();
+  return JSON.stringify(await handleQueryRequest({handler, schema, request, userID, logLevel: 'error'}));
 }
 
 export function schemaJSON() {

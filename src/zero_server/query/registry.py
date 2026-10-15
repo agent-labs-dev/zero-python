@@ -15,7 +15,7 @@ from typing import Any, overload
 
 from pydantic import ValidationError
 
-from zero_server.query.builder import Query
+from zero_server.query.builder import Query, as_query_internals
 from zero_server.shared.json import JSONValue
 from zero_server.shared.registry import Registry, build, merge, value_at_path
 
@@ -111,7 +111,7 @@ class CustomQuery:
 
     def fn(self, *, args: JSONValue | None = None, ctx: Any = None) -> Query:
         validated = validate_input(self.query_name, args, self._definition.validator, "query")
-        return self._definition.fn(args=validated, ctx=ctx)
+        return as_query_internals(self._definition.fn(args=validated, ctx=ctx))
 
     def __call__(self, args: JSONValue | None = None) -> QueryRequest:
         return QueryRequest(query=self, args=args)

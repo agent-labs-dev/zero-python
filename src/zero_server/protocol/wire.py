@@ -3,13 +3,16 @@
 Upstream's optional fields are absent when unset, never `null`. zero-cache hashes the ASTs it receives,
 so `"limit": null` and no `limit` are two different queries to it. A model therefore drops a `None`
 field when it serializes, except a field listed in `nullable`, where `None` is a real JSON `null` and
-survives whenever the caller set it.
+survives whenever the caller set it. For the same reason keys come out in the order upstream writes
+them: fields are declared in that order, and `_ordered` covers a model upstream writes more than one way.
 
 Parsing is the mirror image: an optional field upstream may be absent but not `null`, so a `null` is
-refused unless the field is `nullable`.
+refused unless the field is `nullable`. Off the wire only the upstream (alias) keys count; a field's
+Python name is for building a model in Python, and on the wire it is just another unknown key.
 """
 
 import functools
+from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Self
 
 from pydantic import (
@@ -34,7 +37,7 @@ WIRE: Any = {"source": "wire"}
 
 
 def parse_wire[T](adapter: TypeAdapter[T], value: object) -> T:
-    return adapter.validate_python(value, context=WIRE)
+    return adapter.validate_python(value, context=WIRE, by_alias=True, by_name=False)
 
 
 def _validate_off_the_wire(value: Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo) -> Any:
@@ -54,7 +57,8 @@ it, so a value the schema refuses can still reach SQL or the query endpoint's re
 class WireModel(BaseModel):
     model_config = ConfigDict(
         frozen=True,
-        populate_by_name=True,
+        validate_by_alias=True,
+        validate_by_name=True,
         serialize_by_alias=True,
         extra="ignore",
     )
@@ -82,27 +86,41 @@ class WireModel(BaseModel):
             if value is None and not (name in self.nullable and name in self.model_fields_set):
                 continue
             out[key] = value
-        return out
+        return self._ordered(out)
+
+    def _ordered(self, dumped: dict[str, Any]) -> dict[str, Any]:
+        return dumped
 
     def to_json(self) -> dict[str, JSONValue]:
         """The JSON object upstream would send for this model."""
-        return self.model_dump(mode="json")
+        # Pydantic 2.14's JSON mode replaces a lone surrogate in a dict key with U+FFFD, so
+        # this converts by hand. Back to `mode="json"` once Pydantic keeps such keys intact.
+        return _jsonable(self.model_dump(mode="python"))
 
     @classmethod
     def from_json(cls, value: object) -> Self:
-        return cls.model_validate(value, context=WIRE)
+        return cls.model_validate(value, context=WIRE, by_alias=True, by_name=False)
+
+
+def _jsonable(value: Any) -> Any:
+    match value:
+        case StrEnum():
+            return value.value
+        case list() | tuple():
+            return [_jsonable(item) for item in value]
+        case dict():
+            return {key: _jsonable(item) for key, item in value.items()}
+        case _:
+            return value
 
 
 @functools.cache
 def _optional_keys(cls: type[WireModel]) -> tuple[str, ...]:
-    """The keys, by name or alias, of the fields that may be absent but not null."""
+    """The wire keys (aliases) of the fields that may be absent but not null."""
     return tuple(
-        dict.fromkeys(
-            key
-            for name, field in cls.model_fields.items()
-            if not (name in cls.nullable or field.is_required())
-            for key in (name, field.alias or name)
-        )
+        field.alias or name
+        for name, field in cls.model_fields.items()
+        if not (name in cls.nullable or field.is_required())
     )
 
 

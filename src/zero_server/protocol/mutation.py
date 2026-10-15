@@ -4,7 +4,7 @@ Ported from rocicorp/mono `packages/zero-protocol/src/mutation.ts` and `mutation
 zero/v1.10.0 (905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
 """
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, StrictBool, StrictStr
 
@@ -130,4 +130,11 @@ class MutationResponse(WireModel):
     result: MutationResult
 
     def to_json(self) -> dict[str, JSONValue]:
-        return {"id": self.id.to_json(), "result": self.result.to_json()}
+        # Upstream writes a response's ID `clientID` first, unlike the IDs a failed push lists.
+        mutation_id = self.id.to_json()
+        return {"id": {"clientID": mutation_id["clientID"], "id": mutation_id["id"]}, "result": self.result.to_json()}
+
+    def _ordered(self, dumped: dict[str, Any]) -> dict[str, Any]:
+        # Upstream writes a response's ID `clientID` first, unlike the IDs a failed push lists.
+        mutation_id = dumped["id"]
+        return {**dumped, "id": {"clientID": mutation_id["clientID"], "id": mutation_id["id"]}}

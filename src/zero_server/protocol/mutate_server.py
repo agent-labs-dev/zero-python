@@ -20,14 +20,13 @@ class MutateSuccess(WireModel):
     nullable = frozenset({"user_id"})
 
     kind: Literal["MutateResponse"] = "MutateResponse"
-    user_id: StrictStr | None = Field(default=None, alias="userID")
     mutations: list[MutationResponse]
+    user_id: StrictStr | None = Field(default=None, alias="userID")
 
     def to_json(self) -> dict[str, JSONValue]:
-        out: dict[str, JSONValue] = {"kind": self.kind}
+        out: dict[str, JSONValue] = {"kind": self.kind, "mutations": [m.to_json() for m in self.mutations]}
         if self.user_id is not None or "user_id" in self.model_fields_set:
             out["userID"] = self.user_id
-        out["mutations"] = [m.to_json() for m in self.mutations]
         return out
 
 

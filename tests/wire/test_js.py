@@ -1,4 +1,4 @@
-"""`js_string` stringifies as JavaScript's `String()` does."""
+"""`js_string` and `js_stringify` stringify as JavaScript's `String()` and `JSON.stringify` do."""
 
 from typing import Any
 
@@ -6,8 +6,8 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from tests.harness import Harness
-from tests.strategies import scalars
-from zero_server.shared.js import js_sort, js_string
+from tests.strategies import json_values, scalars
+from zero_server.shared.js import js_sort, js_string, js_stringify
 
 
 @given(
@@ -15,6 +15,11 @@ from zero_server.shared.js import js_sort, js_string
 )
 def test_matches_string(harness: Harness, value: Any) -> None:
     assert js_string(value) == harness.call("jsString", value=value)
+
+
+@given(json_values)
+def test_matches_json_stringify(harness: Harness, value: Any) -> None:
+    assert js_stringify(value) == harness.call("jsonStringify", value=value)
 
 
 @given(st.data())
