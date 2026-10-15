@@ -49,4 +49,5 @@ def postgres_server() -> Generator[str]:
             time.sleep(0.5)
         yield f"postgresql://postgres:postgres@127.0.0.1:{port}"
     finally:
-        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+        # -v: the image declares a data volume, which would otherwise outlive the container.
+        subprocess.run(["docker", "rm", "-f", "-v", name], capture_output=True)

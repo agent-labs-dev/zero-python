@@ -9,9 +9,9 @@ optimistically, and this one runs authoritatively inside the mutation's transact
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, overload
 
-from zero_python.query.registry import validate_input
+from zero_python.query.registry import is_schema_validator, validate_input
 from zero_python.shared.json import JSONValue
 from zero_python.shared.registry import Registry, build, merge, value_at_path
 
@@ -25,11 +25,21 @@ class MutatorDefinition:
     validator: Any = None
 
 
-def define_mutator(fn_or_validator: Any, fn: MutatorFn | None = None) -> MutatorDefinition:
-    """`define_mutator(fn)` or `define_mutator(validator, fn)`; see `define_query` for validators."""
-    if fn is None:
-        return MutatorDefinition(fn=fn_or_validator)
-    return MutatorDefinition(fn=fn, validator=fn_or_validator)
+@overload
+def define_mutator(fn_or_validator: MutatorFn, fn: None = None) -> MutatorDefinition: ...
+@overload
+def define_mutator(fn_or_validator: Any, fn: MutatorFn) -> MutatorDefinition: ...
+@overload
+def define_mutator(fn_or_validator: Any, fn: None = None) -> Callable[[MutatorFn], MutatorDefinition]: ...
+def define_mutator(fn_or_validator: Any, fn: MutatorFn | None = None) -> Any:
+    """Define a mutator, called as `await fn(args=..., ctx=..., tx=...)`, in the three forms of
+    `define_query`: `define_mutator(fn)` or `@define_mutator`, `define_mutator(validator, fn)`, and
+    `@define_mutator(ArgsModel)`."""
+    if fn is not None:
+        return MutatorDefinition(fn=fn, validator=fn_or_validator)
+    if is_schema_validator(fn_or_validator):
+        return lambda decorated: MutatorDefinition(fn=decorated, validator=fn_or_validator)
+    return MutatorDefinition(fn=fn_or_validator)
 
 
 @dataclass(frozen=True)

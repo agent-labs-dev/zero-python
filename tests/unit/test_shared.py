@@ -116,6 +116,8 @@ def test_js_number(value: float, expected: str) -> None:
 
 def test_js_string_falls_back_to_str() -> None:
     assert js_string(object) == str(object)
+    assert js_string({"a": 1}) == "[object Object]"
+    assert js_string([{"a": 1}, [1, None]]) == "[object Object],1,"
 
 
 def test_js_sort_long_arrays_use_timsort() -> None:

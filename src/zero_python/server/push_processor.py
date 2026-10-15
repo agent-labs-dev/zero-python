@@ -30,6 +30,7 @@ class PushProcessor[T]:
         self, mutators: Registry | Mapping[str, Any], query: Mapping[str, str], body: object
     ) -> MutateResponse:
         """Process a push. A mutator is a `Mutator` from `define_mutators`, or a plain `async (tx, args)`."""
+        check(body is not None, "body is required when using query params directly")
 
         async def handler(transact: TransactFn[T], _mutation: CustomMutation) -> MutationResponse:
             async def dispatch(tx: T, name: str, args: JSONValue | None) -> None:

@@ -16,6 +16,8 @@ def js_string(value: object) -> str:
             return js_number(value)
         case list() | tuple():
             return ",".join("" if item is None else js_string(item) for item in value)
+        case dict():
+            return "[object Object]"
         case _:
             return str(value)
 

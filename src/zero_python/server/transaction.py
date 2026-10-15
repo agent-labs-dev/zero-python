@@ -6,10 +6,10 @@ Apache-2.0, Copyright Rocicorp.
 """
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, overload
 
 if TYPE_CHECKING:
-    from zero_python.query.builder import Query
+    from zero_python.query.builder import OneQuery, Query
     from zero_python.schema import Schema
     from zero_python.server.crud import Mutate
     from zero_python.server.server_schema import ServerSchema
@@ -57,8 +57,13 @@ class ServerTransaction[W]:
         schema, server_schema = self._schemas("tx.mutate")
         return Mutate(schema, self.db_transaction, server_schema)
 
-    async def run(self, query: "Query") -> Any:
-        """Run a ZQL query inside this transaction, against Postgres."""
+    @overload
+    async def run[R](self, query: "OneQuery[R, Any]") -> R | None: ...
+    @overload
+    async def run[R](self, query: "Query[R, Any]") -> list[R]: ...
+    async def run(self, query: "Query[Any, Any]") -> Any:
+        """Run a ZQL query inside this transaction, against Postgres: a list of rows, or for a `one()`
+        query the row or `None`. Relationships come back nested under each row, under their names."""
         from zero_python.server.pg_query_executor import execute_postgres_query
 
         schema, server_schema = self._schemas("tx.run")

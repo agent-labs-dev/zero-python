@@ -1,55 +1,46 @@
-"""A transaction provider over SQLAlchemy's asyncio engine, with the asyncpg driver.
+"""A transaction provider over any Postgres driver, with `tx.mutate` and `tx.run` for mutators.
 
-Ported from rocicorp/mono `packages/zero-server/src/zql-database.ts` and
-`packages/zero-server/src/adapters/postgresjs.ts` at zero/v1.10.0
+Ported from rocicorp/mono `packages/zero-server/src/zql-database.ts` at zero/v1.10.0
 (905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+
+A driver plugs in as a `DBConnection`: something that opens a transaction and hands back a
+`DBTransaction` whose `query` takes `$1`-style placeholders. `zero_python.server.adapters` has one per
+supported driver.
 """
 
-from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
-
-from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from collections.abc import Awaitable, Callable
+from typing import Any, Protocol, overload
 
 from zero_python.protocol.mutation import CleanupResultsArg, CleanupResultsBulkArg, MutationResponse
-from zero_python.query.builder import Query
+from zero_python.query.builder import OneQuery, Query
 from zero_python.schema import Schema
 from zero_python.server.process_mutations import TransactionProviderHooks, TransactionProviderInput
 from zero_python.server.server_schema import ServerSchema, get_server_schema
-from zero_python.server.transaction import Row, ServerTransaction
+from zero_python.server.transaction import DBTransaction, ServerTransaction
 from zero_python.shared.js import js_stringify
 from zero_python.z2s.sql import ident
 
 
 class PostgresError(Exception):
-    """A statement Postgres refused. Named as the postgres.js adapter names its errors upstream."""
+    """A statement Postgres refused, carrying its primary message.
+
+    Named as the postgres.js adapter names its errors upstream, so the error a client sees for a refused
+    statement is the same whichever server ran it.
+    """
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
 
 
-class SQLAlchemyTransaction:
-    def __init__(self, connection: AsyncConnection) -> None:
-        self._connection = connection
+class DBConnection[W](Protocol):
+    """Opens one transaction, runs `fn` in it, and commits when `fn` returns or rolls back when it raises."""
 
-    @property
-    def wrapped_transaction(self) -> AsyncConnection:
-        return self._connection
-
-    async def query(self, sql: str, params: Sequence[Any] = ()) -> list[Row]:
-        try:
-            result = await self._connection.exec_driver_sql(sql, tuple(params))
-        except DBAPIError as error:
-            cause = error.orig.__cause__ if error.orig is not None and error.orig.__cause__ is not None else error.orig
-            # asyncpg's `message` is the primary message alone, which is all postgres.js reports.
-            message = getattr(cause, "message", None)
-            raise PostgresError(message if isinstance(message, str) else str(cause)) from error
-        return [dict(row) for row in result.mappings()] if result.returns_rows else []
+    async def transaction[R](self, fn: Callable[[DBTransaction[W]], Awaitable[R]]) -> R: ...
 
 
 class _Hooks:
-    def __init__(self, tx: SQLAlchemyTransaction, transaction_input: TransactionProviderInput) -> None:
+    def __init__(self, tx: DBTransaction[Any], transaction_input: TransactionProviderInput) -> None:
         self._tx = tx
         self._input = transaction_input
         self._schema = ident(transaction_input.upstream_schema)
@@ -94,28 +85,28 @@ class _Hooks:
             )
 
 
-class SQLAlchemyDatabase:
-    """Runs each mutation in one transaction on `engine`, which must use the asyncpg driver.
+class ZQLDatabase[W]:
+    """Runs each mutation in one transaction of `connection`.
 
     With a `schema`, mutators get `tx.mutate` and `tx.run`, and the first transaction checks the schema
-    against the database's columns, as `ZQLDatabase` does upstream.
+    against the database's columns.
     """
 
-    def __init__(self, engine: AsyncEngine, schema: Schema | None = None) -> None:
-        self.engine = engine
+    def __init__(self, connection: DBConnection[W], schema: Schema | None = None) -> None:
+        self.connection = connection
         self.schema = schema
         self._server_schema: ServerSchema | None = None
 
     async def transaction[R](
         self,
-        callback: Callable[[ServerTransaction[AsyncConnection], TransactionProviderHooks], Awaitable[R]],
+        callback: Callable[[ServerTransaction[W], TransactionProviderHooks], Awaitable[R]],
         transaction_input: TransactionProviderInput | None = None,
     ) -> R:
         transaction_input = transaction_input or TransactionProviderInput(
             upstream_schema="", client_group_id="", client_id="", mutation_id=0
         )
-        async with self.engine.begin() as connection:
-            tx = SQLAlchemyTransaction(connection)
+
+        async def run(tx: DBTransaction[W]) -> R:
             if self.schema is not None and self._server_schema is None:
                 self._server_schema = await get_server_schema(tx, self.schema)
             server_tx = ServerTransaction(
@@ -123,10 +114,16 @@ class SQLAlchemyDatabase:
             )
             return await callback(server_tx, _Hooks(tx, transaction_input))
 
-    async def run(self, query: Query) -> Any:
-        """Run a ZQL query in a transaction of its own."""
+        return await self.connection.transaction(run)
 
-        async def run(tx: ServerTransaction[AsyncConnection], _hooks: TransactionProviderHooks) -> Any:
+    @overload
+    async def run[R](self, query: OneQuery[R, Any]) -> R | None: ...
+    @overload
+    async def run[R](self, query: Query[R, Any]) -> list[R]: ...
+    async def run(self, query: Query[Any, Any]) -> Any:
+        """Run a ZQL query in a transaction of its own; see `ServerTransaction.run`."""
+
+        async def run(tx: ServerTransaction[W], _hooks: TransactionProviderHooks) -> Any:
             return await tx.run(query)
 
         return await self.transaction(run)

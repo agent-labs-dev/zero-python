@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,6 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from tests.postgres import postgres_server
 from tests.wire import seed
+from zero_python.schema import Schema
+from zero_python.server.adapters.asyncpg import AsyncpgDatabase
+from zero_python.server.adapters.psycopg import PsycopgDatabase
+from zero_python.server.adapters.sqlalchemy import SQLAlchemyDatabase
+from zero_python.server.zql_database import ZQLDatabase
 
 DDL = [
     "CREATE SCHEMA zero_0",
@@ -45,6 +50,37 @@ DDL = [
     "CREATE TABLE pair (a TEXT, b INTEGER, note TEXT, PRIMARY KEY (a, b))",
 ]
 
+ADAPTERS = ["sqlalchemy", "asyncpg", "psycopg"]
+"""Every Python adapter runs the same wire and SQL tiers."""
+
+type Databases = dict[str, Callable[[Schema | None], ZQLDatabase[Any]]]
+
+
+async def open_adapters(url: str, engine: AsyncEngine) -> tuple[Databases, Callable[[], Any]]:
+    """A `ZQLDatabase` factory per adapter on the database at `url`, and a coroutine that closes them."""
+    import asyncpg
+    from psycopg_pool import AsyncConnectionPool
+
+    pool = await asyncpg.create_pool(url, min_size=1, max_size=4)
+    psycopg_pool = AsyncConnectionPool(url, min_size=1, max_size=4, open=False)
+    await psycopg_pool.open()
+
+    async def close() -> None:
+        await pool.close()
+        await psycopg_pool.close()
+
+    return {
+        "sqlalchemy": lambda schema: SQLAlchemyDatabase(engine, schema),
+        "asyncpg": lambda schema: AsyncpgDatabase(pool, schema),
+        "psycopg": lambda schema: PsycopgDatabase(psycopg_pool, schema),
+    }, close
+
+
+# Both drivers prepare statements. Once Postgres switches one to a generic plan, a parameter cast that
+# cannot succeed is evaluated per row instead of at planning, so it stops failing against an empty table,
+# and when that happens depends on each pooled connection's history. Custom plans keep it deterministic.
+DETERMINISTIC_PLANS = "ALTER DATABASE {name} SET plan_cache_mode = force_custom_plan"
+
 RESET = 'TRUNCATE item, things, pair, zero_0."clients", zero_0."mutations"'
 
 
@@ -56,6 +92,7 @@ class WireDB:
     ts_url: str
     py_engine: AsyncEngine
     ts_engine: AsyncEngine
+    py: Databases
 
     def run(self, coro: Any) -> Any:
         return self.runner.run(coro)
@@ -98,6 +135,7 @@ class SqlDB:
     runner: asyncio.Runner
     url: str
     engine: AsyncEngine
+    py: Databases
 
     def run(self, coro: Any) -> Any:
         return self.runner.run(coro)
@@ -114,6 +152,7 @@ def sql_db(wire_db: WireDB) -> Iterator[SqlDB]:
         async with admin.connect() as conn:
             await conn.execute(text("DROP DATABASE IF EXISTS zp_sql"))
             await conn.execute(text("CREATE DATABASE zp_sql"))
+            await conn.execute(text(DETERMINISTIC_PLANS.format(name="zp_sql")))
         await admin.dispose()
         engine = create_async_engine(f"postgresql+asyncpg://{base.split('://', 1)[1]}/zp_sql")
         async with engine.begin() as conn:
@@ -124,7 +163,9 @@ def sql_db(wire_db: WireDB) -> Iterator[SqlDB]:
         return engine
 
     engine = wire_db.run(setup())
-    yield SqlDB(runner=wire_db.runner, url=f"{base}/zp_sql", engine=engine)
+    py, close = wire_db.run(open_adapters(f"{base}/zp_sql", engine))
+    yield SqlDB(runner=wire_db.runner, url=f"{base}/zp_sql", engine=engine, py=py)
+    wire_db.run(close())
     wire_db.run(engine.dispose())
 
 
@@ -140,6 +181,7 @@ def wire_db() -> Iterator[WireDB]:
                 for name in ("zp_wire_ts", "zp_wire_py"):
                     await conn.execute(text(f"DROP DATABASE IF EXISTS {name}"))
                     await conn.execute(text(f"CREATE DATABASE {name}"))
+                    await conn.execute(text(DETERMINISTIC_PLANS.format(name=name)))
             await admin.dispose()
             engines = []
             for name in ("zp_wire_ts", "zp_wire_py"):
@@ -151,6 +193,8 @@ def wire_db() -> Iterator[WireDB]:
             return engines[0], engines[1]
 
         ts_engine, py_engine = runner.run(setup())
-        yield WireDB(runner=runner, ts_url=f"{base}/zp_wire_ts", py_engine=py_engine, ts_engine=ts_engine)
+        py, close = runner.run(open_adapters(f"{base}/zp_wire_py", py_engine))
+        yield WireDB(runner=runner, ts_url=f"{base}/zp_wire_ts", py_engine=py_engine, ts_engine=ts_engine, py=py)
+        runner.run(close())
         runner.run(ts_engine.dispose())
         runner.run(py_engine.dispose())

@@ -3,16 +3,16 @@
 import copy
 from typing import Any
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
 from tests.harness import Harness
 from tests.strategies import as_js
-from tests.wire.conftest import WireDB
+from tests.wire.conftest import ADAPTERS, WireDB
 from tests.wire.mutators import handler
 from zero_python.schema import load_schema
 from zero_python.server.process_mutations import handle_mutate_request
-from zero_python.server.sqlalchemy import SQLAlchemyDatabase
 
 QUERY = {"schema": "zero_0", "appID": "zero"}
 BODY = {
@@ -43,14 +43,15 @@ def perturbed(draw: st.DrawFn, base: dict[str, Any]) -> dict[str, Any]:
     return schema
 
 
-def test_incompatible_schemas_fail_like_upstream(harness: Harness, wire_db: WireDB) -> None:
+@pytest.mark.parametrize("adapter", ADAPTERS)
+def test_incompatible_schemas_fail_like_upstream(harness: Harness, wire_db: WireDB, adapter: str) -> None:
     base = harness.call("wireSchema")
 
     @given(perturbed(base))
     def check(schema: dict[str, Any]) -> None:
         wire_db.reset()
         expected = harness.call("mutateWithSchema", url=wire_db.ts_url, schema=schema, query=QUERY, body=BODY)
-        py_db = SQLAlchemyDatabase(wire_db.py_engine, load_schema(schema))
+        py_db = wire_db.py[adapter](load_schema(schema))
         actual = wire_db.run(
             handle_mutate_request(db_provider=py_db, handler=handler, query=QUERY, body=BODY, user_id=None)
         )
