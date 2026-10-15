@@ -190,3 +190,51 @@ async def test_sqlalchemy_refuses_an_unsupported_driver() -> None:
 
     with pytest.raises(ValueError, match="'pg8000' is not supported"):
         await sqlalchemy_transaction(Connection())  # ty: ignore[invalid-argument-type]
+
+
+# What a handler author imports. Removing one breaks consumers, so it fails here first.
+PUBLIC = [
+    "AST",
+    "Builder",
+    "CustomMutation",
+    "ErrorReason",
+    "ExpressionBuilder",
+    "JSONValue",
+    "MutateResponse",
+    "MutateSuccess",
+    "MutationAppError",
+    "MutationOk",
+    "MutationResponse",
+    "MutationZeroError",
+    "OneQuery",
+    "OutOfOrderMutation",
+    "PushBody",
+    "QueryRequestHandler",
+    "ServerPushFailed",
+    "TransactFn",
+    "server_ast",
+]
+
+
+@pytest.mark.parametrize("name", PUBLIC)
+def test_public_name(name: str) -> None:
+    import zero_server
+
+    assert name in zero_server.__all__
+    assert hasattr(zero_server, name)
+
+
+def test_public_mutate_response_is_what_the_endpoint_returns() -> None:
+    import zero_server
+    from zero_server.server import process_mutations
+
+    assert zero_server.MutateResponse is process_mutations.MutateResponse
+
+
+def test_server_ast_maps_to_server_names() -> None:
+    from zero_server import server_ast
+
+    schema = load_schema(SCHEMA)
+    ast: Any = server_ast(create_builder(schema).issue.where("ownerID", "u"), schema).to_json()
+    assert ast["table"] == "issues"
+    assert ast["where"]["left"]["name"] == "owner_id"
