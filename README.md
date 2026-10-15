@@ -92,6 +92,10 @@ The wire and SQL tiers run against every adapter.
 
 Run them with `uv run pytest` (needs Node 24 and Docker, or `ZERO_SERVER_PG` pointing at a Postgres) and `uv run --group e2e python e2e/run.py`.
 
+## Performance
+
+`uv run python -m bench` times zero-server and the published package on the same workloads: the query and mutate endpoints, request parsing, z2s, `tx.run` on every adapter, and startup. It prints a table with each case's Python/TypeScript ratio and writes it to `bench/build/`. CI fails a pull request when a case's ratio rises past `bench/baseline.json` by more than its tolerance. `bench/__init__.py` lists the cases and explains how to lower the baseline after a speedup.
+
 ## Known differences
 
 - **Parse errors.** When a request is malformed, the message after `Failed to parse push body:` describes the bad field in Pydantic's words, not valita's. The rest of the response matches, and zero-cache only logs it.
