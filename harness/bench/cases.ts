@@ -1,8 +1,14 @@
-// The TypeScript side of the benchmark tier (bench/ at the repo root runs it). Times the published
-// @rocicorp/zero package on the workloads in bench/workloads.json and prints one JSON line of results.
-// Usage: node harness/bench/cases.ts <config.json> <group>, where the group is a case name's first part.
+// The TypeScript side of the benchmark tier (bench/ at the repo root drives it). A worker that times the
+// published @rocicorp/zero package on the workloads in bench/workloads.json, one short burst at a time,
+// so the driver can alternate it with the Python worker (bench/cases.py) case by case.
+//
+// Usage: node harness/bench/cases.ts <config.json>, then one JSON request per line on stdin:
+//   {"op": "setup", "group": g}             -> {"cases": [[case, impl], ...]}
+//   {"op": "warm", "case", "impl", "ms"}    -> {}: run for ms, then size a sample to SAMPLE_MS
+//   {"op": "time", "case", "impl", "ms"}    -> {"us": median microseconds per call over ms}
 import {readFileSync} from 'node:fs';
 import {performance} from 'node:perf_hooks';
+import {createInterface} from 'node:readline';
 import {zeroPostgresJS} from '@rocicorp/zero/server/adapters/postgresjs';
 import postgres from 'postgres';
 import {handleMutateRequest} from '@rocicorp/zero/server';
@@ -16,12 +22,11 @@ import {asQueryInternals} from '../node_modules/@rocicorp/zero/out/zql/src/query
 import {getServerSchema} from '../node_modules/@rocicorp/zero/out/zero-server/src/schema.js';
 import {ZQLDatabase} from '../node_modules/@rocicorp/zero/out/zero-server/src/zql-database.js';
 
-// Upstream logs the failures it handles; stdout carries the results.
+// Upstream logs the failures it handles; stdout carries the protocol.
 console.log = console.info = console.debug = console.warn = console.error = () => {};
 
 type Config = {
   filter: string;
-  budgetMs: number;
   workloads: string;
   queryURL: string;
   mutateURL: string;
@@ -34,43 +39,48 @@ type Program = {table: string; ops: unknown[][]};
 const config: Config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 const W = JSON.parse(readFileSync(config.workloads, 'utf8'));
 const filter = new RegExp(config.filter);
-const group = process.argv[3];
-const results: {case: string; impl: string; median_us: number; samples: number}[] = [];
 
-const WARMUP = 0.5; // of the budget
+/** A sample takes at least this long, so timer resolution and a stray interrupt matter less. */
 const SAMPLE_MS = 1;
 
-/** The median time of one call of `fn`, by the same procedure as bench/cases.py. */
-async function bench(name: string, impl: string, fn: () => unknown) {
+type Case = {fn: () => unknown; loop: (n: number) => Promise<void> | void; inner: number};
+const cases = new Map<string, Case>();
+let registered: [string, string][] = [];
+
+function register(name: string, impl: string, fn: () => unknown) {
   if (!filter.test(name)) return;
-  const first = fn();
-  const isAsync = first instanceof Promise;
-  if (isAsync) await first;
-  const loop = isAsync
-    ? async (n: number) => {
-        for (let i = 0; i < n; i++) await fn();
-      }
-    : (n: number) => {
-        for (let i = 0; i < n; i++) fn();
-      };
-  // Warm up before calibrating, so the JIT has settled by the time samples are taken.
-  const warmStart = performance.now();
-  const warmEnd = warmStart + config.budgetMs * WARMUP;
+  cases.set(`${name} ${impl}`, {fn, loop: () => {}, inner: 1});
+  registered.push([name, impl]);
+}
+
+async function warm(c: Case, ms: number) {
+  const first = c.fn();
+  if (first instanceof Promise) {
+    await first;
+    c.loop = async n => {
+      for (let i = 0; i < n; i++) await c.fn();
+    };
+  } else {
+    c.loop = n => {
+      for (let i = 0; i < n; i++) c.fn();
+    };
+  }
+  const start = performance.now();
   let calls = 0;
-  for (; performance.now() < warmEnd || calls < 5; calls++) await loop(1);
-  // Enough calls per sample that one sample takes at least SAMPLE_MS, so timer resolution and a
-  // stray interrupt matter less.
-  const perCall = (performance.now() - warmStart) / calls;
-  const inner = Math.max(1, Math.min(10_000, Math.ceil(SAMPLE_MS / perCall)));
+  for (; performance.now() < start + ms || calls < 5; calls++) await c.loop(1);
+  c.inner = Math.max(1, Math.min(10_000, Math.ceil(SAMPLE_MS / ((performance.now() - start) / calls))));
+}
+
+async function time(c: Case, ms: number): Promise<number> {
   const samples: number[] = [];
-  const end = performance.now() + config.budgetMs;
-  while ((performance.now() < end || samples.length < 7) && samples.length < 5000) {
+  const end = performance.now() + ms;
+  while (performance.now() < end || samples.length < 1) {
     const t0 = performance.now();
-    await loop(inner);
-    samples.push(((performance.now() - t0) * 1000) / inner);
+    await c.loop(c.inner);
+    samples.push(((performance.now() - t0) * 1000) / c.inner);
   }
   samples.sort((a, b) => a - b);
-  results.push({case: name, impl, median_us: samples[samples.length >> 1], samples: samples.length});
+  return samples[samples.length >> 1];
 }
 
 const withLimit = (p: Program, n: number): Program => ({...p, ops: p.ops.map(o => o.map(x => (x === 'N' ? n : x)))});
@@ -111,22 +121,16 @@ function checkPush(r: Any, n: number) {
   }
 }
 
-async function withQueryDB<R>(fn: (sql: postgres.Sql) => Promise<R>): Promise<R> {
-  const sql = postgres(config.queryURL, {onnotice: () => {}});
-  try {
-    return await fn(sql);
-  } finally {
-    await sql.end();
-  }
-}
+let querySQL: postgres.Sql | undefined;
+const queryDB = () => (querySQL ??= postgres(config.queryURL, {onnotice: () => {}}));
 
-/** Each group's cases, with only the setup that group needs. */
+/** Each group's cases, with only the setup that group needs. A case's group is its name's first part. */
 const groups: Record<string, () => Promise<void>> = {
   async query() {
     for (const kind of ['simple', 'complex']) {
       for (const n of W.batchSizes) {
         const body = transformBody(W.programs[kind], n);
-        await bench(`query.${kind}.b${n}`, 'node', () => query({body, userID: 'u1'}));
+        register(`query.${kind}.b${n}`, 'node', () => query({body, userID: 'u1'}));
       }
     }
   },
@@ -136,7 +140,7 @@ const groups: Record<string, () => Promise<void>> = {
     for (const kind of ['simple', 'complex']) {
       for (const n of W.batchSizes) {
         const text = JSON.stringify(transformBody(W.programs[kind], n));
-        await bench(`query_json.${kind}.b${n}`, 'node', async () =>
+        register(`query_json.${kind}.b${n}`, 'node', async () =>
           JSON.stringify(await query({body: JSON.parse(text), userID: 'u1'})),
         );
       }
@@ -146,20 +150,18 @@ const groups: Record<string, () => Promise<void>> = {
   async parse() {
     for (const m of W.parseSizes) {
       const push = pushBody('c1', 'crud', m);
-      await bench(`parse.push.m${m}`, 'node', () => v.parse(push, pushBodySchema, 'passthrough'));
+      register(`parse.push.m${m}`, 'node', () => v.parse(push, pushBodySchema, 'passthrough'));
       const transform = transformBody(W.programs.complex, m);
-      await bench(`parse.transform.q${m}`, 'node', () => v.parse(transform, transformRequestMessageSchema));
+      register(`parse.transform.q${m}`, 'node', () => v.parse(transform, transformRequestMessageSchema));
     }
   },
 
   async parse_json() {
     for (const m of W.parseSizes) {
       const pushText = JSON.stringify(pushBody('c1', 'crud', m));
-      await bench(`parse_json.push.m${m}`, 'node', () =>
-        v.parse(JSON.parse(pushText), pushBodySchema, 'passthrough'),
-      );
+      register(`parse_json.push.m${m}`, 'node', () => v.parse(JSON.parse(pushText), pushBodySchema, 'passthrough'));
       const transformText = JSON.stringify(transformBody(W.programs.complex, m));
-      await bench(`parse_json.transform.q${m}`, 'node', () =>
+      register(`parse_json.transform.q${m}`, 'node', () =>
         v.parse(JSON.parse(transformText), transformRequestMessageSchema),
       );
     }
@@ -196,14 +198,14 @@ const groups: Record<string, () => Promise<void>> = {
             }),
           );
         checkPush(JSON.parse(await run()), n);
-        await bench(`mutate_cpu.${kind}.n${n}`, 'node', run);
+        register(`mutate_cpu.${kind}.n${n}`, 'node', run);
       }
     }
   },
 
   async z2s() {
-    const serverSchema = await withQueryDB(sql =>
-      sql.begin(tx => getServerSchema({query: (s: string, p: unknown[]) => tx.unsafe(s, p as never)} as Any, schema)),
+    const serverSchema = await queryDB().begin(tx =>
+      getServerSchema({query: (s: string, p: unknown[]) => tx.unsafe(s, p as never)} as Any, schema),
     );
     const compileCases: Record<string, Program> = {
       simple: W.programs.simple,
@@ -212,41 +214,36 @@ const groups: Record<string, () => Promise<void>> = {
     };
     for (const [k, p] of Object.entries(compileCases)) {
       const qi = asQueryInternals(build(p));
-      await bench(`z2s.${k}`, 'node', () => formatPgInternalConvert(compile(serverSchema, schema, qi.ast, qi.format)));
+      register(`z2s.${k}`, 'node', () => formatPgInternalConvert(compile(serverSchema, schema, qi.ast, qi.format)));
     }
   },
 
   // tx.run end to end: compile, query, decode.
   async run() {
-    await withQueryDB(async sql => {
-      const db = zeroPostgresJS(schema, sql);
-      for (const [k, p] of Object.entries(W.run as Record<string, Program>)) {
-        for (const n of W.rowCounts) {
-          const q = build(withLimit(p, n));
-          const rows = (await db.run(q)) as unknown[];
-          if (rows.length !== n) throw new Error(`run.${k}: expected ${n} rows, got ${rows.length}`);
-          await bench(`run.${k}.r${n}`, 'postgres.js', () => db.run(q));
-        }
+    const db = zeroPostgresJS(schema, queryDB());
+    for (const [k, p] of Object.entries(W.run as Record<string, Program>)) {
+      for (const n of W.rowCounts) {
+        const q = build(withLimit(p, n));
+        const rows = (await db.run(q)) as unknown[];
+        if (rows.length !== n) throw new Error(`run.${k}: expected ${n} rows, got ${rows.length}`);
+        register(`run.${k}.r${n}`, 'postgres.js', () => db.run(q));
       }
-    });
+    }
   },
 
   async mutate() {
-    const sql = postgres(config.mutateURL, {onnotice: () => {}});
-    await sql.unsafe('TRUNCATE item, things, pair, zero_0."clients", zero_0."mutations"');
-    await sql.end();
     for (const kind of ['put', 'crud']) {
       for (const n of W.pushSizes) {
         const run = () =>
           mutate({url: config.mutateURL, query: MUTATE_QUERY, body: pushBody(freshClient(), kind, n), userID: 'u1'});
         checkPush(await run(), n);
-        await bench(`mutate.${kind}.n${n}`, 'postgres.js', run);
+        register(`mutate.${kind}.n${n}`, 'postgres.js', run);
       }
     }
   },
 
   async pushproc() {
-    await bench('pushproc.put.n10', 'postgres.js', () => {
+    register('pushproc.put.n10', 'postgres.js', () => {
       const body = pushBody(freshClient(), 'put', 10);
       for (const m of body.mutations) m.name = 'legacy.put';
       return pushProcessor({url: config.mutateURL, query: MUTATE_QUERY, body});
@@ -254,7 +251,19 @@ const groups: Record<string, () => Promise<void>> = {
   },
 };
 
-await groups[group]();
-process.stdout.write(JSON.stringify(results) + '\n');
-// The harness's pooled connections would otherwise keep the process alive.
+for await (const line of createInterface({input: process.stdin, crlfDelay: Infinity})) {
+  const req = JSON.parse(line);
+  let res: unknown;
+  if (req.op === 'setup') {
+    registered = [];
+    await groups[req.group]();
+    res = {cases: registered};
+  } else {
+    const c = cases.get(`${req.case} ${req.impl}`);
+    if (!c) throw new Error(`unknown case ${req.case} ${req.impl}`);
+    res = req.op === 'warm' ? (await warm(c, req.ms), {}) : {us: await time(c, req.ms)};
+  }
+  process.stdout.write(JSON.stringify(res) + '\n');
+}
+// Pooled connections would otherwise keep the process alive once stdin closes.
 process.exit(0);

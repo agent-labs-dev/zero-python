@@ -120,12 +120,31 @@ async def create_databases(base: str, build: Path) -> tuple[str, str]:
     return mutate_url, query_url
 
 
-def run_side(cmd: list[str], cwd: Path) -> list[dict[str, Any]]:
-    done = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
-    if done.returncode != 0:
-        sys.stderr.write(done.stderr[-5000:])
-        raise SystemExit(f"{cmd[0]} side failed")
-    return json.loads(done.stdout.strip().splitlines()[-1])
+class Worker:
+    """One side's long-lived timing process (`harness/bench/cases.ts` or `bench/cases.py`)."""
+
+    def __init__(self, cmd: list[str], cwd: Path, log: Path) -> None:
+        self._log = log.open("w")
+        self._process = subprocess.Popen(
+            cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._log, text=True, bufsize=1
+        )
+
+    def call(self, **request: Any) -> Any:
+        stdin, stdout = self._process.stdin, self._process.stdout
+        assert stdin is not None
+        assert stdout is not None
+        stdin.write(json.dumps(request) + "\n")
+        stdin.flush()
+        line = stdout.readline()
+        if not line:
+            raise SystemExit(f"bench worker died; see {self._log.name}")
+        return json.loads(line)
+
+    def close(self) -> None:
+        if self._process.stdin is not None:
+            self._process.stdin.close()
+        self._process.wait(timeout=30)
+        self._log.close()
 
 
 def startup(filt: re.Pattern[str], spawns: int, flip: bool) -> list[dict[str, Any]]:
@@ -145,26 +164,41 @@ def startup(filt: re.Pattern[str], spawns: int, flip: bool) -> list[dict[str, An
 
 
 GROUPS = ["query", "query_json", "parse", "parse_json", "mutate_cpu", "z2s", "run", "mutate", "pushproc"]
-"""Each round runs one group at a time on each side, so the two measure a case seconds apart, not minutes."""
 
 
-def run_rounds(config_path: Path, config: dict[str, Any], groups: list[str], rounds: int, spawns: int) -> Rounds:
-    filt = re.compile(config["filter"])
+def run_rounds(config_path: Path, args: argparse.Namespace, filt: str, groups: list[str], rounds: int) -> Rounds:
+    """Time each case in `rounds` short bursts per side, alternating sides burst by burst.
+
+    The two sides of one round run within a burst or two of each other, so a stretch of load from a
+    neighbour on a shared runner lands on both, and the round's ratio cancels it.
+    """
+    build: Path = args.out.resolve()
+    ts = Worker(["node", str(HARNESS / "bench" / "cases.ts"), str(config_path)], HARNESS, build / "ts.log")
+    py = Worker([sys.executable, "-m", "bench.cases", str(config_path)], ROOT, build / "py.log")
     out: Rounds = {}
-    for r in range(rounds):
-        results = []
+    try:
         for group in groups:
-            # Alternate which side goes first, so drift in machine load does not favour one.
-            sides = [
-                (["node", str(HARNESS / "bench" / "cases.ts"), str(config_path), group], HARNESS),
-                ([sys.executable, "-m", "bench.cases", str(config_path), group], ROOT),
-            ]
-            for cmd, cwd in sides if r % 2 == 0 else reversed(sides):
-                results += run_side(cmd, cwd)
-        results += startup(filt, spawns, flip=r % 2 == 1)
-        for result in results:
+            ts_cases = ts.call(op="setup", group=group)["cases"]
+            py_impls: dict[str, list[str]] = {}
+            for case, impl in py.call(op="setup", group=group)["cases"]:
+                py_impls.setdefault(case, []).append(impl)
+            for case, ts_impl in ts_cases:
+                sides = [(ts, ts_impl)] + [(py, impl) for impl in py_impls.get(case, [])]
+                for worker, impl in sides:
+                    worker.call(op="warm", case=case, impl=impl, ms=args.warm_ms)
+                for r in range(rounds):
+                    for worker, impl in sides if r % 2 == 0 else reversed(sides):
+                        us = worker.call(op="time", case=case, impl=impl, ms=args.burst_ms)["us"]
+                        out.setdefault((case, impl), []).append(us)
+            step(f"{group} done")
+    finally:
+        ts.close()
+        py.close()
+    compiled = re.compile(filt)
+    for r in range(rounds if any(compiled.search(c) for c in STARTUP) else 0):
+        for result in startup(compiled, args.spawns, flip=r % 2 == 1):
             out.setdefault((result["case"], result["impl"]), []).append(result["median_us"])
-        step(f"round {r + 1}/{rounds} done")
+    step("startup done")
     return out
 
 
@@ -180,7 +214,6 @@ def measure(args: argparse.Namespace, filt: str, groups: list[str], rounds: int)
         mutate_url, query_url = asyncio.run(create_databases(base, build))
         config = {
             "filter": filt,
-            "budgetMs": args.budget_ms,
             "workloads": str(HERE / "workloads.json"),
             "schema": str(build / "schema.json"),
             "wireSchema": str(build / "wire_schema.json"),
@@ -190,7 +223,7 @@ def measure(args: argparse.Namespace, filt: str, groups: list[str], rounds: int)
         }
         config_path = build / "config.json"
         config_path.write_text(json.dumps(config))
-        return run_rounds(config_path, config, groups, rounds, args.spawns)
+        return run_rounds(config_path, args, filt, groups, rounds)
 
 
 def machine() -> str:
@@ -220,9 +253,10 @@ def load_shards(paths: list[Path]) -> list[list[Row]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m bench", description=__doc__)
-    parser.add_argument("--rounds", type=int, default=5)
-    parser.add_argument("--budget-ms", type=float, default=300, help="sampling time per case per round")
-    parser.add_argument("--spawns", type=int, default=5, help="process starts per startup case per round")
+    parser.add_argument("--rounds", type=int, default=15, help="bursts per case per side")
+    parser.add_argument("--burst-ms", type=float, default=100, help="sampling time of one burst")
+    parser.add_argument("--warm-ms", type=float, default=300, help="warmup per case per side")
+    parser.add_argument("--spawns", type=int, default=2, help="process starts per startup case per round")
     parser.add_argument("--filter", default=".", help="regex over case names")
     parser.add_argument("--out", type=Path, default=HERE / "build")
     parser.add_argument("--no-gate", action="store_true", help="measure and report, never fail")

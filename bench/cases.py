@@ -1,7 +1,7 @@
-"""The Python side of the benchmark tier: `harness/bench/cases.ts` in Python, group for group.
+"""The Python side of the benchmark tier: `harness/bench/cases.ts` in Python, group for group and case
+for case, speaking the same line protocol to the driver in `bench/__main__.py`.
 
-Run by `python -m bench` as `python -m bench.cases <config.json> <group>`. Prints one JSON line of
-results to stdout.
+Usage: `python -m bench.cases <config.json>`, then one JSON request per line on stdin (see cases.ts).
 """
 
 import asyncio
@@ -11,9 +11,9 @@ import os
 import re
 import sys
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
-from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from contextlib import AsyncExitStack
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -42,62 +42,88 @@ from zero_server.z2s.compiler import compile_query
 
 type Program = dict[str, Any]
 
-WARMUP = 0.5
-"""Warmup time, as a fraction of the sampling budget."""
 SAMPLE_MS = 1
-"""The least time one sample takes: enough calls that timer resolution and a stray interrupt matter less."""
+"""A sample takes at least this long, so timer resolution and a stray interrupt matter less."""
+
+
+@dataclass
+class Case:
+    fn: Callable[[], Any]
+    is_async: bool = False
+    inner: int = 1
+
+    async def loop(self, n: int) -> None:
+        if self.is_async:
+            for _ in range(n):
+                await self.fn()
+        else:
+            for _ in range(n):
+                self.fn()
+
+    async def warm(self, ms: float) -> None:
+        """Run for `ms`, then size a sample to `SAMPLE_MS`."""
+        first = self.fn()
+        self.is_async = inspect.isawaitable(first)
+        if inspect.isawaitable(first):
+            await first
+        start = time.perf_counter()
+        calls = 0
+        while time.perf_counter() < start + ms / 1000 or calls < 5:
+            await self.loop(1)
+            calls += 1
+        per_call_ms = (time.perf_counter() - start) * 1000 / calls
+        self.inner = max(1, min(10_000, -int(-SAMPLE_MS // per_call_ms)))
+
+    async def time(self, ms: float) -> float:
+        """The median microseconds per call over samples taken for `ms`."""
+        samples: list[float] = []
+        end = time.perf_counter() + ms / 1000
+        while time.perf_counter() < end or not samples:
+            t0 = time.perf_counter()
+            await self.loop(self.inner)
+            samples.append((time.perf_counter() - t0) * 1e6 / self.inner)
+        samples.sort()
+        return samples[len(samples) // 2]
 
 
 @dataclass
 class Bench:
     filter: str
-    budget_ms: float
     workloads: dict[str, Any]
     schema: Schema
     wire_schema: Schema
     server_schema_rows: list[Row]
     query_url: str
     mutate_url: str
-    results: list[dict[str, Any]]
+    exit_stack: AsyncExitStack
+    cases: dict[str, Case] = field(default_factory=dict)
+    registered: list[tuple[str, str]] = field(default_factory=list)
+    _adapters: dict[str, dict[str, ZQLDatabase[Any]]] = field(default_factory=dict)
 
-    async def time(self, name: str, impl: str, fn: Callable[[], Any]) -> None:
-        """The median time of one call of `fn`, by the same procedure as `harness/bench/cases.ts`."""
-        if not re.search(self.filter, name):
-            return
-        first = fn()
-        if inspect.isawaitable(first):
-            await first
-
-            async def loop(n: int) -> None:
-                for _ in range(n):
-                    await fn()
-        else:
-
-            async def loop(n: int) -> None:
-                for _ in range(n):
-                    fn()
-
-        budget = self.budget_ms / 1000
-        warm_start = time.perf_counter()
-        calls = 0
-        while time.perf_counter() < warm_start + budget * WARMUP or calls < 5:
-            await loop(1)
-            calls += 1
-        per_call_ms = (time.perf_counter() - warm_start) * 1000 / calls
-        inner = max(1, min(10_000, -int(-SAMPLE_MS // per_call_ms)))
-        samples: list[float] = []
-        end = time.perf_counter() + budget
-        while (time.perf_counter() < end or len(samples) < 7) and len(samples) < 5000:
-            t0 = time.perf_counter()
-            await loop(inner)
-            samples.append((time.perf_counter() - t0) * 1e6 / inner)
-        samples.sort()
-        self.results.append(
-            {"case": name, "impl": impl, "median_us": samples[len(samples) // 2], "samples": len(samples)}
-        )
+    def register(self, name: str, impl: str, fn: Callable[[], Any]) -> None:
+        if re.search(self.filter, name):
+            self.cases[f"{name} {impl}"] = Case(fn)
+            self.registered.append((name, impl))
 
     def build(self, program: Program) -> Query:
         return apply(create_builder(self.schema).table(program["table"]), program["ops"])
+
+    async def adapters(self, url: str, schema: Schema) -> dict[str, ZQLDatabase[Any]]:
+        """One `ZQLDatabase` per Python adapter on the database at `url`, open until the worker exits."""
+        if url not in self._adapters:
+            pool = await asyncpg.create_pool(url, min_size=1, max_size=10)
+            self.exit_stack.push_async_callback(pool.close)
+            psycopg_pool = AsyncConnectionPool(url, min_size=1, max_size=10, open=False)
+            await psycopg_pool.open()
+            self.exit_stack.push_async_callback(psycopg_pool.close)
+            engine = create_async_engine(url.replace("postgresql://", "postgresql+asyncpg://", 1))
+            self.exit_stack.push_async_callback(engine.dispose)
+            self._adapters[url] = {
+                "asyncpg": AsyncpgDatabase(pool, schema),
+                "psycopg": PsycopgDatabase(psycopg_pool, schema),
+                "sqlalchemy": SQLAlchemyDatabase(engine, schema),
+            }
+        return self._adapters[url]
 
 
 def with_limit(program: Program, n: int) -> Program:
@@ -185,32 +211,12 @@ class FakeConnection:
         return await fn(self.tx)
 
 
-@asynccontextmanager
-async def adapters(url: str, schema: Schema) -> AsyncGenerator[dict[str, ZQLDatabase[Any]]]:
-    """One `ZQLDatabase` per Python adapter on the database at `url`."""
-    pool = await asyncpg.create_pool(url, min_size=1, max_size=10)
-    psycopg_pool = AsyncConnectionPool(url, min_size=1, max_size=10, open=False)
-    await psycopg_pool.open()
-    engine = create_async_engine(url.replace("postgresql://", "postgresql+asyncpg://", 1))
-    try:
-        databases: dict[str, ZQLDatabase[Any]] = {
-            "asyncpg": AsyncpgDatabase(pool, schema),
-            "psycopg": PsycopgDatabase(psycopg_pool, schema),
-            "sqlalchemy": SQLAlchemyDatabase(engine, schema),
-        }
-        yield databases
-    finally:
-        await pool.close()
-        await psycopg_pool.close()
-        await engine.dispose()
-
-
 async def query(b: Bench) -> None:
     handler = make_handler(b.schema)
     for kind in ("simple", "complex"):
         for n in b.workloads["batchSizes"]:
             body = transform_body(b.workloads["programs"][kind], n)
-            await b.time(
+            b.register(
                 f"query.{kind}.b{n}",
                 "python",
                 lambda body=body: handle_query_request(handler=handler, schema=b.schema, body=body, user_id="u1"),
@@ -228,7 +234,7 @@ async def query_json(b: Bench) -> None:
                 response = await handle_query_request(handler=handler, schema=b.schema, body=text, user_id="u1")
                 return json_response(response.to_json())
 
-            await b.time(f"query_json.{kind}.b{n}", "python", with_json)
+            b.register(f"query_json.{kind}.b{n}", "python", with_json)
 
 
 TRANSFORM: TypeAdapter[Any] = TypeAdapter(TransformRequestMessage)
@@ -237,17 +243,17 @@ TRANSFORM: TypeAdapter[Any] = TypeAdapter(TransformRequestMessage)
 async def parse(b: Bench) -> None:
     for m in b.workloads["parseSizes"]:
         push = push_body(b.workloads, "c1", "crud", m)
-        await b.time(f"parse.push.m{m}", "python", lambda push=push: PushBody.from_json(push))
+        b.register(f"parse.push.m{m}", "python", lambda push=push: PushBody.from_json(push))
         transform = transform_body(b.workloads["programs"]["complex"], m)
-        await b.time(f"parse.transform.q{m}", "python", lambda t=transform: parse_wire(TRANSFORM, t))
+        b.register(f"parse.transform.q{m}", "python", lambda t=transform: parse_wire(TRANSFORM, t))
 
 
 async def parse_json(b: Bench) -> None:
     for m in b.workloads["parseSizes"]:
         push_text = json.dumps(push_body(b.workloads, "c1", "crud", m)).encode()
-        await b.time(f"parse_json.push.m{m}", "python", lambda t=push_text: PushBody.from_json(json.loads(t)))
+        b.register(f"parse_json.push.m{m}", "python", lambda t=push_text: PushBody.from_json(json.loads(t)))
         transform_text = json.dumps(transform_body(b.workloads["programs"]["complex"], m)).encode()
-        await b.time(
+        b.register(
             f"parse_json.transform.q{m}",
             "python",
             lambda t=transform_text: parse_wire(TRANSFORM, json.loads(t)),
@@ -272,12 +278,12 @@ async def mutate_cpu(b: Bench) -> None:
                 return json_response(response.to_json())
 
             check_push(json.loads(await run()), n)
-            await b.time(f"mutate_cpu.{kind}.n{n}", "python", run)
+            b.register(f"mutate_cpu.{kind}.n{n}", "python", run)
 
 
 async def z2s(b: Bench) -> None:
-    async with adapters(b.query_url, b.schema) as databases:
-        server_schema = await databases["asyncpg"].connection.transaction(lambda tx: get_server_schema(tx, b.schema))
+    databases = await b.adapters(b.query_url, b.schema)
+    server_schema = await databases["asyncpg"].connection.transaction(lambda tx: get_server_schema(tx, b.schema))
     cases = {
         "simple": b.workloads["programs"]["simple"],
         "complex": b.workloads["programs"]["complex"],
@@ -285,60 +291,57 @@ async def z2s(b: Bench) -> None:
     }
     for k, program in cases.items():
         q = b.build(program)
-        await b.time(f"z2s.{k}", "python", lambda q=q: compile_query(server_schema, b.schema, q.ast, q.format))
+        b.register(f"z2s.{k}", "python", lambda q=q: compile_query(server_schema, b.schema, q.ast, q.format))
 
 
 async def run(b: Bench) -> None:
     """`tx.run` end to end: compile, query, decode."""
-    async with adapters(b.query_url, b.schema) as databases:
-        for k, program in b.workloads["run"].items():
-            for n in b.workloads["rowCounts"]:
-                q = b.build(with_limit(program, n))
-                for impl, db in databases.items():
-                    rows = await db.run(q)
-                    if len(rows) != n:
-                        raise RuntimeError(f"run.{k} on {impl}: expected {n} rows, got {len(rows)}")
-                    await b.time(f"run.{k}.r{n}", impl, lambda db=db, q=q: db.run(q))
+    databases = await b.adapters(b.query_url, b.schema)
+    for k, program in b.workloads["run"].items():
+        for n in b.workloads["rowCounts"]:
+            q = b.build(with_limit(program, n))
+            for impl, db in databases.items():
+                rows = await db.run(q)
+                if len(rows) != n:
+                    raise RuntimeError(f"run.{k} on {impl}: expected {n} rows, got {len(rows)}")
+                b.register(f"run.{k}.r{n}", impl, lambda db=db, q=q: db.run(q))
 
 
 async def mutate(b: Bench) -> None:
-    connection = await asyncpg.connect(b.mutate_url)
-    await connection.execute('TRUNCATE item, things, pair, zero_0."clients", zero_0."mutations"')
-    await connection.close()
     mutators.use_schema(b.wire_schema)
-    async with adapters(b.mutate_url, b.wire_schema) as databases:
-        for kind in ("put", "crud"):
-            for n in b.workloads["pushSizes"]:
-                for impl, db in databases.items():
+    databases = await b.adapters(b.mutate_url, b.wire_schema)
+    for kind in ("put", "crud"):
+        for n in b.workloads["pushSizes"]:
+            for impl, db in databases.items():
 
-                    async def push(db: ZQLDatabase[Any] = db, kind: str = kind, n: int = n) -> dict[str, Any]:
-                        response = await handle_mutate_request(
-                            db_provider=mutators.provider(db),
-                            handler=mutators.handler,
-                            query=MUTATE_QUERY,
-                            body=push_body(b.workloads, fresh_client(), kind, n),
-                            user_id="u1",
-                        )
-                        return response.to_json()
+                async def push(db: ZQLDatabase[Any] = db, kind: str = kind, n: int = n) -> dict[str, Any]:
+                    response = await handle_mutate_request(
+                        db_provider=mutators.provider(db),
+                        handler=mutators.handler,
+                        query=MUTATE_QUERY,
+                        body=push_body(b.workloads, fresh_client(), kind, n),
+                        user_id="u1",
+                    )
+                    return response.to_json()
 
-                    check_push(await push(), n)
-                    await b.time(f"mutate.{kind}.n{n}", impl, push)
+                check_push(await push(), n)
+                b.register(f"mutate.{kind}.n{n}", impl, push)
 
 
 async def pushproc(b: Bench) -> None:
     mutators.use_schema(b.wire_schema)
-    async with adapters(b.mutate_url, b.wire_schema) as databases:
-        for impl, db in databases.items():
+    databases = await b.adapters(b.mutate_url, b.wire_schema)
+    for impl, db in databases.items():
 
-            async def process(db: ZQLDatabase[Any] = db) -> Any:
-                body = push_body(b.workloads, fresh_client(), "put", 10)
-                for m in body["mutations"]:
-                    m["name"] = "legacy.put"
-                return await PushProcessor(mutators.provider(db), {"tag": "ctx"}).process(
-                    mutators.REGISTRY, MUTATE_QUERY, body
-                )
+        async def process(db: ZQLDatabase[Any] = db) -> Any:
+            body = push_body(b.workloads, fresh_client(), "put", 10)
+            for m in body["mutations"]:
+                m["name"] = "legacy.put"
+            return await PushProcessor(mutators.provider(db), {"tag": "ctx"}).process(
+                mutators.REGISTRY, MUTATE_QUERY, body
+            )
 
-            await b.time("pushproc.put.n10", impl, process)
+        b.register("pushproc.put.n10", impl, process)
 
 
 GROUPS: dict[str, Callable[[Bench], Coroutine[Any, Any, None]]] = {
@@ -355,22 +358,38 @@ GROUPS: dict[str, Callable[[Bench], Coroutine[Any, Any, None]]] = {
 """Each group's cases, with only the setup that group needs. A case's group is its name's first part."""
 
 
-def main(config_path: str, group: str) -> None:
+async def serve(inputs: dict[str, Any]) -> None:
+    """Answer the driver's requests until stdin closes. `inputs` are `Bench`'s fields, files already read."""
+    async with AsyncExitStack() as exit_stack:
+        b = Bench(**inputs, exit_stack=exit_stack)
+        while line := await asyncio.to_thread(sys.stdin.readline):
+            req = json.loads(line)
+            if req["op"] == "setup":
+                b.registered = []
+                await GROUPS[req["group"]](b)
+                res: dict[str, Any] = {"cases": b.registered}
+            elif req["op"] == "warm":
+                await b.cases[f"{req['case']} {req['impl']}"].warm(req["ms"])
+                res = {}
+            else:
+                res = {"us": await b.cases[f"{req['case']} {req['impl']}"].time(req["ms"])}
+            sys.stdout.write(json.dumps(res) + "\n")
+            sys.stdout.flush()
+
+
+def main(config_path: str) -> None:
     config = json.loads(Path(config_path).read_text())
-    b = Bench(
-        filter=config["filter"],
-        budget_ms=config["budgetMs"],
-        workloads=json.loads(Path(config["workloads"]).read_text()),
-        schema=load_schema(Path(config["schema"]).read_text()),
-        wire_schema=load_schema(Path(config["wireSchema"]).read_text()),
-        server_schema_rows=json.loads(Path(config["serverSchemaRows"]).read_text()),
-        query_url=config["queryURL"],
-        mutate_url=config["mutateURL"],
-        results=[],
-    )
-    asyncio.run(GROUPS[group](b))
-    sys.stdout.write(json.dumps(b.results) + "\n")
+    inputs = {
+        "filter": config["filter"],
+        "workloads": json.loads(Path(config["workloads"]).read_text()),
+        "schema": load_schema(Path(config["schema"]).read_text()),
+        "wire_schema": load_schema(Path(config["wireSchema"]).read_text()),
+        "server_schema_rows": json.loads(Path(config["serverSchemaRows"]).read_text()),
+        "query_url": config["queryURL"],
+        "mutate_url": config["mutateURL"],
+    }
+    asyncio.run(serve(inputs))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    main(sys.argv[1])
