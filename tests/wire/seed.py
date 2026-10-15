@@ -10,7 +10,7 @@ from typing import Any
 
 DDL = [
     """CREATE TABLE users (
-        id TEXT PRIMARY KEY, full_name TEXT NOT NULL, age INTEGER, active BOOLEAN NOT NULL)""",
+        id TEXT PRIMARY KEY, full_name TEXT NOT NULL, age INTEGER, active BOOLEAN NOT NULL, manager_id TEXT)""",
     """CREATE TABLE issue (
         id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, title TEXT NOT NULL, meta JSONB,
         priority DOUBLE PRECISION NOT NULL, open BOOLEAN NOT NULL)""",
@@ -23,9 +23,31 @@ DDL = [
         id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL, day DATE, tm TIME, ttz TIMETZ, plain TIMESTAMP,
         stamps TIMESTAMPTZ[], tags TEXT[], mood mood)""",
     "CREATE TABLE counter (id TEXT PRIMARY KEY, n BIGINT NOT NULL)",
+    "CREATE SCHEMA extra",
+    """CREATE TABLE extra.gadgets (
+        id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, serial UUID NOT NULL, ip INET NOT NULL, amount NUMERIC(10, 2),
+        code VARCHAR(4), mood mood, moods mood[], seen TIMESTAMPTZ)""",
 ]
 
 TEXTS = ["", "a", "b", "ab", "A", "é", "x%", "a_b", "Ab", "0", "1"]
+
+# Values for the columns a comparison casts to a Postgres type of its own, which the generated queries
+# draw from as well. Each has a form Postgres reads but would print differently.
+COLUMN_VALUES: dict[tuple[str, str], list[Any]] = {
+    ("gadget", "serial"): [
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-00000000000A",
+        "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+        "{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a12}",
+    ],
+    ("gadget", "ip"): ["10.0.0.1", "10.0.0.1/32", "192.168.0.0/16", "::1", "10.0.0.2"],
+    ("gadget", "amount"): [0, 1.5, 1.25, 10, -3.333, 99999999.99],
+    ("gadget", "code"): ["", "ab", "abcd", "abcde", "AB"],
+    ("gadget", "mood"): ["happy", "sad", "meh"],
+    ("gadget", "moods"): [[], ["happy"], ["sad", "happy"], ["meh"]],
+    ("gadget", "seen"): [0, 946_684_800_000, 946_684_800_000.5, 1_577_836_800_000],
+    ("issue", "meta"): [{"a": 1}, [1, "x"], "s", 2.5, True, {}, {"a": [1, None]}],
+}
 
 
 def rows() -> dict[str, list[dict[str, Any]]]:
@@ -39,7 +61,14 @@ def rows() -> dict[str, list[dict[str, Any]]]:
 
     return {
         "users": [
-            {"id": u, "full_name": rng.choice(TEXTS), "age": maybe(rng.randint(-5, 5)), "active": rng.random() < 0.5}
+            {
+                "id": u,
+                "full_name": rng.choice(TEXTS),
+                "age": maybe(rng.randint(-5, 5)),
+                "active": rng.random() < 0.5,
+                # Someone is their own manager.
+                "manager_id": maybe(rng.choice([*users, "ghost"])),
+            }
             for u in users
         ],
         "issue": [
@@ -83,6 +112,20 @@ def rows() -> dict[str, list[dict[str, Any]]]:
         ],
         # The last value is past 2^53, which upstream refuses to return rather than round.
         "counter": [{"id": f"k{n}", "n": n} for n in range(3)] + [{"id": "k9", "n": 2**60}],
+        "extra.gadgets": [
+            {
+                "id": f"g{n}",
+                "owner_id": rng.choice(users),
+                "serial": rng.choice(COLUMN_VALUES["gadget", "serial"]),
+                "ip": rng.choice(COLUMN_VALUES["gadget", "ip"][:-1]),
+                "amount": maybe(str(rng.choice(COLUMN_VALUES["gadget", "amount"]))),
+                "code": maybe(rng.choice(COLUMN_VALUES["gadget", "code"][:-2])),
+                "mood": maybe(rng.choice(["happy", "sad"])),
+                "moods": maybe(rng.choice(COLUMN_VALUES["gadget", "moods"][:-1])),
+                "seen": maybe(rng.choice(COLUMN_VALUES["gadget", "seen"]) / 1000),
+            }
+            for n in range(8)
+        ],
     }
 
 
@@ -107,6 +150,12 @@ _CASTS = {
     ("audit", "plain"): "CAST(CAST(:plain AS text) AS timestamp)",
     ("audit", "stamps"): "CAST(CAST(:stamps AS text[]) AS timestamptz[])",
     ("audit", "mood"): "CAST(CAST(:mood AS text) AS mood)",
+    ("extra.gadgets", "serial"): "CAST(CAST(:serial AS text) AS uuid)",
+    ("extra.gadgets", "ip"): "CAST(CAST(:ip AS text) AS inet)",
+    ("extra.gadgets", "amount"): "CAST(CAST(:amount AS text) AS numeric)",
+    ("extra.gadgets", "mood"): "CAST(CAST(:mood AS text) AS mood)",
+    ("extra.gadgets", "moods"): "CAST(CAST(:moods AS text[]) AS mood[])",
+    ("extra.gadgets", "seen"): "to_timestamp(:seen)",
 }
 
 

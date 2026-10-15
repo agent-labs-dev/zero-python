@@ -93,6 +93,19 @@ PINNED = [
     # it, the first in the text wins.
     _q("issue", ["where", "title", "==", "a"], ["whereFn", ["cmpLit", {"a": 1}, "=", 1]]),
     _q("issue", ["whereFn", ["cmpLit", 1, "IN", [None]]], ["where", "title", "==", "a"]),
+    # A comparison cast to each Postgres type, in a table of a schema other than `public`.
+    _q("gadget", ["where", "serial", "00000000-0000-0000-0000-00000000000A"]),
+    _q("gadget", ["where", "serial", "IN", ["{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a12}"]]),
+    _q("gadget", ["where", "ip", "10.0.0.1/32"], ["where", "amount", ">", 1.25]),
+    _q("gadget", ["where", "code", "<", "abcde"], ["where", "mood", "IN", ["happy", "meh"]]),
+    _q("gadget", ["where", "moods", "=", ["happy"]]),
+    _q("gadget", ["where", "seen", ">=", 946_684_800_000.5], ["orderBy", "seen", "desc"]),
+    _q("gadget", ["orderBy", "serial", "asc"], ["start", {"serial": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"}, True]),
+    _q("gadget", ["orderBy", "amount", "desc"], ["start", {"amount": 1.5, "id": "g3"}, False]),
+    _q("user", ["whereExists", "gadgets", {"ops": [["where", "ip", "::1"]]}, None], ["related", "gadgets", None]),
+    # A relationship from a table to itself, and a `one` relationship through a junction table.
+    _q("user", ["related", "manager", {"ops": [["related", "reports", None]]}], ["whereExists", "reports", None, None]),
+    _q("issue", ["related", "label", None], ["whereExists", "label", {"ops": [["where", "name", "a"]]}, None]),
 ]
 
 

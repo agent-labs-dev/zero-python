@@ -4,6 +4,7 @@ from typing import Any
 
 from hypothesis import strategies as st
 
+from tests.wire import seed
 from zero_server.protocol.ast import Parameter
 from zero_server.query.builder import Query, create_builder
 from zero_server.query.expression import ExpressionBuilder
@@ -105,16 +106,34 @@ params = st.builds(
     st.sampled_from(["authData", "preMutationRow"]),
     st.sampled_from(["sub", "role"]),
 )
+# Upstream's builder takes any JSON value, so arrays hold nulls and arrays, and objects reach json
+# columns and everything else.
+_json = st.recursive(
+    st.none() | st.text(max_size=2) | st.integers(-3, 3) | st.booleans(),
+    lambda inner: st.lists(inner, max_size=3) | st.dictionaries(st.sampled_from(["a", "b"]), inner, max_size=2),
+    max_leaves=5,
+)
+containers = st.lists(_json, max_size=3) | st.dictionaries(st.sampled_from(["a", "b"]), _json, max_size=2)
+
+
+def _led_by_boolean(value: Any) -> bool:
+    while isinstance(value, list) and value:
+        value = value[0]
+    return isinstance(value, bool)
+
+
 # An array led by a boolean, compared with a text column, is left out: upstream hands the raw array to
 # postgres.js, which binds it as the boolean `false`. That is the JavaScript driver's choice, not Zero's;
 # zero-server binds `String(array)` as postgres.js does for every other array.
-values = (
-    scalars
-    | st.lists(st.text(max_size=2) | st.integers(-3, 3) | st.booleans(), max_size=3).filter(
-        lambda xs: not xs or not isinstance(xs[0], bool)
-    )
-    | params
-)
+values = scalars | containers.filter(lambda v: not _led_by_boolean(v)) | params
+
+
+def _values(table: str, column: Any) -> st.SearchStrategy[Any]:
+    """`values`, and for a column of its own Postgres type, values that column holds or could."""
+    pool = seed.COLUMN_VALUES.get((table, column))
+    if pool is None:
+        return values
+    return values | st.sampled_from(pool) | st.lists(st.sampled_from(pool), max_size=3)
 
 
 def programs(schema: Schema, depth: int = 2) -> st.SearchStrategy[dict[str, Any]]:
@@ -127,9 +146,10 @@ def _rarely[T](usual: st.SearchStrategy[T], rare: st.SearchStrategy[T], one_in: 
     return st.sampled_from([False] * (one_in - 1) + [True]).flatmap(lambda r: rare if r else usual)
 
 
-def _columns(schema: Schema, table: str) -> st.SearchStrategy[str]:
-    # The odd unknown column fails the whole batch when the AST is mapped.
-    return _rarely(st.sampled_from(sorted(schema.tables[table].columns)), st.just("nope"), 60)
+def _columns(schema: Schema, table: str) -> st.SearchStrategy[Any]:
+    # The odd unknown column fails the whole batch when the AST is mapped. Upstream takes a number
+    # for a column too, and fails on it the same way.
+    return _rarely(st.sampled_from(sorted(schema.tables[table].columns)), st.sampled_from(["nope", 1]), 60)
 
 
 def _relationships(schema: Schema, table: str) -> st.SearchStrategy[str]:
@@ -151,15 +171,37 @@ def _sub_program(schema: Schema, table: str, relationship: str, depth: int) -> s
 
 
 def _exists_opts() -> st.SearchStrategy[Any]:
-    return st.none() | st.fixed_dictionaries({}, optional={"flip": st.booleans(), "scalar": st.booleans()})
+    # Upstream puts whatever `flip` and `scalar` it is given into the AST.
+    flag = _rarely(st.booleans(), st.sampled_from(["yes", 0]), 20)
+    return st.none() | st.fixed_dictionaries({}, optional={"flip": flag, "scalar": flag})
+
+
+# Upstream refuses an unknown operator only once it formats the SQL, and sends it to zero-cache as is.
+_ops_strategy = _rarely(st.sampled_from(OPS), st.sampled_from(["==", "like"]), 30)
+
+
+def _comparison(schema: Schema, table: str, kind: str) -> st.SearchStrategy[list[Any]]:
+    """`[kind, column, value]` or `[kind, column, op, value]`, the value drawn for the column."""
+    return _columns(schema, table).flatmap(
+        lambda c: (
+            st.builds(lambda v: [kind, c, v], _values(table, c))
+            | st.builds(lambda o, v: [kind, c, o, v], _ops_strategy, _values(table, c))
+        )
+    )
+
+
+def _start_rows(schema: Schema, table: str) -> st.SearchStrategy[Any]:
+    # A row's keys are strings once it is JSON, as every program is on its way to the query endpoint.
+    entry = _columns(schema, table).flatmap(lambda c: st.tuples(st.just(str(c)), scalars | _values(table, c)))
+    # Upstream takes an array for a row, which has no value for any column.
+    return _rarely(st.lists(entry, max_size=2).map(dict), st.just(["a"]), 30)
 
 
 def _exprs(schema: Schema, table: str, depth: int) -> st.SearchStrategy[list[Any]]:
-    col = _columns(schema, table)
+    literal = _rarely(scalars | params, containers, 10)
     leaves = st.one_of(
-        st.builds(lambda c, v: ["cmp", c, v], col, values),
-        st.builds(lambda c, o, v: ["cmp", c, o, v], col, st.sampled_from(OPS), values),
-        st.builds(lambda a, o, b: ["cmpLit", a, o, b], scalars | params, st.sampled_from(OPS), scalars | params),
+        _comparison(schema, table, "cmp"),
+        st.builds(lambda a, o, b: ["cmpLit", a, o, b], literal, _ops_strategy, literal),
         _relationships(schema, table).flatmap(
             lambda r: st.builds(
                 lambda sub, opts: ["exists", r, sub, opts], _sub_program(schema, table, r, depth), _exists_opts()
@@ -181,8 +223,7 @@ def _ops(schema: Schema, table: str, depth: int) -> st.SearchStrategy[list[list[
     col = _columns(schema, table)
     rel = _relationships(schema, table)
     op = st.one_of(
-        st.builds(lambda c, v: ["where", c, v], col, values),
-        st.builds(lambda c, o, v: ["where", c, o, v], col, st.sampled_from(OPS), values),
+        _comparison(schema, table, "where"),
         st.builds(lambda e: ["whereFn", e], _exprs(schema, table, depth)),
         rel.flatmap(
             lambda r: st.builds(
@@ -191,10 +232,11 @@ def _ops(schema: Schema, table: str, depth: int) -> st.SearchStrategy[list[list[
         ),
         rel.flatmap(lambda r: st.builds(lambda sub: ["related", r, sub], _sub_program(schema, table, r, depth))),
         st.builds(lambda c, d: ["orderBy", c, d], col, st.sampled_from(["asc", "desc"])),
-        st.builds(lambda n: ["limit", n], _rarely(st.integers(0, 50), st.sampled_from([-1, 1.5, 2**31]), 20)),
         st.builds(
-            lambda row, inc: ["start", row, inc], st.dictionaries(col, scalars, max_size=2), st.none() | st.booleans()
+            lambda n: ["limit", n],
+            _rarely(st.integers(0, 50), st.sampled_from([-1, 1.5, 2**31, None, True, "3", "-1"]), 20),
         ),
+        st.builds(lambda row, inc: ["start", row, inc], _start_rows(schema, table), st.none() | st.booleans()),
         st.just(["one"]),
     )
     return st.lists(op, max_size=4)

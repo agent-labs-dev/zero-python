@@ -91,6 +91,9 @@ PINNED = [
     _q("issue", ["start", ["a"], None]),
     _q("issue", ["limit", None]),
     _q("issue", ["limit", "-1"]),
+    _q("user", ["related", "manager", {"ops": [["related", "reports", None]]}]),
+    _q("issue", ["related", "label", None], ["whereExists", "label", None, None]),
+    _q("gadget", ["where", "serial", "IN", []], ["related", "owner", None]),
 ]
 
 
