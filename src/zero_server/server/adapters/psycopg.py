@@ -5,11 +5,15 @@ same text the other adapters send.
 """
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import psycopg
 from psycopg.rows import dict_row
-from psycopg_pool import AsyncConnectionPool
+
+if TYPE_CHECKING:
+    # Only `PsycopgDatabase` takes a pool. The SQLAlchemy adapter reuses `PsycopgTransaction` on
+    # SQLAlchemy's own connection, and must not need psycopg-pool installed for it.
+    from psycopg_pool import AsyncConnectionPool
 
 from zero_server.schema import Schema
 from zero_server.server.transaction import DBTransaction, Row
@@ -40,7 +44,7 @@ class PsycopgTransaction:
 
 
 class PsycopgConnection:
-    def __init__(self, pool: AsyncConnectionPool) -> None:
+    def __init__(self, pool: "AsyncConnectionPool") -> None:
         self.pool = pool
 
     async def transaction[R](self, fn: Callable[[DBTransaction[psycopg.AsyncConnection[Any]]], Awaitable[R]]) -> R:
@@ -51,5 +55,5 @@ class PsycopgConnection:
 class PsycopgDatabase(ZQLDatabase[psycopg.AsyncConnection[Any]]):
     """A `ZQLDatabase` on a psycopg pool (`AsyncConnectionPool(conninfo, open=False)`, then `await pool.open()`)."""
 
-    def __init__(self, pool: AsyncConnectionPool, schema: Schema | None = None) -> None:
+    def __init__(self, pool: "AsyncConnectionPool", schema: Schema | None = None) -> None:
         super().__init__(PsycopgConnection(pool), schema)

@@ -1,6 +1,6 @@
 [project]
 name = "zero-server"
-version = "0.0.1"
+version = "0.0.2"
 description = "Community Python server SDK for Rocicorp Zero. Not affiliated with Rocicorp."
 readme = "README.md"
 license = "Apache-2.0"
@@ -15,7 +15,8 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
 ]
-dependencies = ["pydantic>=2.14", "typing-extensions>=4.12"]
+# Floors are the lowest versions the suite passes on, and CI's `floors` job runs it at exactly these.
+dependencies = ["pydantic>=2.12", "typing-extensions>=4.12"]
 
 [project.urls]
 Homepage = "https://github.com/agent-labs-dev/zero-python"
@@ -27,17 +28,18 @@ Changelog = "https://github.com/agent-labs-dev/zero-python/releases"
 zero-server = "zero_server.codegen:main"
 
 [project.optional-dependencies]
-sqlalchemy = ["sqlalchemy[asyncio]>=2.1", "asyncpg>=0.32"]
-asyncpg = ["asyncpg>=0.32"]
-psycopg = ["psycopg>=3.3", "psycopg-pool>=3.3"]
-starlette = ["starlette>=1.8"]
+# The engine's driver is the caller's: add `asyncpg`, or install psycopg yourself.
+sqlalchemy = ["sqlalchemy[asyncio]>=2.0.40"]
+asyncpg = ["asyncpg>=0.30"]
+psycopg = ["psycopg>=3.2.10", "psycopg-pool>=3.2.6"]
+starlette = ["starlette>=1.6"]
 
 [dependency-groups]
 dev = [
     "zero-server[sqlalchemy,asyncpg,psycopg,starlette]",
     "httpx2>=2.13",
     # psycopg's prebuilt libpq, so the tests need no system libpq.
-    "psycopg[binary]>=3.3",
+    "psycopg[binary]>=3.2.10",
     "hypothesis>=6.169",
     "pytest>=9.1",
     "pytest-asyncio>=1.4",
@@ -47,7 +49,7 @@ dev = [
 ]
 
 # The Python app server of the end-to-end tier.
-e2e = ["starlette>=1.8", "uvicorn>=0.54"]
+e2e = ["starlette>=1.6", "uvicorn>=0.54"]
 
 [build-system]
 requires = ["uv_build>=0.11,<0.14"]

@@ -50,7 +50,7 @@ DDL = [
     "CREATE TABLE pair (a TEXT, b INTEGER, note TEXT, PRIMARY KEY (a, b))",
 ]
 
-ADAPTERS = ["sqlalchemy", "asyncpg", "psycopg"]
+ADAPTERS = ["sqlalchemy", "sqlalchemy-psycopg", "asyncpg", "psycopg"]
 """Every Python adapter runs the same wire and SQL tiers."""
 
 type Databases = dict[str, Callable[[Schema | None], ZQLDatabase[Any]]]
@@ -64,13 +64,16 @@ async def open_adapters(url: str, engine: AsyncEngine) -> tuple[Databases, Calla
     pool = await asyncpg.create_pool(url, min_size=1, max_size=4)
     psycopg_pool = AsyncConnectionPool(url, min_size=1, max_size=4, open=False)
     await psycopg_pool.open()
+    psycopg_engine = create_async_engine(f"postgresql+psycopg://{url.split('://', 1)[1]}")
 
     async def close() -> None:
         await pool.close()
         await psycopg_pool.close()
+        await psycopg_engine.dispose()
 
     return {
         "sqlalchemy": lambda schema: SQLAlchemyDatabase(engine, schema),
+        "sqlalchemy-psycopg": lambda schema: SQLAlchemyDatabase(psycopg_engine, schema),
         "asyncpg": lambda schema: AsyncpgDatabase(pool, schema),
         "psycopg": lambda schema: PsycopgDatabase(psycopg_pool, schema),
     }, close
