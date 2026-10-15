@@ -187,7 +187,15 @@ def as_js(value: Any) -> Any:
 
 
 client_ids = st.sampled_from(["c1", "c2", "c3"])
-mutation_ids = st.integers(0, 6)
+_small_ids = st.integers(0, 6)
+# The odd one is no ID a client would send: past 2^53, where JavaScript rounds and Python does not, past
+# Postgres's bigint, fractional, or negative.
+_odd_ids = (
+    st.sampled_from([-1, 1.5, 2.0, 2**53, 2**53 + 1, 2**63, 1e20, 1e21])
+    | st.integers(-(2**64), 2**64)
+    | st.floats(-1e22, 1e22)
+)
+mutation_ids = st.one_of(_small_ids, _small_ids, _small_ids, _odd_ids)
 
 
 def custom_mutations(names: st.SearchStrategy[str] = names) -> st.SearchStrategy[dict[str, Any]]:

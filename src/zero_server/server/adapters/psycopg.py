@@ -8,6 +8,8 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 import psycopg
+from psycopg import pq
+from psycopg.adapt import Dumper
 from psycopg.rows import dict_row
 
 if TYPE_CHECKING:
@@ -20,6 +22,19 @@ from zero_server.server.transaction import DBTransaction, Row
 from zero_server.server.zql_database import PostgresError, ZQLDatabase
 
 
+class _NulText(str):
+    """A string holding a NUL, which psycopg refuses to send as text."""
+
+
+class _NulTextDumper(Dumper):
+    # Binary goes out unchecked, so Postgres refuses the NUL when it binds the value, after planning the
+    # statement, as it does for the drivers that send text.
+    format = pq.Format.BINARY
+
+    def dump(self, obj: str) -> bytes:
+        return obj.encode()
+
+
 class PsycopgTransaction:
     def __init__(self, connection: psycopg.AsyncConnection[Any]) -> None:
         self._connection = connection
@@ -30,14 +45,12 @@ class PsycopgTransaction:
 
     async def query(self, sql: str, params: Sequence[Any] = ()) -> list[Row]:
         cursor = psycopg.AsyncRawCursor(self._connection, row_factory=dict_row)
+        cursor.adapters.register_dumper(_NulText, _NulTextDumper)
+        bound = [_NulText(p) if isinstance(p, str) and "\x00" in p else p for p in params]
         try:
-            await cursor.execute(sql, list(params))  # ty: ignore[invalid-argument-type]
+            await cursor.execute(sql, bound)  # ty: ignore[invalid-argument-type]
             return await cursor.fetchall() if cursor.description is not None else []
         except psycopg.errors.Error as error:
-            if error.diag.sqlstate is None and "NUL (0x00)" in str(error):
-                # psycopg refuses a NUL in a text value before sending it. Report what Postgres reports
-                # for the same value through the other drivers.
-                raise PostgresError('invalid byte sequence for encoding "UTF8": 0x00') from error
             raise PostgresError(error.diag.message_primary or str(error)) from error
         finally:
             await cursor.close()

@@ -17,7 +17,7 @@ from zero_server.schema import Schema
 from zero_server.server.process_mutations import TransactionProviderHooks, TransactionProviderInput
 from zero_server.server.server_schema import ServerSchema, get_server_schema
 from zero_server.server.transaction import DBTransaction, ServerTransaction
-from zero_server.shared.js import js_stringify
+from zero_server.shared.js import js_number, js_stringify
 from zero_server.z2s.sql import ident
 
 
@@ -80,8 +80,10 @@ class _Hooks:
         else:
             await self._tx.query(
                 f"""DELETE FROM {self._schema}."mutations"
-                    WHERE "clientGroupID" = $1 AND "clientID" = $2 AND "mutationID" <= $3""",
-                (args.client_group_id, args.client_id, args.up_to_mutation_id),
+                    WHERE "clientGroupID" = $1 AND "clientID" = $2 AND "mutationID" <= $3::text::bigint""",
+                # postgres.js sends the number as JavaScript prints it, which a fraction or a value past
+                # bigint's range fails to parse.
+                (args.client_group_id, args.client_id, js_number(args.up_to_mutation_id)),
             )
 
 

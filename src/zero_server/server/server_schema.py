@@ -83,7 +83,7 @@ def _schema_and_table(name: str, server_name: str | None) -> tuple[str, str]:
     if server_name and "." in server_name:
         schema, table = server_name.split(".", 1)
         return schema, table
-    return "public", server_name or name
+    return "public", server_name if server_name is not None else name
 
 
 async def get_server_schema(tx: DBTransaction[object], schema: Schema) -> ServerSchema:
@@ -123,7 +123,7 @@ def check_schemas_are_compatible(schema: Schema, server_schema: ServerSchema) ->
     """One message per table, column or type in `schema` that the database does not match."""
     errors: list[str] = []
     for table in schema.tables.values():
-        server_table_name = table.server_name or table.name
+        server_table_name = table.server_name if table.server_name is not None else table.name
         server_table = server_schema.get(server_table_name)
         if server_table is None:
             errors.append(
@@ -131,7 +131,7 @@ def check_schemas_are_compatible(schema: Schema, server_schema: ServerSchema) ->
             )
             continue
         for column_name, column in table.columns.items():
-            server_column_name = column.server_name or column_name
+            server_column_name = column.server_name if column.server_name is not None else column_name
             server_column = server_table.get(server_column_name)
             if server_column is None:
                 errors.append(

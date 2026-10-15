@@ -106,6 +106,12 @@ PINNED = [
     # A relationship from a table to itself, and a `one` relationship through a junction table.
     _q("user", ["related", "manager", {"ops": [["related", "reports", None]]}], ["whereExists", "reports", None, None]),
     _q("issue", ["related", "label", None], ["whereExists", "label", {"ops": [["where", "name", "a"]]}, None]),
+    # A NUL is refused when the value is bound, after Postgres has planned the statement.
+    _q("comment", ["whereFn", ["and", [["cmp", "authorID", ["\x00"]], ["cmpLit", "", "=", 0]]]]),
+    _q("comment", ["where", "authorID", "a\x00"]),
+    # postgres.js types an array by its first leaf: a boolean-led one is the boolean `false`.
+    _q("issue", ["where", "ownerID", ">", [True, "b"]], ["where", "title", "!=", [False]]),
+    _q("issue", ["where", "title", "IN", [True, "b"]], ["where", "ownerID", ">", [False, "u1"]]),
 ]
 
 
