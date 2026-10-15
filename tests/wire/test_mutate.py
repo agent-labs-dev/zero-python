@@ -1,16 +1,20 @@
 """The wire tier for `/mutate`: the same pushes through upstream's handler and Python's, then a diff of
 the responses and of every row either side wrote."""
 
+import contextlib
 from typing import Any
 
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
+from pydantic import ValidationError
 
 from tests.harness import Harness, HarnessError
 from tests.strategies import as_js, cleanup_args, corrupted, json_values, mutation_ids, strings
 from tests.wire.conftest import ADAPTERS, WireDB
+from tests.wire.errors import SHAPES
 from tests.wire.mutators import REGISTRY, handler, provider, use_schema
+from zero_server.protocol.push import PushBody
 from zero_server.schema import load_schema
 from zero_server.server.process_mutations import handle_mutate_request
 from zero_server.server.push_processor import PushProcessor
@@ -48,6 +52,9 @@ THING_COLUMNS: dict[str, st.SearchStrategy[Any]] = {
     "ttz": st.integers(0, 86_399_999),
     "amount": _rarely(st.integers(-(10**6), 10**6).map(lambda cents: cents / 100), st.just(10**9)),
     "ip": _rarely(st.sampled_from(["10.0.0.1", "::1", "192.168.0.0/24"]), st.just("nope")),
+    # Arrays, whose elements Postgres converts one by one.
+    "stamps": st.lists(st.integers(MS_2000, MS_2000 + 10**12), max_size=2),
+    "clocks": st.lists(st.integers(0, 86_399_999), max_size=2),
 }
 
 
@@ -86,7 +93,21 @@ mutator_args = st.fixed_dictionaries(
 
 
 VALID_QUERY = {"schema": "zero_0", "appID": "zero"}
-BAD_QUERIES = [{"schema": "zero_0"}, {"appID": "zero"}, {"schema": "zero_0", "appID": "zero", "x": "y"}]
+BAD_QUERIES = [
+    {"schema": "zero_0"},
+    {"appID": "zero"},
+    {"schema": "zero_0", "appID": "zero", "x": "y"},
+    # Upstream schemas its escaper refuses: empty, past 60 characters, not ASCII, or not valid Unicode.
+    {"schema": "", "appID": "zero"},
+    {"schema": "s" * 61, "appID": "zero"},
+    {"schema": "zero_é", "appID": "zero"},
+    {"schema": "zero_\ud800", "appID": "zero"},
+    {"schema": "\udc00zero", "appID": "zero"},
+    {"schema": "ze\ud800ro", "appID": "zero"},
+    {"schema": "zero_😀", "appID": "zero"},
+    # One Postgres takes quoted, a quote doubled, and which does not exist.
+    {"schema": 'ze"ro', "appID": "zero"},
+]
 
 
 def _weighted(draw: st.DrawFn, choices: list[tuple[int, Any]]) -> Any:
@@ -181,13 +202,7 @@ def scenarios(draw: st.DrawFn, names: list[str] | None = None) -> list[tuple[Any
 
 
 def comparable(response: dict[str, Any]) -> str:
-    """A response as JSON text, key order included, with a parse failure's message cut to its prefix.
-
-    Upstream's message embeds valita's description of the first bad field; Python's embeds Pydantic's.
-    zero-cache only logs the message, so the prefix and the rest of the body are what must agree.
-    """
-    if response.get("reason") == "parse":
-        response = {**response, "message": response["message"].split(":", 1)[0]}
+    """A response as JSON text, key order included."""
     return js_stringify(response)
 
 
@@ -213,8 +228,14 @@ def _scenario(*bodies: dict[str, Any]) -> list[tuple[Any, dict[str, str], str | 
     return [(body, VALID_QUERY, "u1") for body in bodies]
 
 
+# Upstream logs a failed mutation's error at warn level, and its logger recurses through a circular cause
+# until the stack overflows, so at the default level that mutation fails differently and never commits. Below
+# warn it is reported as Python reports it, which `test_circular_cause_matches_upstream` compares.
+LOGGABLE_SHAPES = [shape for shape in SHAPES if shape != "circular"]
+
 # One per branch of upstream's process-mutations.ts, so each runs whatever Hypothesis draws.
 BRANCHES = {
+    "each thrown shape": _scenario(_push(*(_m(n + 1, f"throw.{shape}") for n, shape in enumerate(LOGGABLE_SHAPES)))),
     "ok": _scenario(_push(_m(1, id="a", value="x"), _m(2, id="a", value="y"))),
     "tx.run": _scenario(_push(_m(1, id="a", value="x"), _m(2, id="b", value="y"), _m(3, "item.count", value="y"))),
     "app error": _scenario(_push(_m(1, "item.appError", id="a", value="x", details={"k": [1]}), _m(2))),
@@ -251,6 +272,7 @@ BRANCHES = {
         _push(_cleanup({"type": "bulk", "clientGroupID": "cg1", "clientIDs": ["c\udc00"]})),
     ),
     "malformed body": [({**_push(_m(1)), "clientGroupID": 1}, VALID_QUERY, None)],
+    "unescapable upstream schemas": [(_push(_m(1)), query, None) for query in BAD_QUERIES[3:]],
     "bad query params": [(_push(_m(1)), {"schema": "zero_0"}, None)],
     "crud rows that are not objects": _scenario(
         _push(
@@ -312,11 +334,16 @@ def test_pushes_match_upstream(harness: Harness, wire_db: WireDB, adapter: str, 
     wire_db.reset()
     schema = load_schema(harness.call("wireSchema"))
     use_schema(schema)
-    py_db = provider(wire_db.py[adapter](schema))
+    # One adapter runs without sessions, and one takes each body already parsed where it parses.
+    py_db = provider(wire_db.py[adapter](schema), sessions=adapter != "psycopg")
     for body, query, user_id in pushes:
         expected = harness.call("mutate", url=wire_db.ts_url, query=query, body=body, userID=user_id)
+        py_body = body
+        if adapter == "asyncpg":
+            with contextlib.suppress(ValidationError):
+                py_body = PushBody.from_json(body)
         actual = wire_db.run(
-            handle_mutate_request(db_provider=py_db, handler=handler, query=query, body=body, user_id=user_id)
+            handle_mutate_request(db_provider=py_db, handler=handler, query=query, body=py_body, user_id=user_id)
         ).to_json()
         assert comparable(actual) == comparable(expected)
     assert as_js(wire_db.dump(wire_db.py_engine)) == as_js(wire_db.dump(wire_db.ts_engine))
@@ -374,4 +401,26 @@ def test_push_processor_matches_upstream(harness: Harness, wire_db: WireDB, adap
             continue
         actual = wire_db.run(processor.process(REGISTRY, query, body)).to_json()
         assert comparable(actual) == comparable(expected)
+    assert as_js(wire_db.dump(wire_db.py_engine)) == as_js(wire_db.dump(wire_db.ts_engine))
+
+
+def test_circular_cause_matches_upstream(harness: Harness, wire_db: WireDB) -> None:
+    wire_db.reset()
+    wire_schema = harness.call("wireSchema")
+    schema = load_schema(wire_schema)
+    use_schema(schema)
+    body = _push(_m(1, "throw.circular"), _m(2))
+    # `mutateWithSchema` logs at error level only.
+    expected = harness.call("mutateWithSchema", url=wire_db.ts_url, schema=wire_schema, query=VALID_QUERY, body=body)
+    actual = wire_db.run(
+        handle_mutate_request(
+            db_provider=provider(wire_db.py["sqlalchemy"](schema)),
+            handler=handler,
+            query=VALID_QUERY,
+            body=body,
+            user_id=None,
+        )
+    )
+    expected.pop("userID")
+    assert as_js(actual.to_json()) == as_js({**expected, "userID": None})
     assert as_js(wire_db.dump(wire_db.py_engine)) == as_js(wire_db.dump(wire_db.ts_engine))

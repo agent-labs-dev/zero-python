@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from tests.wire.errors import SHAPES
 from zero_server.mutators import define_mutator, define_mutators
 from zero_server.protocol.application_error import ApplicationError
 from zero_server.protocol.mutation import CustomMutation, MutationResponse
@@ -74,7 +75,8 @@ def crud(kind: str) -> Callable[[Tx, dict[str, Any]], Awaitable[None]]:
         table = "undefined" if args.get("table") is None else _js_string(args["table"], "")
         if _zql is None or table not in _zql._schema.tables:
             raise TypeError(f"Cannot read properties of undefined (reading '{kind}')")
-        await getattr(tx.mutate[table], kind)(args.get("row"))
+        # `tx.mutate.thing` as the twin writes `tx.mutate[table]`: attribute access is Python's property access.
+        await getattr(getattr(tx.mutate, table), kind)(args.get("row"))
 
     return run
 
@@ -92,7 +94,16 @@ async def count(tx: Tx, args: dict[str, Any]) -> None:
     await put(tx, {"id": "count", "value": ",".join(r["id"] for r in rows)})
 
 
+def throwing(make: Callable[[], BaseException]) -> Callable[[Tx, dict[str, Any]], Awaitable[None]]:
+    async def run(tx: Tx, args: dict[str, Any]) -> None:
+        await put(tx, args)
+        raise make()
+
+    return run
+
+
 MUTATORS: dict[str, Callable[[Tx, dict[str, Any]], Awaitable[None]]] = {
+    **{f"throw.{shape}": throwing(make) for shape, make in SHAPES.items()},
     "item.count": count,
     **{f"crud.{kind}": crud(kind) for kind in ("insert", "upsert", "update", "delete")},
     "item.put": put,
@@ -142,6 +153,8 @@ class FailingForCfail:
             raise Exception("cannot open")
         return await self.db.transaction(callback, transaction_input)
 
+
+class FailingForCfailInSessions(FailingForCfail):
     @asynccontextmanager
     async def session(self) -> AsyncGenerator["FailingForCfail"]:
         # The Python database runs a push in a session; this forwards it, failing as before.
@@ -150,8 +163,9 @@ class FailingForCfail:
             yield FailingForCfail(db)
 
 
-def provider(db: ZQLDatabase[Any]) -> Database[Tx]:
-    return FailingForCfail(db)
+def provider(db: ZQLDatabase[Any], *, sessions: bool = True) -> Database[Tx]:
+    """`db`, failing for `cfail`. Without `sessions`, each transaction takes its own connection."""
+    return FailingForCfailInSessions(db) if sessions else FailingForCfail(db)
 
 
 async def _registry_put(*, tx: Tx, args: Any, ctx: Any) -> None:
@@ -173,3 +187,26 @@ REGISTRY = {
     ),
     "legacy": {"put": _legacy_put},
 }
+
+
+async def _http_put(*, tx: Tx, args: Any, ctx: Any) -> None:
+    from zero_server.shared.js import js_string
+
+    args = _args(args)
+    await put(tx, {**args, "value": f"{_js_string(args.get('value'), '')}@{js_string(ctx['userID'])}"})
+
+
+async def _http_error(*, tx: Tx, args: Any, ctx: Any) -> None:
+    await error(tx, _args(args))
+
+
+HTTP_REGISTRY = define_mutators(
+    {
+        "item": {
+            "put": define_mutator(_http_put),
+            "appError": define_mutator(_registry_app_error),
+            "error": define_mutator(_http_error),
+        }
+    }
+)
+"""The twin of `httpMutators` in `harness/http.ts`, behind the Starlette routes."""

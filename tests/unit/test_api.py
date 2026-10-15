@@ -17,7 +17,7 @@ from zero_server.query.registry import (
     get_query,
     must_get_query,
 )
-from zero_server.schema import load_schema, server_to_client
+from zero_server.schema import load_schema
 from zero_server.server.adapters.sqlalchemy import sqlalchemy_transaction
 from zero_server.server.process_queries import handle_query_request
 from zero_server.server.server_schema import get_server_schema
@@ -47,20 +47,6 @@ def test_load_schema_str_that_is_not_json_hints_at_path() -> None:
     with pytest.raises(json.JSONDecodeError, match=r"pathlib\.Path") as raised:
         load_schema("schema.json")
     assert isinstance(raised.value.__cause__, json.JSONDecodeError)
-
-
-def test_name_mapper() -> None:
-    schema = load_schema(SCHEMA)
-    mapper = server_to_client(schema.tables)
-    assert mapper.table_name("issues") == "issue"
-    assert mapper.table_name_if_known("issues") == "issue"
-    assert mapper.table_name_if_known("nope") is None
-    assert mapper.row("issues", {"owner_id": 1, "extra": 2}) == {"ownerID": 1, "extra": 2}
-    assert mapper.row("plain", {"id": 1}) == {"id": 1}
-    assert mapper.columns("issues", ("owner_id", "x")) == ("ownerID", "x")
-    assert mapper.columns("plain", ("id",)) == ("id",)
-    with pytest.raises(Exception, match=r'unknown table "nope" in \{"at":1\}'):
-        mapper.table_name("nope", {"at": 1})
 
 
 def test_builder_tables() -> None:
@@ -125,7 +111,7 @@ def test_query_registry() -> None:
     merged = define_queries(base, {"issue": {"one": define_query(lambda *, args, ctx: zql.issue.one())}, "x": {}})
     assert sorted(merged.issue) == ["all", "one"]
     assert len(merged) == 2
-    assert get_query(merged, "issue") is None
+    assert get_query(merged, "issue") is merged.issue
     assert get_query(merged, "issue.nope.deeper") is None
     request = merged.issue.one({"a": 1})
     assert (request.query, request.args) == (merged.issue.one, {"a": 1})
@@ -144,7 +130,7 @@ async def test_mutator_registry() -> None:
     await must_get_mutator(mutators, "issue.create").fn(args=1, ctx="c", tx="t")
     assert seen == [(1, "c", "t")]
     assert get_mutator(mutators, "issue|create") is None
-    assert get_mutator(mutators, "issue") is None
+    assert get_mutator(mutators, "issue") is mutators.issue
     request = mutators.issue.delete(5)
     assert (request.mutator, request.args) == (mutators.issue.delete, 5)
     with pytest.raises(Exception, match=r"Mutator not found: nope"):

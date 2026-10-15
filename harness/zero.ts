@@ -3,6 +3,7 @@
 export {
   astSchema,
   mapAST,
+  mapCondition,
   normalizeAST,
 } from './node_modules/@rocicorp/zero/out/zero-protocol/src/ast.js';
 export {transformRequestMessageSchema} from './node_modules/@rocicorp/zero/out/zero-protocol/src/custom-queries.js';

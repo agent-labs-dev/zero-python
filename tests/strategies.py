@@ -1,9 +1,12 @@
 """Hypothesis strategies for wire values, valid and nearly valid."""
 
+import json
 import re
 from typing import Any
 
 from hypothesis import strategies as st
+
+from zero_server.shared.js import js_stringify
 
 MAX_SAFE = 2**53 - 1
 
@@ -39,8 +42,8 @@ SIMPLE_OPS = [
 ]  # fmt: skip
 
 
-def literals() -> st.SearchStrategy[dict[str, Any]]:
-    value = st.none() | scalars | st.lists(scalars, max_size=3)
+def literals(few: bool = False) -> st.SearchStrategy[dict[str, Any]]:
+    value = st.sampled_from([1, "1", True, None]) if few else st.none() | scalars | st.lists(scalars, max_size=3)
     return st.builds(lambda v: {"type": "literal", "value": v}, value)
 
 
@@ -52,16 +55,20 @@ def parameters() -> st.SearchStrategy[dict[str, Any]]:
     )
 
 
-def columns() -> st.SearchStrategy[dict[str, Any]]:
-    return st.builds(lambda n: {"type": "column", "name": n}, names)
+def columns(few: bool = False) -> st.SearchStrategy[dict[str, Any]]:
+    return st.builds(lambda n: {"type": "column", "name": n}, _FEW if few else names)
 
 
-def simple_conditions(static: bool) -> st.SearchStrategy[dict[str, Any]]:
-    right = (literals() | parameters()) if static else literals()
-    left = (literals() | columns() | parameters()) if static else (literals() | columns())
+_FEW = st.sampled_from(["a", "b"])
+"""Names from a vocabulary of two, so that siblings tie and a sort compares them field by field."""
+
+
+def simple_conditions(static: bool, few: bool = False) -> st.SearchStrategy[dict[str, Any]]:
+    right = (literals(few) | parameters()) if static else literals(few)
+    left = (literals(few) | columns(few) | parameters()) if static else (literals(few) | columns(few))
     return st.builds(
         lambda op, left, right: {"type": "simple", "op": op, "left": left, "right": right},
-        st.sampled_from(SIMPLE_OPS),
+        st.sampled_from(["=", "<"] if few else SIMPLE_OPS),
         left,
         right,
     )
@@ -75,8 +82,10 @@ def keys() -> st.SearchStrategy[list[str]]:
     return st.lists(names, min_size=1, max_size=2)
 
 
-def asts(static: bool = False, depth: int = 2) -> st.SearchStrategy[dict[str, Any]]:
-    """Valid ASTs. Every subquery has an alias, as every builder-made one does."""
+def asts(static: bool = False, depth: int = 2, few: bool = False) -> st.SearchStrategy[dict[str, Any]]:
+    """Valid ASTs. Every subquery has an alias, as every builder-made one does. With `few`, names and
+    literals come from a handful each."""
+    names_ = _FEW if few else names
 
     def build(sub: st.SearchStrategy[dict[str, Any]] | None) -> st.SearchStrategy[dict[str, Any]]:
         def subquery() -> st.SearchStrategy[dict[str, Any]]:
@@ -87,12 +96,12 @@ def asts(static: bool = False, depth: int = 2) -> st.SearchStrategy[dict[str, An
                 ),
                 st.builds(lambda p, c: {"parentField": p, "childField": c}, keys(), keys()),
                 sub,
-                names,
+                names_,
                 st.none() | st.sampled_from(["permissions", "client", "test"]),
                 st.none() | st.booleans(),
             )
 
-        leaf = simple_conditions(static)
+        leaf = simple_conditions(static, few)
         if sub is not None:
             leaf = leaf | st.builds(
                 lambda related, op, flip, scalar: _optional(
@@ -108,7 +117,7 @@ def asts(static: bool = False, depth: int = 2) -> st.SearchStrategy[dict[str, An
             lambda inner: st.builds(
                 lambda t, cs: {"type": t, "conditions": cs}, st.sampled_from(["and", "or"]), st.lists(inner, max_size=3)
             ),
-            max_leaves=5,
+            max_leaves=8 if few else 5,
         )
         return st.builds(
             lambda table, schema, alias, where, related, limit, order_by, start: _optional(
@@ -174,30 +183,42 @@ def python_name(key: str) -> str:
 
 @st.composite
 def corrupted(draw: st.DrawFn, valid: st.SearchStrategy[Any]) -> Any:
-    """A valid value, or one with a single defect: a missing key, a null, an extra key, a key under its
-    Python name instead, a null under that name beside it, or a wrong type."""
+    """A valid value, or one with up to three defects: a missing key, a null, an extra key, a key under its
+    Python name instead, a null under that name beside it, or a wrong type.
+
+    Extra keys are sometimes array indexes, which JavaScript enumerates before every other key, so a defect
+    added last can be the one upstream reports first.
+    """
     value = draw(valid)
     if draw(st.booleans()):
         return value
-    path = draw(st.sampled_from(_paths(value)))
+    for _ in range(draw(st.integers(1, 3))):
+        path = draw(st.sampled_from(_paths(value)))
 
-    def damage(node: Any) -> Any:
-        if isinstance(node, dict) and node and draw(st.booleans()):
-            key = draw(st.sampled_from(sorted(node)))
-            match draw(st.sampled_from(["drop", "null", "extra", "rename", "null alias"])):
-                case "drop":
-                    return {k: v for k, v in node.items() if k != key}
-                case "null":
-                    return {**node, key: None}
-                case "rename":
-                    return {python_name(k) if k == key else k: v for k, v in node.items()}
-                case "null alias":
-                    return {**node, python_name(key): None}
-                case _:
-                    return {**node, draw(strings(min_size=1, max_size=4)): draw(json_values)}
-        return draw(json_values)
+        def damage(node: Any) -> Any:
+            if isinstance(node, dict) and node and draw(st.booleans()):
+                key = draw(st.sampled_from(sorted(node)))
+                match draw(st.sampled_from(["drop", "null", "extra", "rename", "null alias"])):
+                    case "drop":
+                        return {k: v for k, v in node.items() if k != key}
+                    case "null":
+                        return {**node, key: None}
+                    case "rename":
+                        return {python_name(k) if k == key else k: v for k, v in node.items()}
+                    case "null alias":
+                        return {**node, python_name(key): None}
+                    case _:
+                        extra = draw(strings(min_size=1, max_size=4) | st.sampled_from(["0", "7", "01", "-1"]))
+                        return {**node, extra: draw(json_values)}
+            return draw(json_values)
 
-    return _replace(value, path, damage)
+        value = _replace(value, path, damage)
+    return value
+
+
+def as_sent(value: Any) -> Any:
+    """`value` as the client receives it: through `JSON.stringify`, then as JavaScript holds it."""
+    return as_js(json.loads(js_stringify(value)))
 
 
 def as_js(value: Any) -> Any:

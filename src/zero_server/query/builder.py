@@ -74,11 +74,11 @@ class Query(Generic[R, C]):
         self._format = format or Format()
         self._strict = strict
 
-    def __repr__(self) -> str:
+    def __repr__(self) -> str:  # python-only: for debugging
         return f"{type(self).__name__}({self._ast.to_json()!r})"
 
     def _check_column(self, column: str) -> None:
-        if self._strict and column not in self._schema.tables[self._table].columns:
+        if self._strict and column not in self._schema.tables[self._table].columns:  # python-only: strict mode
             raise UnknownColumnError(f'unknown column "{column}" of "{self._table}" table')
 
     @property
@@ -91,7 +91,7 @@ class Query(Generic[R, C]):
         return self._ast
 
     @property
-    def table(self) -> str:
+    def table(self) -> str:  # python-only: upstream keeps the table name private
         return self._table
 
     def _new(self, table: str, ast: AST, junction: str | None, format: Format | None = None) -> AnyQuery:
@@ -365,7 +365,7 @@ class Builder:
         return self.table(table)
 
     def table(self, name: str) -> Query[Any, Any]:
-        if name not in self._schema.tables:
+        if name not in self._schema.tables:  # python-only: upstream's builder has `undefined` for it instead
             raise AttributeError(name)
         return Query(self._schema, name, AST(table=name), strict=self._strict)
 

@@ -34,11 +34,13 @@ from zero_server.protocol.mutation import (
 )
 from zero_server.protocol.mutation_id import MutationID
 from zero_server.protocol.push import PushBody
+from zero_server.protocol.schemas import mutate_params_schema, push_body_schema, refusal
 from zero_server.protocol.wire import parse_wire
 from zero_server.shared.asserts import check
-from zero_server.shared.error import get_error_details, get_error_message
+from zero_server.shared.error import error_name, get_error_details, get_error_message
 from zero_server.shared.js import js_number, js_truthy
 from zero_server.shared.json import JSONValue
+from zero_server.shared.json_parse import parse_body
 
 logger = logging.getLogger("zero_server.mutate")
 
@@ -148,14 +150,14 @@ _PASSES_THROUGH = (DatabaseTransactionError, OutOfOrderMutation, MutationAlready
 
 
 def _parse_failure(
-    subject: str, error: BaseException, mutation_ids: list[MutationID], *, syntax: bool = False
+    subject: str, message: str, mutation_ids: list[MutationID], *, name: str = "TypeError"
 ) -> ServerPushFailed:
     return ServerPushFailed(
         reason=ErrorReason.PARSE,
-        message=f"Failed to parse {subject}: {get_error_message(error)}",
+        message=f"Failed to parse {subject}: {message}",
         mutationIDs=mutation_ids,
         # Upstream's parsers throw a `TypeError`, and `JSON.parse` a `SyntaxError`.
-        details={"name": "SyntaxError" if syntax else "TypeError"},
+        details={"name": name},
     )
 
 
@@ -164,10 +166,13 @@ def _parse_push_body(body: object) -> PushBody | ServerPushFailed:
         return PushBody.from_json(body)
     except ValidationError as error:
         logger.error("Failed to parse push body", exc_info=error)
-        return _parse_failure("push body", error, [])
+        decoded = parse_body(body) if isinstance(body, bytes) else body
+        message = refusal(decoded, push_body_schema, "passthrough", get_error_message(error))
+        return _parse_failure("push body", message, [])
     except ValueError as error:
+        # The body's bytes are not JSON: `JSON.parse`'s SyntaxError, or a RangeError for one nested too deep.
         logger.error("Failed to parse push body", exc_info=error)
-        return _parse_failure("push body", error, [], syntax=True)
+        return _parse_failure("push body", str(error), [], name=error_name(error))
 
 
 async def handle_mutate_request[T](
@@ -214,7 +219,8 @@ async def handle_mutate[T](
         params = MutateParams.from_json(dict(query))
     except ValidationError as error:
         logger.error("Failed to parse push query parameters", exc_info=error)
-        return _parse_failure("push query parameters", error, mutation_ids)
+        message = refusal(dict(query), mutate_params_schema, "passthrough", get_error_message(error))
+        return _parse_failure("push query parameters", message, mutation_ids)
 
     if push_body.push_version != 1:
         return ServerPushFailed(

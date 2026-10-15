@@ -4,16 +4,20 @@ import asyncio
 from typing import Any
 
 from hypothesis import strategies as st
+from pydantic import TypeAdapter
 
 from tests.strategies import strings
 from tests.wire import seed
+from tests.wire.errors import SHAPES
 from zero_server.protocol.application_error import ApplicationError
-from zero_server.protocol.ast import Parameter
+from zero_server.protocol.ast import Condition, Parameter
 from zero_server.query.builder import Query, create_builder
 from zero_server.query.expression import ExpressionBuilder
-from zero_server.query.registry import QueryParseError, define_queries, define_query, must_get_query
+from zero_server.query.registry import QueryFn, QueryParseError, define_queries, define_query, must_get_query
 from zero_server.schema import Schema
 from zero_server.shared.js import js_string
+
+_CONDITION: TypeAdapter[Condition] = TypeAdapter(Condition)
 
 
 def _sub(program: dict[str, Any] | None) -> Any:
@@ -44,7 +48,7 @@ def expr(eb: ExpressionBuilder, e: list[Any]) -> Any:
         case "or":
             return eb.or_(*(expr(eb, x) for x in e[1]))
         case "not":
-            return eb.not_(expr(eb, e[1]))
+            return eb.eb.not_(expr(eb, e[1]))
         case "exists":
             return eb.exists(e[1], _sub(e[2]), **_opts(e[3]))
     raise Exception(f"bad expression {js_string(e[0])}")
@@ -59,6 +63,8 @@ def apply(q: Query, ops: list[list[Any]]) -> Query:
                 q = q.where(op[1], v(op[2])) if len(op) == 3 else q.where(op[1], op[2], v(op[3]))
             case "whereFn":
                 q = q.where(lambda eb, e=op[1]: expr(eb, e))
+            case "whereRaw":
+                q = q.where(lambda _eb, c=op[1]: _CONDITION.validate_python(c))
             case "whereExists":
                 q = q.where_exists(op[1], _sub(op[2]), **_opts(op[3]))
             case "related":
@@ -100,11 +106,29 @@ def make_queries(schema: Schema) -> Any:
     def parse_error(*, args: Any, ctx: Any) -> Query:
         raise QueryParseError(Exception("bad args"))
 
+    def parse_error_empty_cause(*, args: Any, ctx: Any) -> Query:
+        raise QueryParseError(Exception(""))
+
+    def parse_error_no_cause(*, args: Any, ctx: Any) -> Query:
+        raise QueryParseError()
+
     def app_error(*, args: Any, ctx: Any) -> Query:
         raise Exception("nope")
 
     def app_details(*, args: Any, ctx: Any) -> Query:
         raise ApplicationError("app", details=args)
+
+    def returning(value: Any) -> QueryFn:
+        return lambda *, args, ctx: value
+
+    def raising(make: Any) -> QueryFn:
+        def fn(*, args: Any, ctx: Any) -> Any:
+            raise make()
+
+        return fn
+
+    def wrapped(*, args: Any, ctx: Any) -> Any:
+        return {"query": run(args=args, ctx=ctx)}
 
     return define_queries(
         {
@@ -112,9 +136,19 @@ def make_queries(schema: Schema) -> Any:
             "nested": {"prog": define_query(run)},
             "validated": define_query(is_program, run),
             "parseError": define_query(parse_error),
+            "parseErrorEmptyCause": define_query(parse_error_empty_cause),
+            "parseErrorNoCause": define_query(parse_error_no_cause),
             "appError": define_query(app_error),
             "appDetails": define_query(app_details),
             "returns": define_query(lambda *, args, ctx: _returns(args)),
+            # A Python function that returns nothing returns None, as a JavaScript one returns undefined.
+            "constant": define_query(lambda *, args, ctx: zql.issue),
+            "returnsNothing": define_query(returning(None)),
+            "returnsString": define_query(returning("abc")),
+            "returnsNumber": define_query(returning(5)),
+            "returnsObject": define_query(returning({})),
+            "wrapped": define_query(wrapped),
+            "throw": {shape: define_query(raising(make)) for shape, make in SHAPES.items()},
         }
     )
 
@@ -278,7 +312,8 @@ def _ops(schema: Schema, table: str, depth: int) -> st.SearchStrategy[list[list[
             )
         ),
         rel.flatmap(lambda r: st.builds(lambda sub: ["related", r, sub], _sub_program(schema, table, r, depth))),
-        st.builds(lambda c, d: ["orderBy", c, d], col, st.sampled_from(["asc", "desc"])),
+        # Upstream's builder takes any direction; z2s sorts ascending only for "asc".
+        st.builds(lambda c, d: ["orderBy", c, d], col, _rarely(st.sampled_from(["asc", "desc"]), st.just("up"), 30)),
         st.builds(
             lambda n: ["limit", n],
             _rarely(st.integers(0, 50), st.sampled_from([-1, 1.5, 2**31, None, True, "3", "-1"]), 20),

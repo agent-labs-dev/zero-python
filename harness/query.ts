@@ -7,6 +7,7 @@ import postgres from 'postgres';
 import {QueryParseError} from './node_modules/@rocicorp/zero/out/zql/src/query/error.js';
 import {toStaticParam} from './node_modules/@rocicorp/zero/out/zero-protocol/src/ast.js';
 import {schema} from './schema.ts';
+import {shapes} from './errors.ts';
 
 // oxlint-disable-next-line no-explicit-any
 type Q = any;
@@ -39,7 +40,8 @@ function expr(eb: Q, e: unknown[]): unknown {
     case 'or':
       return eb.or(...(e[1] as unknown[][]).map(x => expr(eb, x)));
     case 'not':
-      return eb.not(expr(eb, e[1] as unknown[]));
+      // Through `eb.eb`, which is the builder itself.
+      return eb.eb.not(expr(eb, e[1] as unknown[]));
     case 'exists':
       return eb.exists(e[1], sub(e[2] as Sub), (e[3] as Opts) ?? undefined);
   }
@@ -54,6 +56,10 @@ export function apply(q: Q, ops: unknown[][]): Q {
         break;
       case 'whereFn':
         q = q.where((eb: Q) => expr(eb, op[1] as unknown[]));
+        break;
+      case 'whereRaw':
+        // A condition built by hand rather than through the expression builder.
+        q = q.where(() => op[1]);
         break;
       case 'whereExists': {
         const [, rel, program, opts] = op as [string, string, Sub, Opts];
@@ -96,12 +102,18 @@ const program = {
   },
 };
 
-const queries = defineQueries({
+export const queries = defineQueries({
   prog: defineQuery(run as never),
   nested: {prog: defineQuery(run as never)},
   validated: defineQuery(program as never, run as never),
   parseError: defineQuery(() => {
     throw new QueryParseError({cause: new Error('bad args')});
+  }),
+  parseErrorEmptyCause: defineQuery(() => {
+    throw new QueryParseError({cause: new Error('')});
+  }),
+  parseErrorNoCause: defineQuery(() => {
+    throw new QueryParseError({});
   }),
   appError: defineQuery(() => {
     throw new Error('nope');
@@ -110,6 +122,21 @@ const queries = defineQueries({
     throw new ApplicationError('app', {details: args as never});
   }) as never),
   returns: defineQuery((({args}: {args: string}) => RETURNS[args]) as never),
+  // Handlers that return something other than a query, each failing in its own way upstream.
+  constant: defineQuery(() => zql.issue),
+  returnsNothing: defineQuery(() => undefined as never),
+  returnsString: defineQuery(() => 'abc' as never),
+  returnsNumber: defineQuery(() => 5 as never),
+  returnsObject: defineQuery(() => ({}) as never),
+  wrapped: defineQuery(({args}: {args: Program}) => ({query: run({args})}) as never),
+  throw: Object.fromEntries(
+    Object.entries(shapes).map(([shape, make]) => [
+      shape,
+      defineQuery(() => {
+        throw make();
+      }),
+    ]),
+  ),
 });
 
 /** What a query function may return in place of a query, by name. */
@@ -146,6 +173,27 @@ export async function queryRequest({body, userID}: {body: string; userID: string
   const request = new Request('http://localhost/query', {method: 'POST', body: Buffer.from(body, 'base64')});
   const handler = makeHandler();
   return JSON.stringify(await handleQueryRequest({handler, schema, request, userID, logLevel: 'error'}));
+}
+
+// Handlers that skip defineQuery, returning what they like. tests/wire/test_query.py has their twins.
+const raw: Record<string, (args: Program) => unknown> = {
+  query: args => run({args}),
+  wrapped: args => ({query: run({args})}),
+  nothing: () => undefined,
+  string: () => 'abc',
+  number: () => 5,
+  object: () => ({}),
+};
+
+export function rawQuery({body}: {body: unknown}) {
+  return handleQueryRequest({
+    handler: (name, args) => raw[name](args as Program) as never,
+    schema,
+    body: body as never,
+    query: {},
+    userID: 'u',
+    logLevel: 'debug',
+  });
 }
 
 export function schemaJSON() {

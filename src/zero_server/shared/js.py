@@ -133,13 +133,12 @@ def js_stringify(value: object) -> str:
             return _encode_string(value) if value.isascii() else _quote(value)
         case list() | tuple():
             return "[" + ",".join([js_stringify(item) for item in value]) + "]"
-        case dict():
+        case _:
+            assert isinstance(value, dict), f"not a JSON value: {type(value).__name__}"
             members = [
                 f"{_encode_string(k) if k.isascii() else _quote(k)}:{js_stringify(value[k])}" for k in js_keys(value)
             ]
             return "{" + ",".join(members) + "}"
-        case _:
-            raise TypeError(f"not a JSON value: {type(value).__name__}")
 
 
 _SURROGATE = re.compile("[\ud800-\udfff]")

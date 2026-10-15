@@ -11,6 +11,9 @@ from zero_server.shared.json import JSONValue
 
 
 class ApplicationError(Exception):
+    # Upstream's constructor sets the name, so a subclass reports it too.
+    error_name = "ApplicationError"
+
     def __init__(self, message: str, *, details: JSONValue | None = None, cause: BaseException | None = None) -> None:
         super().__init__(message)
         self.message = message
@@ -26,11 +29,7 @@ def is_application_error(error: object) -> bool:
     return isinstance(error, ApplicationError)
 
 
-def wrap_with_application_error(error: object) -> ApplicationError:
+def wrap_with_application_error(error: BaseException) -> ApplicationError:
     if isinstance(error, ApplicationError):
         return error
-    return ApplicationError(
-        get_error_message(error),
-        cause=error if isinstance(error, BaseException) else None,
-        details=get_error_details(error),
-    )
+    return ApplicationError(get_error_message(error), cause=error, details=get_error_details(error))

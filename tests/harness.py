@@ -1,12 +1,16 @@
 """The Python end of `harness/runner.ts`, which runs the published @rocicorp/zero package."""
 
 import json
+import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 HARNESS = ROOT / "harness"
+V8_COVERAGE = HARNESS / "build" / "v8"
+"""Where the runner's V8 coverage of the npm package lands, for `tests/compat.py`."""
 
 
 class HarnessError(Exception):
@@ -17,9 +21,11 @@ class Harness:
     def __init__(self) -> None:
         # Upstream logs every failure it handles; they land here rather than in the test output.
         self._log = (HARNESS / "runner.log").open("w")
+        shutil.rmtree(V8_COVERAGE, ignore_errors=True)
         self._process = subprocess.Popen(
             ["node", "runner.ts"],
             cwd=HARNESS,
+            env={**os.environ, "NODE_V8_COVERAGE": str(V8_COVERAGE)},
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=self._log,

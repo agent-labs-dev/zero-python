@@ -2,12 +2,15 @@
 
 from typing import Any
 
-from hypothesis import given
+import pytest
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from tests.harness import Harness
-from tests.strategies import json_values, scalars
-from zero_server.shared.js import js_sort, js_string, js_stringify
+from tests.strategies import json_values, numbers, scalars
+from zero_server.protocol.application_error import ApplicationError, is_application_error
+from zero_server.shared.error import error_name
+from zero_server.shared.js import js_number, js_sort, js_string, js_stringify
 
 
 @given(
@@ -17,9 +20,35 @@ def test_matches_string(harness: Harness, value: Any) -> None:
     assert js_string(value) == harness.call("jsString", value=value)
 
 
-@given(json_values)
+@pytest.mark.parametrize("text", ["Infinity", "-Infinity", "NaN", "1e400", "-0"])
+def test_writes_numbers_json_cannot_carry_as_string_does(harness: Harness, text: str) -> None:
+    assert js_number(float(text)) == harness.call("numberString", text=text)
+
+
+# Every code point, and often a surrogate, lone or paired: JSON.parse makes those of a `\\ud800` escape.
+any_text = st.lists(
+    st.sampled_from(["\ud800", "\udfff", "\ud83d", "\ude00"]) | st.characters(codec=None, exclude_categories=()),
+    max_size=6,
+).map("".join)
+json_with_any_text = st.recursive(
+    st.none() | any_text | numbers | st.booleans(),
+    lambda inner: st.lists(inner, max_size=3) | st.dictionaries(any_text, inner, max_size=3),
+    max_leaves=6,
+)
+
+
+@given(json_with_any_text | json_values)
 def test_matches_json_stringify(harness: Harness, value: Any) -> None:
     assert js_stringify(value) == harness.call("jsonStringify", value=value)
+
+
+@example(list(range(70, 0, -1)))
+@given(st.lists(st.integers(0, 70), max_size=80))
+def test_sort_of_a_long_array_matches_v8(harness: Harness, items: list[int]) -> None:
+    consistent = {f"{a},{b}": (a > b) - (a < b) for a in set(items) for b in set(items)}
+    assert js_sort(items, lambda a, b: consistent[f"{a},{b}"]) == harness.call(
+        "sortWith", items=items, table=consistent
+    )
 
 
 @given(st.data())
@@ -33,3 +62,17 @@ def test_sort_makes_v8s_comparisons(harness: Harness, data: st.DataObject) -> No
     assert js_sort(items, lambda a, b: consistent[f"{a},{b}"]) == harness.call(
         "sortWith", items=items, table=consistent
     )
+
+
+@pytest.mark.parametrize("details", [None, {"a": [1]}, 0])
+def test_application_errors_describe_themselves_as_upstreams_do(harness: Harness, details: Any) -> None:
+    error = ApplicationError("m", details=details)
+    expected = harness.call("applicationError", message="m", details=details)
+    assert {
+        "kind": error.kind,
+        "name": error_name(error),
+        "message": error.message,
+        "details": error.details,
+        "isApplicationError": is_application_error(error),
+        "plainIsApplicationError": is_application_error(Exception("m")),
+    } == expected
