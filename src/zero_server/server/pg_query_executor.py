@@ -23,11 +23,6 @@ class _Unsafe(int):
     """An integer JavaScript cannot hold exactly. Upstream parses it as a bigint and refuses it."""
 
 
-def _parse_int(text: str) -> int:
-    value = int(text)
-    return _Unsafe(value) if abs(value) > _MAX_SAFE else value
-
-
 def _parse_float(text: str) -> int | float:
     """A whole number written with a fraction, as `numeric` epoch milliseconds are, comes back an `int`.
 
@@ -53,8 +48,19 @@ def _path_to_unsafe(value: Any) -> str | None:
 
 
 def extract_zql_result(rows: list[Row]) -> Any:
-    result = json.loads(rows[0][ZQL_RESULT_KEY], parse_int=_parse_int, parse_float=_parse_float)
-    if (path := _path_to_unsafe(result)) is not None:
+    unsafe = False
+
+    def parse_int(text: str) -> int:
+        nonlocal unsafe
+        value = int(text)
+        if abs(value) <= _MAX_SAFE:
+            return value
+        unsafe = True
+        return _Unsafe(value)
+
+    result = json.loads(rows[0][ZQL_RESULT_KEY], parse_int=parse_int, parse_float=_parse_float)
+    # A duplicate key can drop a parsed unsafe integer, so the walk may still find none.
+    if unsafe and (path := _path_to_unsafe(result)) is not None:
         raise Exception(f"Value exceeds safe Number range. {path}")
     return result
 
