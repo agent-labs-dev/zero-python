@@ -15,11 +15,17 @@ def test_package_imports() -> None:
     assert zero_python.__version__.count(".") == 2
 
 
-def test_harness_runs_the_pinned_zero() -> None:
+def test_harnesses_run_the_pinned_zero() -> None:
     import json
 
     version = (ROOT / "ZERO_VERSION").read_text().strip()
-    package = json.loads((ROOT / "harness" / "package.json").read_text())
-    lock = json.loads((ROOT / "harness" / "package-lock.json").read_text())
-    assert package["dependencies"]["@rocicorp/zero"] == version
-    assert lock["packages"]["node_modules/@rocicorp/zero"]["version"] == version
+    for project in ("harness", "e2e"):
+        package = json.loads((ROOT / project / "package.json").read_text())
+        lock = json.loads((ROOT / project / "package-lock.json").read_text())
+        assert package["dependencies"]["@rocicorp/zero"] == version
+        assert lock["packages"]["node_modules/@rocicorp/zero"]["version"] == version
+
+
+def test_e2e_runs_the_pinned_zero_cache() -> None:
+    version = (ROOT / "ZERO_VERSION").read_text().strip()
+    assert f"image: rocicorp/zero:{version}" in (ROOT / "e2e" / "docker-compose.yml").read_text()
