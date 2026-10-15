@@ -43,6 +43,12 @@ def test_load_schema_from_text_path_or_object(tmp_path: Path) -> None:
     assert load_schema(path) == load_schema(json.dumps(SCHEMA)) == load_schema(SCHEMA)
 
 
+def test_load_schema_str_that_is_not_json_hints_at_path() -> None:
+    with pytest.raises(json.JSONDecodeError, match=r"pathlib\.Path") as raised:
+        load_schema("schema.json")
+    assert isinstance(raised.value.__cause__, json.JSONDecodeError)
+
+
 def test_name_mapper() -> None:
     schema = load_schema(SCHEMA)
     mapper = server_to_client(schema.tables)
