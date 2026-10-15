@@ -1,4 +1,4 @@
-// The TypeScript worker of the paired Postgres benchmarks (bench/__main__.py drives it). Times the
+// The TypeScript worker of the paired wall-clock benchmarks (bench/__main__.py drives it). Times the
 // published @rocicorp/zero package one short burst at a time, so the driver can alternate it with the
 // Python worker (bench/cases.py) case by case.
 //
@@ -13,6 +13,7 @@ import {zeroPostgresJS} from '@rocicorp/zero/server/adapters/postgresjs';
 import postgres from 'postgres';
 import {mutate, pushProcessor} from '../mutate.ts';
 import {schema} from '../schema.ts';
+import {cpuCases} from './cpu_cases.ts';
 import {type Program, MUTATE_QUERY, W, build, checkPush, freshClient, pushBody, withLimit} from './workloads.ts';
 
 // Upstream logs the failures it handles; stdout carries the protocol.
@@ -24,24 +25,31 @@ const filter = new RegExp(config.filter);
 /** A sample takes at least this long, so timer resolution and a stray interrupt matter less. */
 const SAMPLE_MS = 1;
 
-type Case = {fn: () => Promise<unknown>; inner: number};
+type Case = {fn: () => unknown; isAsync: boolean; inner: number};
 const cases = new Map<string, Case>();
 let registered: [string, string][] = [];
 
-function register(name: string, impl: string, fn: () => Promise<unknown>) {
+function register(name: string, impl: string, fn: () => unknown) {
   if (!filter.test(name)) return;
-  cases.set(`${name} ${impl}`, {fn, inner: 1});
+  cases.set(`${name} ${impl}`, {fn, isAsync: false, inner: 1});
   registered.push([name, impl]);
 }
 
 async function loop(c: Case, n: number) {
-  for (let i = 0; i < n; i++) await c.fn();
+  if (c.isAsync) {
+    for (let i = 0; i < n; i++) await c.fn();
+  } else {
+    for (let i = 0; i < n; i++) c.fn();
+  }
 }
 
 async function warm(c: Case, ms: number) {
+  const first = c.fn();
+  c.isAsync = first instanceof Promise;
+  await first;
   const start = performance.now();
   let calls = 0;
-  for (; performance.now() < start + ms || calls < 5; calls++) await c.fn();
+  for (; performance.now() < start + ms || calls < 5; calls++) await loop(c, 1);
   c.inner = Math.max(1, Math.min(10_000, Math.ceil(SAMPLE_MS / ((performance.now() - start) / calls))));
 }
 
@@ -57,8 +65,21 @@ async function time(c: Case, ms: number): Promise<number> {
   return samples[samples.length >> 1];
 }
 
+let cpu: Map<string, () => unknown> | undefined;
+
+/** The CPU-only cases of `group`, from harness/bench/cpu_cases.ts. */
+function cpuGroup(group: string) {
+  return async () => {
+    cpu ??= await cpuCases();
+    for (const [name, fn] of cpu) if (name.split('.')[0] === group) register(name, 'node', fn);
+  };
+}
+
 /** Each group's cases. A case's group is its name's first part. */
 const groups: Record<string, () => Promise<void>> = {
+  ...Object.fromEntries(
+    ['query', 'query_json', 'parse', 'parse_json', 'mutate_cpu', 'z2s'].map(g => [g, cpuGroup(g)]),
+  ),
   // tx.run end to end: compile, query, decode.
   async run() {
     const db = zeroPostgresJS(schema, postgres(config.queryURL, {onnotice: () => {}}));

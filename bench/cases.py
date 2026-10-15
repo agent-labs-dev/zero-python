@@ -1,15 +1,16 @@
-"""The Python worker of the paired Postgres benchmarks: `harness/bench/cases.ts` in Python, case for case,
+"""The Python worker of the paired wall-clock benchmarks: `harness/bench/cases.ts` in Python, case for case,
 speaking the same line protocol to the driver in `bench/__main__.py`.
 
 Usage: `python -m bench.cases <config.json>`, then one JSON request per line on stdin (see cases.ts).
 """
 
 import asyncio
+import inspect
 import json
 import re
 import sys
 import time
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Callable, Coroutine
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,7 @@ import asyncpg
 from psycopg_pool import AsyncConnectionPool
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from bench import cpu
 from bench.workloads import MUTATE_QUERY, W, check_push, fresh_client, push_body, schema, wire_schema, with_limit
 from tests.wire import mutators
 from tests.wire.programs import apply
@@ -37,15 +39,28 @@ SAMPLE_MS = 1
 
 @dataclass
 class Case:
-    fn: Callable[[], Awaitable[Any]]
+    fn: Callable[[], Any]
+    is_async: bool = False
     inner: int = 1
+
+    async def loop(self, n: int) -> None:
+        if self.is_async:
+            for _ in range(n):
+                await self.fn()
+        else:
+            for _ in range(n):
+                self.fn()
 
     async def warm(self, ms: float) -> None:
         """Run for `ms`, then size a sample to `SAMPLE_MS`."""
+        first = self.fn()
+        self.is_async = inspect.isawaitable(first)
+        if inspect.isawaitable(first):
+            await first
         start = time.perf_counter()
         calls = 0
         while time.perf_counter() < start + ms / 1000 or calls < 5:
-            await self.fn()
+            await self.loop(1)
             calls += 1
         per_call_ms = (time.perf_counter() - start) * 1000 / calls
         self.inner = max(1, min(10_000, -int(-SAMPLE_MS // per_call_ms)))
@@ -56,8 +71,7 @@ class Case:
         end = time.perf_counter() + ms / 1000
         while time.perf_counter() < end or not samples:
             t0 = time.perf_counter()
-            for _ in range(self.inner):
-                await self.fn()
+            await self.loop(self.inner)
             samples.append((time.perf_counter() - t0) * 1e6 / self.inner)
         samples.sort()
         return samples[len(samples) // 2]
@@ -72,8 +86,9 @@ class Bench:
     cases: dict[str, Case] = field(default_factory=dict)
     registered: list[tuple[str, str]] = field(default_factory=list)
     _adapters: dict[str, dict[str, ZQLDatabase[Any]]] = field(default_factory=dict)
+    _cpu: dict[str, Callable[[], Any]] | None = None
 
-    def register(self, name: str, impl: str, fn: Callable[[], Awaitable[Any]]) -> None:
+    def register(self, name: str, impl: str, fn: Callable[[], Any]) -> None:
         if re.search(self.filter, name):
             self.cases[f"{name} {impl}"] = Case(fn)
             self.registered.append((name, impl))
@@ -149,7 +164,25 @@ async def pushproc(b: Bench) -> None:
         b.register("pushproc.put.n10", impl, process)
 
 
-GROUPS: dict[str, Callable[[Bench], Coroutine[Any, Any, None]]] = {"run": run, "mutate": mutate, "pushproc": pushproc}
+def cpu_group(group: str) -> Callable[[Bench], Coroutine[Any, Any, None]]:
+    """The CPU-only cases of `group`, from `bench/cpu.py`."""
+
+    async def setup(b: Bench) -> None:
+        if b._cpu is None:
+            b._cpu = await cpu.cases()
+        for name, fn in b._cpu.items():
+            if name.split(".")[0] == group:
+                b.register(name, "python", fn)
+
+    return setup
+
+
+GROUPS: dict[str, Callable[[Bench], Coroutine[Any, Any, None]]] = {
+    **{g: cpu_group(g) for g in ("query", "query_json", "parse", "parse_json", "mutate_cpu", "z2s")},
+    "run": run,
+    "mutate": mutate,
+    "pushproc": pushproc,
+}
 """Each group's cases. A case's group is its name's first part."""
 
 

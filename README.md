@@ -94,7 +94,7 @@ Run them with `uv run pytest` (needs Node 24 and Docker, or `ZERO_SERVER_PG` poi
 
 ## Performance
 
-`bench/` runs the same workloads through zero-server and the published package. The CPU-only cases (the query endpoint, request parsing, the mutate endpoint over an in-memory database, z2s) are [CodSpeed](https://codspeed.io) benchmarks on both sides, and CodSpeed flags a pull request that makes any of them slower. The cases that wait on Postgres (`tx.run`, mutate, `PushProcessor`, per adapter) run through `uv run python -m bench`, which prints each case's Python/TypeScript ratio; CI shows that table without gating on it. `bench/__init__.py` has the commands.
+`bench/` runs the same workloads through zero-server and the published package. The CPU-only cases (the query endpoint, request parsing, the mutate endpoint over an in-memory database, z2s) are [CodSpeed](https://codspeed.io) benchmarks on both sides, and CodSpeed flags a pull request that makes any of them slower. `uv run python -m bench` times every case on the wall clock, including those that wait on Postgres (`tx.run`, mutate, `PushProcessor`, per adapter), and prints each case's Python/TypeScript ratio. CI shows that table without gating on it. `bench/__init__.py` has the commands.
 
 ## Known differences
 

@@ -1,16 +1,17 @@
-"""The paired Postgres benchmarks: TypeScript and Python on the same cases, against the same database.
+"""The paired wall-clock benchmarks: TypeScript and Python on the same cases, on the same machine.
 
-    uv run python -m bench [--groups run,mutate,pushproc,startup] [--filter REGEX] [--rounds 15]
+    uv run python -m bench [--groups GROUP,...] [--filter REGEX] [--rounds 15]
 
-Times `tx.run`, the mutate endpoint and `PushProcessor` per Python adapter against postgres.js, and
-process startup. Each side is a long-lived worker (`harness/bench/cases.ts`, `bench/cases.py`). For each
-case the driver warms both up, then alternates 100 ms bursts between them, so a round's two bursts run
-milliseconds apart under the same load. A case's ratio is the median of the rounds' Python/TS ratios.
+Every case: the CPU-only ones (`bench/cpu.py`, which CodSpeed also gates), then `tx.run`, the mutate
+endpoint and `PushProcessor` per Python adapter against postgres.js, then process startup. Each side
+is a long-lived worker (`harness/bench/cases.ts`, `bench/cases.py`). For each case the driver warms
+both up, then alternates 100 ms bursts between them, so a round's two bursts run milliseconds apart
+under the same load. A case's ratio is the median of the rounds' Python/TS ratios.
 
-These cases wait on Postgres, which CodSpeed's instruction counts leave out, so they are not gated. CI
-prints the table in the job summary. Output lands in `bench/build/`: `results.json` (every round's time
-per case and side) and `report.md` (the table). Needs `npm ci` in `harness/`, and Docker or
-`ZERO_SERVER_PG`. The CPU-only cases are CodSpeed benchmarks instead: see `bench/test_cpu.py`.
+This is the real gap to npm, which CodSpeed's simulated times distort, but it moves with runner load,
+so it is not gated. CI prints the table in the job summary. Output lands in `bench/build/`:
+`results.json` (every round's time per case and side) and `report.md` (the table). Needs `npm ci` in
+`harness/`; the Postgres groups also need Docker or `ZERO_SERVER_PG`.
 """
 
 import argparse
@@ -53,7 +54,9 @@ STARTUP: dict[str, dict[str, list[str]]] = {
         },
     },
 }
-GROUPS = ["run", "mutate", "pushproc", "startup"]
+CPU_GROUPS = ["query", "query_json", "parse", "parse_json", "mutate_cpu", "z2s"]
+POSTGRES_GROUPS = ["run", "mutate", "pushproc"]
+GROUPS = [*CPU_GROUPS, *POSTGRES_GROUPS, "startup"]
 """A case's group is its name's first part."""
 
 
@@ -220,7 +223,7 @@ def main() -> None:
 
     config_path = build / "config.json"
     config = {"filter": args.filter, "queryURL": "", "mutateURL": ""}
-    if set(groups) - {"startup"}:
+    if set(groups) & set(POSTGRES_GROUPS):
         with postgres_server() as base:
             step("seeding Postgres")
             config["mutateURL"], config["queryURL"] = asyncio.run(create_databases(base))
