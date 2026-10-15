@@ -13,7 +13,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, Protocol
 
-from pydantic import Field, PrivateAttr, StrictBool, StrictStr
+from pydantic import Field, StrictBool, StrictStr
 
 from zero_server.protocol.wire import Number, StrictWireModel, WireChecked
 from zero_server.shared.asserts import AssertionFailedError, check
@@ -76,17 +76,15 @@ class SimpleCondition(StrictWireModel):
     left: ValuePosition
     right: Annotated[Parameter | LiteralReference, Field(discriminator="type")]
     op: WireChecked[SimpleOperator]
-    # Upstream's `not` writes the negated condition with `op` second.
-    _op_first: bool = PrivateAttr(default=False)
 
     def negated(self, op: str) -> SimpleCondition:
-        condition = SimpleCondition(op=op, left=self.left, right=self.right)  # ty: ignore[invalid-argument-type]
-        condition._op_first = True
-        return condition
+        return _NegatedSimpleCondition(op=op, left=self.left, right=self.right)  # ty: ignore[invalid-argument-type]
+
+
+class _NegatedSimpleCondition(SimpleCondition):
+    """Upstream's `not` writes the negated condition with `op` second."""
 
     def _ordered(self, dumped: dict[str, Any]) -> dict[str, Any]:
-        if not self._op_first:
-            return dumped
         return {"type": dumped["type"], "op": dumped["op"], "left": dumped["left"], "right": dumped["right"]}
 
 

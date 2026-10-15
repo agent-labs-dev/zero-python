@@ -134,12 +134,16 @@ def make_handler(schema: Schema) -> Any:
     zql = create_builder(schema)
     gate = asyncio.Event()
 
-    async def handler(name: str, args: Any) -> Any:
+    async def wait() -> Any:
+        await gate.wait()
+        return zql.issue
+
+    # Synchronous except for `gate.wait`, as a Python handler may be.
+    def handler(name: str, args: Any) -> Any:
         if name == "raw":
             return _returns(args)
         if name == "gate.wait":
-            await gate.wait()
-            return zql.issue
+            return wait()
         if name == "gate.open":
             gate.set()
             return zql.user

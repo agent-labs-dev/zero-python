@@ -124,15 +124,19 @@ def js_stringify(value: object) -> str:
             return "null"
         case bool():
             return "true" if value else "false"
-        case int() | float():
+        case int():
+            return js_number(value)
+        case float():
             # `JSON.parse("1e400")` is Infinity, which `JSON.stringify` writes as null.
             return js_number(value) if math.isfinite(value) else "null"
         case str():
-            return _quote(value)
+            return _encode_string(value) if value.isascii() else _quote(value)
         case list() | tuple():
             return "[" + ",".join([js_stringify(item) for item in value]) + "]"
         case dict():
-            members = [f"{_quote(k)}:{js_stringify(value[k])}" for k in js_keys(value)]
+            members = [
+                f"{_encode_string(k) if k.isascii() else _quote(k)}:{js_stringify(value[k])}" for k in js_keys(value)
+            ]
             return "{" + ",".join(members) + "}"
         case _:
             raise TypeError(f"not a JSON value: {type(value).__name__}")
@@ -142,13 +146,21 @@ _SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def _quote(text: str) -> str:
-    """A JSON string literal as `JSON.stringify` writes it, which escapes a lone surrogate as `\\udXXX`."""
+    """A JSON string literal as `JSON.stringify` writes it, which escapes a lone surrogate as `\\udXXX`.
+
+    Callers skip it for ASCII text, which needs nothing past the encoder.
+    """
     quoted = _encode_string(text)
-    if _SURROGATE.search(quoted) is None:
+    if _SURROGATE.search(text) is None:
         return quoted
     # A high surrogate followed by a low one is one character in JavaScript, so it is joined first.
     joined = quoted.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
     return _SURROGATE.sub(lambda m: f"\\u{ord(m[0]):04x}", joined)
+
+
+def has_surrogate(text: str) -> bool:
+    """Whether `text` holds a surrogate. ASCII text, almost all of it, is answered without the regex."""
+    return not text.isascii() and _SURROGATE.search(text) is not None
 
 
 def to_well_formed(text: str) -> str:

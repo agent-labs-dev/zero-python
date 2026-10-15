@@ -17,8 +17,8 @@ from zero_server.query.builder import OneQuery, Query
 from zero_server.schema import Schema
 from zero_server.server.process_mutations import TransactionProviderHooks, TransactionProviderInput
 from zero_server.server.server_schema import ServerSchema, get_server_schema
-from zero_server.server.transaction import DBTransaction, Row, ServerTransaction
-from zero_server.shared.js import js_number, js_stringify, to_well_formed
+from zero_server.server.transaction import DBTransaction, ServerTransaction
+from zero_server.shared.js import has_surrogate, js_number, js_stringify, to_well_formed
 from zero_server.z2s.sql import ident
 
 
@@ -44,31 +44,33 @@ class DBConnection[W](Protocol):
     async def transaction[R](self, fn: Callable[[DBTransaction[W]], Awaitable[R]]) -> R: ...
 
 
+def _ill_formed(value: Any) -> bool:
+    if type(value) is str:
+        return has_surrogate(value)
+    return isinstance(value, list | tuple) and any(_ill_formed(item) for item in value)
+
+
 def _well_formed(value: Any) -> Any:
-    match value:
-        case str():
-            return to_well_formed(value)
-        case list() | tuple():
-            return [_well_formed(item) for item in value]
-        case _:
-            return value
+    if type(value) is str:
+        return to_well_formed(value)
+    if isinstance(value, list | tuple):
+        return [_well_formed(item) for item in value]
+    return value
 
 
-class _WellFormedTransaction[W]:
-    """Binds each string with its lone surrogates replaced by U+FFFD.
+def well_formed_params(params: Sequence[Any]) -> Sequence[Any]:
+    """`params` with each lone surrogate in a string replaced by U+FFFD, for an adapter to bind.
 
     postgres.js encodes a string parameter to UTF-8, which replaces them; Python's drivers refuse them.
+    Most parameters are ASCII strings or not strings at all, which the loop passes over without a call.
     """
-
-    def __init__(self, tx: DBTransaction[W]) -> None:
-        self._tx = tx
-
-    @property
-    def wrapped_transaction(self) -> W:
-        return self._tx.wrapped_transaction
-
-    async def query(self, sql: str, params: Sequence[Any] = ()) -> list[Row]:
-        return await self._tx.query(sql, [_well_formed(p) for p in params])
+    for p in params:
+        kind = type(p)
+        if (kind is str and not p.isascii()) or kind is list or kind is tuple:
+            if any(_ill_formed(q) for q in params):
+                return [_well_formed(q) for q in params]
+            break
+    return params
 
 
 class _SessionOpener[W](Protocol):
@@ -166,8 +168,7 @@ class ZQLDatabase[W]:
             upstream_schema="", client_group_id="", client_id="", mutation_id=0
         )
 
-        async def run(driver_tx: DBTransaction[W]) -> R:
-            tx = _WellFormedTransaction(driver_tx)
+        async def run(tx: DBTransaction[W]) -> R:
             if self.schema is not None and self._server_schema is None:
                 self._server_schema = await get_server_schema(tx, self.schema)
             server_tx = ServerTransaction(

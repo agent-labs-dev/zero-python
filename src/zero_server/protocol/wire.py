@@ -92,26 +92,45 @@ class WireModel(BaseModel):
         return dumped
 
     def to_json(self) -> dict[str, JSONValue]:
-        """The JSON object upstream would send for this model."""
-        # Pydantic 2.14's JSON mode replaces a lone surrogate in a dict key with U+FFFD, so
-        # this converts by hand. Back to `mode="json"` once Pydantic keeps such keys intact.
-        return _jsonable(self.model_dump(mode="python"))
+        """The JSON object upstream would send for this model: what `model_dump` gives, built by hand.
+
+        Pydantic 2.14's JSON mode replaces a lone surrogate in a dict key with U+FFFD, and its Python
+        mode leaves tuples and enums for a second pass, so this walks the fields itself.
+        """
+        out: dict[str, Any] = {}
+        for name, key, nullable in _fields(type(self)):
+            value = getattr(self, name)
+            if value is None and not (nullable and name in self.model_fields_set):
+                continue
+            out[key] = value if type(value) in _LEAVES else _jsonable(value)
+        return self._ordered(out)
 
     @classmethod
     def from_json(cls, value: object) -> Self:
         return cls.model_validate(value, context=WIRE, by_alias=True, by_name=False)
 
 
+_LEAVES = frozenset({str, int, bool, float, type(None)})
+
+
 def _jsonable(value: Any) -> Any:
-    match value:
-        case StrEnum():
-            return value.value
-        case list() | tuple():
-            return [_jsonable(item) for item in value]
-        case dict():
-            return {key: _jsonable(item) for key, item in value.items()}
-        case _:
-            return value
+    kind = type(value)
+    if isinstance(value, WireModel):
+        return value.to_json()
+    if kind is dict:
+        return {key: item if type(item) in _LEAVES else _jsonable(item) for key, item in value.items()}
+    if kind is list or kind is tuple:
+        return [item if type(item) in _LEAVES else _jsonable(item) for item in value]
+    return value.value if isinstance(value, StrEnum) else value
+
+
+@functools.cache
+def _fields(cls: type[WireModel]) -> tuple[tuple[str, str, bool], ...]:
+    """Each field's name, its key on the wire, and whether a `None` it was given is sent as `null`."""
+    return tuple(
+        (name, info.serialization_alias or info.alias or name, name in cls.nullable)
+        for name, info in cls.model_fields.items()
+    )
 
 
 @functools.cache

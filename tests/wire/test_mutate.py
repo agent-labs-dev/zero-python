@@ -244,7 +244,11 @@ BRANCHES = {
     ),
     "nul byte": _scenario(_push(_m(1, id="n", value="a\x00b"))),
     "lone surrogates": _scenario(
-        _push(_m(1, id="s", value="a\ud800b"), _m(2, "item.appError", message="m\udc00", details={"\udfff": "\ud83d"}))
+        _push(_m(1, id="s", value="a\ud800b"), _m(2, "item.appError", message="m\udc00", details={"\udfff": "\ud83d"})),
+        # A client ID is bound beside the integer first mutation ID.
+        _push(_m(1, client="c\udc00", id="t", value="v")),
+        # Bulk cleanup binds its client IDs as an array.
+        _push(_cleanup({"type": "bulk", "clientGroupID": "cg1", "clientIDs": ["c\udc00"]})),
     ),
     "malformed body": [({**_push(_m(1)), "clientGroupID": 1}, VALID_QUERY, None)],
     "bad query params": [(_push(_m(1)), {"schema": "zero_0"}, None)],

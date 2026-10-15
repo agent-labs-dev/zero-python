@@ -102,7 +102,16 @@ async def handle_query_request(
     try:
         mapper = client_to_server(schema.tables)
         # All at once, as upstream's `Promise.all`: the first failure fails the batch, the rest run on.
-        responses = await asyncio.gather(*(transform_one(request) for request in parsed[1]))
+        # Each starts eagerly, as each of upstream's handlers is called before the first is awaited, and
+        # one that never suspends is done without a trip through the event loop.
+        if len(parsed[1]) == 1:
+            return QuerySuccess(queries=[await transform_one(parsed[1][0])], userID=user_id)
+        loop = asyncio.get_running_loop()
+        tasks = [asyncio.eager_task_factory(loop, transform_one(request)) for request in parsed[1]]
+        if all(task.done() for task in tasks):
+            responses = [task.result() for task in tasks]
+        else:
+            responses = await asyncio.gather(*tasks)
         return QuerySuccess(queries=list(responses), userID=user_id)
     except Exception as error:
         details = get_error_details(error)
