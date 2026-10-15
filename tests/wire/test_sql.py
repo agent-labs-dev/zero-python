@@ -89,6 +89,10 @@ PINNED = [
     _q("issue", ["where", "title", "==", "a"]),
     _q("issue", ["whereFn", ["cmpLit", 1, "<>", 1]]),
     _q("issue", ["whereFn", ["not", ["cmp", "title", "==", "a"]]]),
+    _q("issue", ["orderBy", "title", "\ufffdasc"], ["orderBy", "id", "ASC"], ["start", {"title": "b"}, None]),
+    _q("issue", ["orderBy", "priority", None], ["limit", 3]),
+    _q("issue", ["where", "title", {"$param": ["x", "y"]}]),
+    _q("issue", ["where", ["title"], "x"], ["limit", 2.0]),
     # An error building the SQL beats one formatting it, wherever each is; between two errors formatting
     # it, the first in the text wins.
     _q("issue", ["where", "title", "==", "a"], ["whereFn", ["cmpLit", {"a": 1}, "=", 1]]),

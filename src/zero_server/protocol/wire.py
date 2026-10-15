@@ -22,14 +22,12 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     GetCoreSchemaHandler,
-    PlainSerializer,
     SerializerFunctionWrapHandler,
     StrictFloat,
     StrictInt,
     TypeAdapter,
     ValidationInfo,
     ValidatorFunctionWrapHandler,
-    WrapValidator,
     model_serializer,
     model_validator,
 )
@@ -54,19 +52,6 @@ def parse_wire[T](adapter: TypeAdapter[T], value: object) -> T:
 def _off_the_wire(info: ValidationInfo) -> bool:
     return info.context is WIRE or info.context is _DECODED
 
-
-def _validate_off_the_wire(value: Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo) -> Any:
-    return handler(value) if _off_the_wire(info) else value
-
-
-type WireChecked[T] = Annotated[
-    T, WrapValidator(_validate_off_the_wire), PlainSerializer(lambda value: value, return_type=Any)
-]
-"""A `T` when parsed off the wire, anything when built in Python and serialized as given.
-
-Upstream's query builder puts whatever the caller passed into the AST and only its wire schema checks
-it, so a value the schema refuses can still reach SQL or the query endpoint's response.
-"""
 
 _JSON_SCALARS = frozenset({str, int, float, bool, type(None)})
 
@@ -129,7 +114,14 @@ def _optional_keys(cls: type["WireModel"]) -> tuple[str, ...]:
 
 
 _MODELS: set[type] = set()
-"""Every `WireModel` class, which `isinstance` would find more slowly through Pydantic's `ABCMeta`."""
+"""Every class with a `to_json`: each `WireModel`, which `isinstance` would find more slowly through
+Pydantic's `ABCMeta`, and each `json_model`."""
+
+
+def json_model[C: type](cls: C) -> C:
+    """Mark a plain class whose `to_json()` gives its JSON, so `dump_json` serializes it with that."""
+    _MODELS.add(cls)
+    return cls
 
 
 class WireModel(BaseModel):
@@ -214,27 +206,27 @@ def _dump_model(model: WireModel) -> dict[str, Any]:
             if nullable and name in model.__pydantic_fields_set__:
                 out[key] = None
         else:
-            out[key] = _dump(value)
+            out[key] = dump_json(value)
     return model._ordered(out)
 
 
 _ANY: TypeAdapter[Any] = TypeAdapter(Any)
 
 
-def _dump(value: Any) -> Any:
+def dump_json(value: Any) -> Any:
     """`value` as JSON: tuples become lists, string enums their values, models what `to_json` gives."""
     kind = type(value)
     if kind in _JSON_SCALARS:
         return value
     if kind is list or kind is tuple:
-        return [_dump(item) for item in value]
+        return [dump_json(item) for item in value]
     if kind is dict:
-        return {key: _dump(item) for key, item in value.items()}
+        return {key: dump_json(item) for key, item in value.items()}
     if kind in _MODELS:
         return value.to_json()
     if isinstance(value, StrEnum):
         return value.value
-    # Anything else only reaches a model through a `WireChecked` field: serialize it as Pydantic does.
+    # Anything else came through the builder into an AST node: serialize it as Pydantic does.
     return _jsonable(_ANY.dump_python(value))
 
 

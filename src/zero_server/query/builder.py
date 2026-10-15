@@ -9,7 +9,7 @@ The errors match upstream's message for message, because a query endpoint report
 import math
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any, Generic
 
 from typing_extensions import TypeVar
@@ -18,26 +18,32 @@ from zero_server.protocol.ast import (
     AST,
     SUBQ_PREFIX,
     Bound,
+    ColumnReference,
     Condition,
     CorrelatedSubquery,
     CorrelatedSubqueryCondition,
     Correlation,
     Direction,
+    SimpleCondition,
     System,
 )
-from zero_server.query.expression import MISSING, ExpressionBuilder, and_, cmp, simplify_condition
+from zero_server.query.expression import MISSING, ExpressionBuilder, _position, and_, cmp, simplify_condition
 from zero_server.schema import Connection, Schema
-from zero_server.shared.asserts import check
+from zero_server.shared.asserts import AssertionFailedError, check
 from zero_server.shared.js import js_check_in, js_string
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Format:
     """The shape of a query's result: a row or a list, and the same for each relationship."""
 
     singular: bool = False
     relationships: dict[str, "Format"] = field(default_factory=dict)
 
+
+_MANY = Format()
+_ONE = Format(singular=True)
+_object_new = object.__new__
 
 R = TypeVar("R", default=dict[str, Any])
 """A row of the query's table, as `tx.run` returns it. Generated schema types narrow it."""
@@ -55,6 +61,8 @@ class UnknownColumnError(Exception):
 class Query(Generic[R, C]):
     """An immutable query on one table. Every method returns a new query."""
 
+    __slots__ = ("_ast", "_format", "_junction", "_schema", "_strict", "_system", "_table")
+
     def __init__(
         self,
         schema: Schema,
@@ -71,7 +79,7 @@ class Query(Generic[R, C]):
         self._ast = ast
         self._system: System = system
         self._junction = current_junction
-        self._format = format or Format()
+        self._format = format or _MANY
         self._strict = strict
 
     def __repr__(self) -> str:
@@ -94,30 +102,40 @@ class Query(Generic[R, C]):
     def table(self) -> str:
         return self._table
 
-    def _new(self, table: str, ast: AST, junction: str | None, format: Format | None = None) -> AnyQuery:
-        return Query(self._schema, table, ast, self._system, junction, format, strict=self._strict)
+    def _new(self, table: str, ast: AST, junction: str | None, format: Format = _MANY) -> AnyQuery:
+        query = self._copy(Query, ast, format)
+        query._table = table
+        query._junction = junction
+        return query
 
-    def _with[Q: Query[Any, Any]](self: Q, format: Format | None = None, **update: Any) -> Q:
-        return type(self)(
-            self._schema,
-            self._table,
-            self._ast.model_copy(update=update),
-            self._system,
-            self._junction,
-            format or self._format,
-            strict=self._strict,
-        )
+    def _copy[Q: Query[Any, Any]](self, cls: type[Q], ast: AST, format: Format) -> Q:
+        # Skips `__init__`, which every builder call would otherwise pay for.
+        query = _object_new(cls)
+        query._schema = self._schema
+        query._table = self._table
+        query._ast = ast
+        query._system = self._system
+        query._junction = self._junction
+        query._format = format
+        query._strict = self._strict
+        return query
+
+    def _with[Q: Query[Any, Any]](self: Q, field: str, value: Any, format: Format | None = None) -> Q:
+        """This query with its AST's `field` set to `value`."""
+        ast = self._ast._copy()
+        setattr(ast, field, value)
+        return self._copy(type(self), ast, format or self._format)
 
     def _with_relationship[Q: Query[Any, Any]](self: Q, name: str, sub: AnyQuery, entry: CorrelatedSubquery) -> Q:
-        format = replace(self._format, relationships={**self._format.relationships, name: sub.format})
-        return self._with(format=format, related=(*(self._ast.related or ()), entry))
+        format = Format(self._format.singular, {**self._format.relationships, name: sub._format})
+        related = self._ast.related
+        return self._with("related", (*related, entry) if related else (entry,), format)
 
     def one(self) -> "OneQuery[R, C]":
         """At most one row: `tx.run` returns it, or `None`."""
-        query = self._with(format=replace(self._format, singular=True), limit=1)
-        return OneQuery(
-            query._schema, query._table, query._ast, query._system, query._junction, query._format, strict=self._strict
-        )
+        ast = self._ast._copy()
+        ast.limit = 1
+        return self._copy(OneQuery, ast, Format(True, self._format.relationships))
 
     def where[Q: Query[Any, Any]](
         self: Q, field_or_factory: C | Callable[[ExpressionBuilder], Condition], *args: Any
@@ -126,14 +144,20 @@ class Query(Generic[R, C]):
         cond: Condition
         # Anything but a function is a field, as upstream has it: a number fails once the column is looked up.
         if isinstance(field_or_factory, str) or not callable(field_or_factory):
-            self._check_column(field_or_factory)
-            check(len(args) >= 1, "Invalid condition. Too few arguments.")
-            cond = cmp(field_or_factory, args[0]) if len(args) == 1 else cmp(field_or_factory, args[0], args[1])
+            if self._strict:
+                self._check_column(field_or_factory)
+            n = len(args)
+            if n == 1:
+                cond = SimpleCondition(op="=", left=ColumnReference(name=field_or_factory), right=_position(args[0]))
+            elif n:
+                cond = cmp(field_or_factory, args[0], args[1])
+            else:
+                raise AssertionFailedError("Invalid condition. Too few arguments.")
         else:
             cond = field_or_factory(self.expression_builder())
         if self._ast.where is not None:
             cond = and_(self._ast.where, cond)
-        return self._with(where=simplify_condition(cond))
+        return self._with("where", simplify_condition(cond))
 
     def where_exists[Q: Query[Any, Any]](
         self: Q,
@@ -150,15 +174,14 @@ class Query(Generic[R, C]):
         if by_table is None:
             raise TypeError(f"Cannot read properties of undefined (reading '{relationship}')")
         related = by_table.get(relationship)
-        check(related, "Invalid relationship")
-        assert related is not None
+        if not related:
+            raise AssertionFailedError("Invalid relationship")
         return related
 
     def related[Q: Query[Any, Any]](self: Q, relationship: str, cb: SubqueryFn | None = None) -> Q:
         """Nest the rows of `relationship` under each row, shaped by `cb` if given."""
         if relationship.startswith(SUBQ_PREFIX):
             raise Exception(f'Relationship names may not start with "{SUBQ_PREFIX}". That is a reserved prefix.')
-        cb = cb or (lambda q: q)
         related = self._relationship(relationship)
         if len(related) == 1:
             (hop,) = related
@@ -166,9 +189,9 @@ class Query(Generic[R, C]):
                 hop.dest_schema,
                 AST(table=hop.dest_schema, alias=relationship),
                 None,
-                Format(singular=hop.cardinality == "one"),
+                _ONE if hop.cardinality == "one" else _MANY,
             )
-            sub = _as_query(cb(q))
+            sub = _as_query(cb(q) if cb else q)
             check(len(hop.source_field) >= 1, "The source of a relationship must specify at last 1 field")
             check(len(hop.dest_field) >= 1, "The destination of a relationship must specify at last 1 field")
             check(
@@ -178,7 +201,7 @@ class Query(Generic[R, C]):
             entry = CorrelatedSubquery(
                 system=self._system,
                 correlation=Correlation(parent_field=hop.source_field, child_field=hop.dest_field),
-                subquery=sub.ast,
+                subquery=sub._ast,
             )
             return self._with_relationship(relationship, sub, entry)
 
@@ -187,11 +210,10 @@ class Query(Generic[R, C]):
             second.dest_schema,
             AST(table=second.dest_schema, alias=relationship),
             relationship,
-            Format(singular=second.cardinality == "one"),
+            _ONE if second.cardinality == "one" else _MANY,
         )
-        sub = _as_query(cb(q))
-        for key in (first.source_field, first.dest_field, second.source_field, second.dest_field):
-            check(len(key) >= 1, "Invalid relationship")
+        sub = _as_query(cb(q) if cb else q)
+        _check_keys(first, second)
         entry = CorrelatedSubquery(
             system=self._system,
             correlation=Correlation(parent_field=first.source_field, child_field=first.dest_field),
@@ -203,7 +225,7 @@ class Query(Generic[R, C]):
                     CorrelatedSubquery(
                         system=self._system,
                         correlation=Correlation(parent_field=second.source_field, child_field=second.dest_field),
-                        subquery=sub.ast,
+                        subquery=sub._ast,
                     ),
                 ),
             ),
@@ -216,29 +238,32 @@ class Query(Generic[R, C]):
             for column in row:
                 self._check_column(column)
             row = dict(row)
-        return self._with(start=Bound(row=row, exclusive=not inclusive))
+        return self._with("start", Bound(row=row, exclusive=not inclusive))
 
     def limit[Q: Query[Any, Any]](self: Q, limit: int | float) -> Q:
-        if _js_negative(limit):
-            raise Exception("Limit must be non-negative")
-        # `(limit | 0) !== limit`: only a number that is already a 32-bit integer survives.
-        if not (_is_number(limit) and math.isfinite(limit) and limit == int(limit) and -(2**31) <= limit < 2**31):
-            raise Exception("Limit must be an integer")
+        if not (type(limit) is int and 0 <= limit < 2**31):  # The usual limit passes both checks.
+            if _js_negative(limit):
+                raise Exception("Limit must be non-negative")
+            # `(limit | 0) !== limit`: only a number that is already a 32-bit integer survives.
+            if not (_is_number(limit) and math.isfinite(limit) and limit == int(limit) and -(2**31) <= limit < 2**31):
+                raise Exception("Limit must be an integer")
         if self._junction:
             raise NotImplementedError(
                 "Limit is not supported in junction relationships yet. Junction relationship being limited: "
                 + self._junction
             )
-        return self._with(limit=limit)
+        return self._with("limit", limit)
 
     def order_by[Q: Query[Any, Any]](self: Q, field: C, direction: Direction) -> Q:
-        self._check_column(field)
+        if self._strict:
+            self._check_column(field)
         if self._junction:
             raise NotImplementedError(
                 "Order by is not supported in junction relationships yet. Junction relationship being ordered: "
                 + self._junction
             )
-        return self._with(order_by=(*(self._ast.order_by or ()), (field, direction)))
+        order_by = self._ast.order_by
+        return self._with("order_by", (*order_by, (field, direction)) if order_by else ((field, direction),))
 
     def _exists(
         self,
@@ -248,20 +273,18 @@ class Query(Generic[R, C]):
         flip: bool | None = None,
         scalar: bool | None = None,
     ) -> Condition:
-        cb = cb or (lambda q: q)
         related = self._relationship(relationship)
         if len(related) == 1:
             (hop,) = related
             check(len(hop.source_field) >= 1, "Invalid relationship")
             check(len(hop.dest_field) >= 1, "Invalid relationship")
-            sub = _as_query(
-                cb(self._new(hop.dest_schema, AST(table=hop.dest_schema, alias=f"{SUBQ_PREFIX}{relationship}"), None))
-            )
+            q = self._new(hop.dest_schema, AST(table=hop.dest_schema, alias=f"{SUBQ_PREFIX}{relationship}"), None)
+            sub = _as_query(cb(q) if cb else q)
             return CorrelatedSubqueryCondition(
                 related=CorrelatedSubquery(
                     system=self._system,
                     correlation=Correlation(parent_field=hop.source_field, child_field=hop.dest_field),
-                    subquery=sub.ast,
+                    subquery=sub._ast,
                 ),
                 op="EXISTS",
                 flip=flip,
@@ -269,17 +292,10 @@ class Query(Generic[R, C]):
             )
 
         first, second = related
-        for key in (first.source_field, first.dest_field, second.source_field, second.dest_field):
-            check(len(key) >= 1, "Invalid relationship")
-        to_dest = _as_query(
-            cb(
-                self._new(
-                    second.dest_schema,
-                    AST(table=second.dest_schema, alias=f"{SUBQ_PREFIX}zhidden_{relationship}"),
-                    relationship,
-                )
-            )
-        )
+        _check_keys(first, second)
+        alias = f"{SUBQ_PREFIX}zhidden_{relationship}"
+        q = self._new(second.dest_schema, AST(table=second.dest_schema, alias=alias), relationship)
+        to_dest = _as_query(cb(q) if cb else q)
         return CorrelatedSubqueryCondition(
             related=CorrelatedSubquery(
                 system=self._system,
@@ -291,7 +307,7 @@ class Query(Generic[R, C]):
                         related=CorrelatedSubquery(
                             system=self._system,
                             correlation=Correlation(parent_field=second.source_field, child_field=second.dest_field),
-                            subquery=to_dest.ast,
+                            subquery=to_dest._ast,
                         ),
                         op="EXISTS",
                         flip=flip,
@@ -304,11 +320,16 @@ class Query(Generic[R, C]):
         )
 
     def expression_builder(self) -> ExpressionBuilder:
-        return ExpressionBuilder(self._exists, self._check_column)
+        return ExpressionBuilder(self._exists, self._check_column if self._strict else None)
 
 
 class OneQuery(Query[R, C]):
     """A query `one()` narrowed to a single row. Its methods keep it singular."""
+
+
+def _check_keys(first: Connection, second: Connection) -> None:
+    for key in (first.source_field, first.dest_field, second.source_field, second.dest_field):
+        check(len(key) >= 1, "Invalid relationship")
 
 
 def _is_number(value: object) -> bool:

@@ -278,7 +278,12 @@ def _ops(schema: Schema, table: str, depth: int) -> st.SearchStrategy[list[list[
             )
         ),
         rel.flatmap(lambda r: st.builds(lambda sub: ["related", r, sub], _sub_program(schema, table, r, depth))),
-        st.builds(lambda c, d: ["orderBy", c, d], col, st.sampled_from(["asc", "desc"])),
+        # Upstream's builder takes any direction, and z2s orders by anything but "asc" descending.
+        st.builds(
+            lambda c, d: ["orderBy", c, d],
+            col,
+            _rarely(st.sampled_from(["asc", "desc"]), st.sampled_from(["ASC", "\ufffdasc", None]), 30),
+        ),
         st.builds(
             lambda n: ["limit", n],
             _rarely(st.integers(0, 50), st.sampled_from([-1, 1.5, 2**31, None, True, "3", "-1"]), 20),

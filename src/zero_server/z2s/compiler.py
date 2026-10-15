@@ -28,7 +28,7 @@ from zero_server.protocol.ast import (
     Value,
 )
 from zero_server.query.builder import Format
-from zero_server.schema import NameMapper, Schema, TableSchema, client_to_server
+from zero_server.schema import NameMapper, Schema, TableSchema
 from zero_server.server.server_schema import ServerColumnSchema, ServerSchema
 from zero_server.shared.asserts import AssertionFailedError, check
 from zero_server.shared.js import js_string
@@ -44,29 +44,45 @@ def complete_ordering(ast: AST, primary_key: Callable[[str], Sequence[str]]) -> 
     """Append each table's primary key to its ordering, so every result has one total order."""
     pk = primary_key(ast.table)
     check(pk is not None, "Unexpected undefined value")
-    update: dict[str, object] = {"order_by": _add_primary_keys(pk, ast.order_by)}
-    if ast.related is not None:
-        update["related"] = tuple(
-            r.model_copy(update={"subquery": complete_ordering(r.subquery, primary_key)}) for r in ast.related
-        )
-    if ast.where is not None:
-        update["where"] = _complete_condition(ast.where, primary_key)
-    return ast.model_copy(update=update)
+    order_by = _add_primary_keys(pk, ast.order_by)
+    related = ast.related
+    if related is not None:
+        related = tuple([_complete_related(r, primary_key) for r in related])
+    where = ast.where
+    if where is not None:
+        where = _complete_condition(where, primary_key)
+    return AST(
+        schema_=ast.schema_,
+        table=ast.table,
+        alias=ast.alias,
+        where=where,
+        related=related,
+        start=ast.start,
+        limit=ast.limit,
+        order_by=order_by,
+    )
+
+
+def _complete_related(related: CorrelatedSubquery, primary_key: Callable[[str], Sequence[str]]) -> CorrelatedSubquery:
+    return CorrelatedSubquery(
+        correlation=related.correlation,
+        hidden=related.hidden,
+        subquery=complete_ordering(related.subquery, primary_key),
+        system=related.system,
+    )
 
 
 def _complete_condition(condition: Condition, primary_key: Callable[[str], Sequence[str]]) -> Condition:
-    match condition:
-        case SimpleCondition():
-            return condition
-        case CorrelatedSubqueryCondition():
-            related = condition.related.model_copy(
-                update={"subquery": complete_ordering(condition.related.subquery, primary_key)}
-            )
-            return condition.model_copy(update={"related": related})
-        case _:
-            return condition.model_copy(
-                update={"conditions": tuple(_complete_condition(c, primary_key) for c in condition.conditions)}
-            )
+    if isinstance(condition, SimpleCondition):
+        return condition
+    if isinstance(condition, CorrelatedSubqueryCondition):
+        return CorrelatedSubqueryCondition(
+            related=_complete_related(condition.related, primary_key),
+            op=condition.op,
+            flip=condition.flip,
+            scalar=condition.scalar,
+        )
+    return type(condition)(conditions=tuple([_complete_condition(c, primary_key) for c in condition.conditions]))
 
 
 def _add_primary_keys(primary_key: Sequence[str], order_by: Ordering | None) -> Ordering:
@@ -76,19 +92,15 @@ def _add_primary_keys(primary_key: Sequence[str], order_by: Ordering | None) -> 
     return (*order_by, *((key, "asc") for key in missing))
 
 
-@dataclass(frozen=True)
+@dataclass(slots=True)
 class _Table:
     zql: str
     alias: str
+    # The alias as it reads before a column: quoted whole, where `ident(alias)` splits a dotted name.
+    quoted: str
 
 
-@dataclass(frozen=True)
-class _Column:
-    table: _Table
-    zql: str
-
-
-@dataclass(frozen=True)
+@dataclass(slots=True)
 class _JunctionTable:
     table: _Table
     correlation: Correlation
@@ -98,11 +110,115 @@ class _JunctionTable:
 type _Correlate = Callable[[_Table], str]
 
 
+def _quote(name: str) -> str:
+    """One part of `ident`: `ident(a, b)` is `_quote(a) + "." + _quote(b)`."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _select_template(server: ServerColumnSchema) -> str:
+    """How a column is selected, `{col}` standing for the column and `{name}` for its client name."""
+    if server.is_enum or server.type not in _DATE_TIME_TYPES:
+        return "{col} as {name}"
+    normalize = server.type in ("timestamptz", "timetz")
+
+    def to_ms(epoch: str) -> str:
+        # EXTRACT(EPOCH FROM timetz) is negative when the offset is positive; wrap to 0..86400000.
+        return f"(({epoch})::bigint + 86400000) % 86400000" if normalize else epoch
+
+    if server.is_array:
+        return (
+            "CASE WHEN {col} IS NULL THEN NULL ELSE "
+            f"ARRAY(SELECT {to_ms('EXTRACT(EPOCH FROM unnest({col})) * 1000')}) END as {{name}}"
+        )
+    return f"{to_ms('EXTRACT(EPOCH FROM {col}) * 1000')} as {{name}}"
+
+
+class _Plan:
+    """The SQL one schema and server schema always compile the same way, kept from one compile to the next."""
+
+    def __init__(self, server_schema: ServerSchema, schema: Schema) -> None:
+        self.server_schema = server_schema
+        self.schema = schema
+        self.mapper: NameMapper = schema.client_to_server_mapper
+        self.tables: dict[str, TableSchema] = schema.tables
+        self._columns: dict[tuple[str, str], str] = {}
+        self._server_columns: dict[tuple[str, str], ServerColumnSchema] = {}
+        self._froms: dict[str, str] = {}
+        self._selections: dict[tuple[str, frozenset[str]], list[list[str]]] = {}
+
+    def column(self, table: str, column: str) -> str:
+        """`column` of `table`, mapped and quoted."""
+        try:
+            quoted = self._columns.get((table, column))
+        except TypeError:  # A column the builder was handed as a list.
+            return _quote(self.mapper.column_name(table, column))
+        if quoted is None:
+            quoted = self._columns[table, column] = _quote(self.mapper.column_name(table, column))
+        return quoted
+
+    def server_column(self, table: str, column: str) -> ServerColumnSchema:
+        try:
+            server = self._server_columns.get((table, column))
+        except TypeError:
+            return self._lookup_server_column(table, column)
+        if server is None:
+            server = self._server_columns[table, column] = self._lookup_server_column(table, column)
+        return server
+
+    def _lookup_server_column(self, table: str, column: str) -> ServerColumnSchema:
+        # The schema check on the first transaction guarantees the column exists.
+        return self.server_schema[self.mapper.table_name(table)][self.mapper.column_name(table, column)]
+
+    def from_table(self, table: str) -> str:
+        server = self._froms.get(table)
+        if server is None:
+            server = self._froms[table] = ident(self.mapper.table_name(table))
+        return server
+
+    def selection(self, table: str, used: frozenset[str]) -> list[list[str]]:
+        """The columns of `table` but `used`, selected under their client names, if there are any: the
+        segments between each mention of the table's alias, which `alias.join(segments)` puts together."""
+        key = (table, used)
+        segments = self._selections.get(key)
+        if segments is None:
+            segments = self._selections[key] = self._selection(table, used)
+        return segments
+
+    def _selection(self, table: str, used: frozenset[str]) -> list[list[str]]:
+        segments: list[str] = []
+        for column in [c for c in self.tables[table].columns if c not in used]:
+            name = ident(column)
+            col = "." + self.column(table, column)
+            first, *rest = _select_template(self.server_column(table, column)).split("{col}")
+            first = first.replace("{name}", name)
+            if segments:
+                segments[-1] += "," + first
+            else:
+                segments.append(first)
+            segments += [col + chunk.replace("{name}", name) for chunk in rest]
+        return [segments] if segments else []
+
+
+_PLANS: dict[tuple[int, int], _Plan] = {}
+_MAX_PLANS = 64
+
+
+def _plan(server_schema: ServerSchema, schema: Schema) -> _Plan:
+    # A plan holds both schemas, so neither id is reused while it is kept. A schema is not changed in place.
+    key = (id(server_schema), id(schema))
+    plan = _PLANS.get(key)
+    if plan is None:
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.clear()
+        plan = _PLANS[key] = _Plan(server_schema, schema)
+    return plan
+
+
 def compile_query(
     server_schema: ServerSchema, schema: Schema, ast: AST, format: Format | None = None
 ) -> tuple[str, list[str | None]]:
     """The SQL text and its bound values. The statement returns the result in column `zql_result`."""
-    compiler = _Compiler(server_schema, schema)
+    compiler = _Compiler(_plan(server_schema, schema))
     ast = complete_ordering(ast, lambda table: schema.tables[table].primary_key)
     body = compiler.select(ast, format)
     text = (
@@ -131,55 +247,35 @@ def limit_clause(params: Params, limit: int | float | None, singular: bool) -> s
 
 
 class _Compiler:
-    def __init__(self, server_schema: ServerSchema, schema: Schema) -> None:
-        self.server_schema = server_schema
-        self.mapper: NameMapper = client_to_server(schema.tables)
-        self.tables: dict[str, TableSchema] = schema.tables
+    def __init__(self, plan: _Plan) -> None:
+        self.plan = plan
+        self.tables = plan.tables
         self.alias_count = 0
         self.params = Params()
 
     def _table(self, zql: str) -> _Table:
         alias = f"{zql}_{self.alias_count}"
         self.alias_count += 1
-        return _Table(zql=zql, alias=alias)
+        return _Table(zql=zql, alias=alias, quoted=_quote(alias))
 
-    def _col(self, column: _Column) -> str:
-        return ident(column.table.alias, self.mapper.column_name(column.table.zql, column.zql))
+    def _col(self, table: _Table, column: str) -> str:
+        return table.quoted + "." + self.plan.column(table.zql, column)
 
     def _from(self, table: _Table) -> str:
-        return f"{ident(self.mapper.table_name(table.zql))} AS {ident(table.alias)}"
+        return f"{self.plan.from_table(table.zql)} AS {ident(table.alias)}"
 
     def _server_column(self, table: _Table, zql_column: str) -> ServerColumnSchema:
-        # The schema check on the first transaction guarantees the column exists.
-        return self.server_schema[self.mapper.table_name(table.zql)][self.mapper.column_name(table.zql, zql_column)]
+        return self.plan.server_column(table.zql, zql_column)
 
-    def _select_ident(self, column: _Column) -> str:
-        server = self._server_column(column.table, column.zql)
-        if not server.is_enum and server.type in _DATE_TIME_TYPES:
-            normalize = server.type in ("timestamptz", "timetz")
-
-            def to_ms(epoch: str) -> str:
-                # EXTRACT(EPOCH FROM timetz) is negative when the offset is positive; wrap to 0..86400000.
-                return f"(({epoch})::bigint + 86400000) % 86400000" if normalize else epoch
-
-            col = self._col(column)
-            if server.is_array:
-                return (
-                    f"CASE WHEN {col} IS NULL THEN NULL ELSE "
-                    f"ARRAY(SELECT {to_ms(f'EXTRACT(EPOCH FROM unnest({col})) * 1000')}) END as {ident(column.zql)}"
-                )
-            return f"{to_ms(f'EXTRACT(EPOCH FROM {col}) * 1000')} as {ident(column.zql)}"
-        return f"{self._col(column)} as {ident(column.zql)}"
+    def _columns(self, table: _Table, used: frozenset[str] = frozenset()) -> list[str]:
+        return [table.quoted.join(segments) for segments in self.plan.selection(table.zql, used)]
 
     def select(self, ast: AST, format: Format | None, correlate: _Correlate | None = None) -> str:
         table = self._table(ast.table)
-        selection = self._related(ast.related or (), format, table)
-        used = {r.subquery.alias or "" for r in ast.related or ()}
-        selection += [
-            self._select_ident(_Column(table, column))
-            for column in self.tables[ast.table].columns
-            if column not in used
-        ]
+        related = ast.related or ()
+        selection = self._related(related, format, table)
+        used = frozenset([r.subquery.alias or "" for r in related]) if related else frozenset()
+        selection += self._columns(table, used)
 
         clauses: list[str] = []
         if ast.where is not None:
@@ -199,9 +295,9 @@ class _Compiler:
         # Never empty: `complete_ordering` has appended the primary key.
         assert order_by
         return "ORDER BY " + ", ".join(
-            f"{self._col(_Column(table, col))} ASC NULLS FIRST"
+            f"{self._col(table, col)} ASC NULLS FIRST"
             if direction == "asc"
-            else f"{self._col(_Column(table, col))} DESC NULLS LAST"
+            else f"{self._col(table, col)} DESC NULLS LAST"
             for col, direction in order_by
         )
 
@@ -224,10 +320,10 @@ class _Compiler:
         return self.params.column(self._server_column(table, field), value, comparison=True)
 
     def _start_equality(self, table: _Table, field: str, value: object) -> str:
-        return f"{self._col(_Column(table, field))} IS NOT DISTINCT FROM {self._start_value(table, field, value)}"
+        return f"{self._col(table, field)} IS NOT DISTINCT FROM {self._start_value(table, field, value)}"
 
     def _start_range(self, table: _Table, field: str, value: object, operator: str) -> str:
-        column = self._col(_Column(table, field))
+        column = self._col(table, field)
         if value is None:
             return f"{column} IS NOT NULL" if operator == ">" else "FALSE"
         typed = self._start_value(table, field, value)
@@ -239,20 +335,18 @@ class _Compiler:
             for r in relationships
         ]
 
-    def _correlator(self, parent_fields: Sequence[_Column], child_fields: Sequence[str]) -> _Correlate:
+    def _correlator(self, parent: _Table, parent_fields: Sequence[str], child_fields: Sequence[str]) -> _Correlate:
         def correlate(child: _Table) -> str:
             return " AND ".join(
-                f"{self._col(parent)} = {self._col(_Column(child, field))}"
-                for parent, field in zip(parent_fields, child_fields, strict=False)
+                f"{self._col(parent, parent_field)} = {self._col(child, field)}"
+                for parent_field, field in zip(parent_fields, child_fields, strict=False)
             )
 
         return correlate
 
     def _parent_correlator(self, relationship: CorrelatedSubquery, parent: _Table) -> _Correlate:
-        return self._correlator(
-            [_Column(parent, f) for f in relationship.correlation.parent_field],
-            relationship.correlation.child_field,
-        )
+        correlation = relationship.correlation
+        return self._correlator(parent, correlation.parent_field, correlation.child_field)
 
     def _relationship(self, relationship: CorrelatedSubquery, format: Format | None, parent: _Table) -> str:
         alias = _must(relationship.subquery.alias)
@@ -265,7 +359,7 @@ class _Compiler:
             assert relationship.subquery.related is not None
             nested = relationship.subquery.related[0].subquery
             selection = self._related(nested.related or (), format, last)
-            selection += [self._select_ident(_Column(last, column)) for column in self.tables[nested.table].columns]
+            selection += self._columns(last)
             correlate = self._parent_correlator(relationship, parent)(tables[0].table)
             where = f" AND {self._where(nested.where, last)}" if nested.where is not None else ""
             start = f" AND {self._start(nested.start, nested.order_by, last)}" if nested.start is not None else ""
@@ -290,9 +384,9 @@ class _Compiler:
             _JunctionTable(self._table(other.subquery.table), other.correlation, other.subquery.limit),
         ]
         first, second = tables
-        on = self._correlator(
-            [_Column(first.table, f) for f in second.correlation.parent_field], second.correlation.child_field
-        )(second.table)
+        on = self._correlator(first.table, second.correlation.parent_field, second.correlation.child_field)(
+            second.table
+        )
         return f"{self._from(first.table)} JOIN {self._from(second.table)} ON {on}", tables
 
     def _where(self, condition: Condition, table: _Table) -> str:
@@ -346,7 +440,7 @@ class _Compiler:
     ) -> str:
         match position:
             case ColumnReference():
-                return self._col(_Column(table, position.name))
+                return self._col(table, position.name)
             case Parameter():
                 raise Exception(_STATIC)
             case _:
