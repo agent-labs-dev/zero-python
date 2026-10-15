@@ -4,73 +4,18 @@ Ported from rocicorp/mono `packages/zero-server/src/custom.ts` (`makeServerTable
 `packages/zql/src/mutate/crud.ts` and the column conversions of `packages/z2s/src/sql.ts` at zero/v1.10.0
 (905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
 
-Every value travels as text and is cast in SQL, as upstream does, so the driver never coerces it: a
-number is its JSON text, a timestamp is epoch milliseconds, a JSON column gets `JSON.stringify` output.
+Values are bound as `zero_python.z2s.sql` binds them.
 """
 
 from collections.abc import Mapping
 from typing import Any
 
 from zero_python.schema import Schema, TableSchema
-from zero_python.server.pg_types import is_native_string, is_number, is_string, is_text_represented
-from zero_python.server.server_schema import ServerColumnSchema, ServerSchema, ServerTableSchema
+from zero_python.server.server_schema import ServerSchema, ServerTableSchema
 from zero_python.server.transaction import DBTransaction
 from zero_python.shared.asserts import check
-from zero_python.shared.js import js_keys, js_string, js_stringify
-
-
-def ident(name: str) -> str:
-    """Quote an identifier as upstream's `sql.ident` does, splitting a dotted name into its parts."""
-    return ".".join('"' + part.replace('"', '""') + '"' for part in name.split("."))
-
-
-def _cast(placeholder: str, column: ServerColumnSchema, comparison: bool) -> str:
-    # Values are bound as text and cast, so the driver describes every parameter as text.
-    match column.type:
-        case "timestamptz" | "timestamp with time zone":
-            return f"to_timestamp({placeholder}::text::numeric / 1000.0)"
-        case "date" | "timestamp" | "timestamp without time zone":
-            return f"to_timestamp({placeholder}::text::numeric / 1000.0) AT TIME ZONE 'UTC'"
-        case "timetz" | "time with time zone":
-            return f"({placeholder}::text::int * interval'1ms')::time"
-        case "time" | "time without time zone":
-            return f"({placeholder}::text::int * interval'1ms')::time AT TIME ZONE 'UTC'"
-        case "uuid":
-            return f"{placeholder}::text::uuid"
-    if column.is_enum:
-        return f'{placeholder}::text::"{column.type}"'
-    if is_native_string(column.type):
-        # Compared as plain text, so a value longer than a varchar column still compares.
-        return f"{placeholder}::text" if comparison else f"{placeholder}::text::{column.type}"
-    if is_text_represented(column.type):
-        return f"{placeholder}::text::{column.type}"
-    if is_number(column.type):
-        # Compared as a double, the representation every ZQL number has.
-        return f"{placeholder}::text::double precision" if comparison else f"{placeholder}::text::{column.type}"
-    return f"{placeholder}::text::{column.type}"
-
-
-class _Params:
-    def __init__(self) -> None:
-        self.values: list[str | None] = []
-
-    def column(self, column: ServerColumnSchema, value: Any, *, comparison: bool) -> str:
-        plural = column.is_array
-        if value is None:
-            self.values.append(None)
-        elif plural:
-            self.values.append(js_stringify(value))
-        elif column.is_enum or is_string(column.type):
-            self.values.append(value if isinstance(value, str) else js_string(value))
-        else:
-            self.values.append(js_stringify(value))
-        index = len(self.values)
-        if value is None and plural:
-            return f"${index}"
-        common = _cast("value" if plural else f"${index}", column, comparison)
-        if plural:
-            return f"ARRAY(\n          SELECT {common} FROM jsonb_array_elements_text(${index}::text::jsonb)\n        )"
-        return common
+from zero_python.shared.js import js_keys
+from zero_python.z2s.sql import Params, ident
 
 
 def _server_name(table: TableSchema) -> str:
@@ -90,7 +35,7 @@ class TableCRUD:
         self._tx = tx
         self._server_table = server_table
 
-    def _pk_clause(self, params: _Params, row: Mapping[str, Any]) -> str:
+    def _pk_clause(self, params: Params, row: Mapping[str, Any]) -> str:
         return " AND ".join(
             f"{ident(server)} = {params.column(self._server_table[server], row.get(name), comparison=True)}"
             for name, server in ((n, _server_column(self._table, n)) for n in self._table.primary_key)
@@ -109,7 +54,7 @@ class TableCRUD:
         keys = js_keys(dict(value))
         targeted = [_server_column(self._table, k) for k in keys]
         pk = [_server_column(self._table, k) for k in self._table.primary_key]
-        params = _Params()
+        params = Params()
         values = ", ".join(
             params.column(self._server_table[server], value[k], comparison=False)
             for k, server in zip(keys, targeted, strict=True)
@@ -132,7 +77,7 @@ class TableCRUD:
         targeted = [(k, _server_column(self._table, k)) for k in self._non_pk(value)]
         if not targeted:
             return
-        params = _Params()
+        params = Params()
         sets = ", ".join(
             f"{ident(server)} = {params.column(self._server_table[server], value[k], comparison=False)}"
             for k, server in targeted
@@ -141,7 +86,7 @@ class TableCRUD:
         await self._tx.query(f"UPDATE {ident(_server_name(self._table))} SET {sets} WHERE {where}", params.values)
 
     async def delete(self, value: Mapping[str, Any]) -> None:
-        params = _Params()
+        params = Params()
         where = self._pk_clause(params, value)
         await self._tx.query(f"DELETE FROM {ident(_server_name(self._table))} WHERE {where}", params.values)
 

@@ -9,7 +9,10 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
+    from zero_python.query.builder import Query
+    from zero_python.schema import Schema
     from zero_python.server.crud import Mutate
+    from zero_python.server.server_schema import ServerSchema
 
 type Row = dict[str, Any]
 
@@ -32,16 +35,31 @@ class ServerTransaction[W]:
         db_transaction: DBTransaction[W],
         client_id: str,
         mutation_id: int,
-        mutate: "Mutate | None" = None,
+        schema: "Schema | None" = None,
+        server_schema: "ServerSchema | None" = None,
     ) -> None:
         self.db_transaction = db_transaction
         self.client_id = client_id
         self.mutation_id = mutation_id
-        self._mutate = mutate
+        self._schema = schema
+        self._server_schema = server_schema
+
+    def _schemas(self, what: str) -> "tuple[Schema, ServerSchema]":
+        if self._schema is None or self._server_schema is None:
+            raise RuntimeError(f"{what} needs a schema: pass one to the database")
+        return self._schema, self._server_schema
 
     @property
     def mutate(self) -> "Mutate":
-        """CRUD on the schema's tables. Needs a database built with a schema."""
-        if self._mutate is None:
-            raise RuntimeError("tx.mutate needs a schema: pass one to the database")
-        return self._mutate
+        """CRUD on the schema's tables, in client names."""
+        from zero_python.server.crud import Mutate
+
+        schema, server_schema = self._schemas("tx.mutate")
+        return Mutate(schema, self.db_transaction, server_schema)
+
+    async def run(self, query: "Query") -> Any:
+        """Run a ZQL query inside this transaction, against Postgres."""
+        from zero_python.server.pg_query_executor import execute_postgres_query
+
+        schema, server_schema = self._schemas("tx.run")
+        return await execute_postgres_query(self.db_transaction, query.ast, query.format, schema, server_schema)

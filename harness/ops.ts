@@ -10,7 +10,7 @@ import {
   v,
 } from './zero.ts';
 import {mutate, mutateWithSchema, pushProcessor, wireSchema} from './mutate.ts';
-import {query, schemaJSON} from './query.ts';
+import {query, runQuery, schemaJSON} from './query.ts';
 
 // The schemas upstream parses requests with, and the mode it parses each in.
 const schemas = {
@@ -26,6 +26,7 @@ export const ops = {
   pushProcessor,
   mutateWithSchema,
   query,
+  runQuery,
   schema: schemaJSON,
   wireSchema: () => JSON.parse(JSON.stringify(wireSchema)),
 

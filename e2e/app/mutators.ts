@@ -1,4 +1,5 @@
 import {ApplicationError, defineMutator, defineMutators} from '@rocicorp/zero';
+import {zql} from './queries.ts';
 
 type ProjectArgs = {id: string; name: string};
 type TaskArgs = {
@@ -32,7 +33,17 @@ export const mutators = defineMutators({
     }),
   },
   task: {
-    create: defineMutator(async ({tx, args}: {tx: never; args: TaskArgs}) => {
+    create: defineMutator(async ({tx, ctx, args}: {tx: never; ctx: {userID: string}; args: TaskArgs}) => {
+      // Authorization is the server's call: it reads through tx.run, which is z2s against Postgres in
+      // the mutation's own transaction. The client may not have the project synced at all.
+      // oxlint-disable-next-line no-explicit-any
+      if ((tx as any).location === 'server') {
+        // oxlint-disable-next-line no-explicit-any
+        const project = await (tx as any).run(zql.project.where('id', args.projectID).one());
+        if (!project || project.ownerID !== ctx.userID) {
+          throw new ApplicationError('Not your project', {details: {projectID: args.projectID}});
+        }
+      }
       // oxlint-disable-next-line no-explicit-any
       await (tx as any).mutate.task.insert({...args, done: false});
     }),

@@ -2,6 +2,7 @@
 // with mutators that tests/wire/mutators.py mirrors one for one.
 import {
   boolean,
+  createBuilder,
   createSchema,
   defineMutator,
   defineMutators,
@@ -48,8 +49,11 @@ const thing = table('thing')
 const pair = table('pair').columns({a: string(), b: number(), note: string().optional()}).primaryKey('a', 'b');
 export const wireSchema = createSchema({tables: [item, thing, pair]});
 
+const zql = createBuilder(wireSchema);
+
 type Tx = {
   dbTransaction: {query(sql: string, params: unknown[]): Promise<unknown[]>};
+  run(query: unknown): Promise<unknown>;
   // oxlint-disable-next-line no-explicit-any
   mutate: any;
 };
@@ -80,6 +84,13 @@ const mutators: Record<string, (tx: Tx, args: Args) => Promise<void>> = {
   'crud.upsert': (tx, args) => tx.mutate[args.table!].upsert(args.row),
   'crud.update': (tx, args) => tx.mutate[args.table!].update(args.row),
   'crud.delete': (tx, args) => tx.mutate[args.table!].delete(args.row),
+  // Reads through tx.run inside the mutation's transaction, so it sees the push's earlier writes.
+  'item.count': async (tx, args) => {
+    const rows = (await tx.run(zql.item.where('value', '!=', String(args.value ?? '')).orderBy('value', 'desc'))) as {
+      id: string;
+    }[];
+    await put(tx, {id: 'count', value: rows.map(r => r.id).join(',')});
+  },
   'item.dbError': async tx => {
     await tx.dbTransaction.query('SELECT * FROM missing_table', []);
   },

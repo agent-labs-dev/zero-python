@@ -7,6 +7,7 @@ The errors match upstream's message for message, because a query endpoint report
 """
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from zero_python.protocol.ast import (
@@ -25,6 +26,14 @@ from zero_python.schema import Connection, Schema
 from zero_python.shared.asserts import check
 
 
+@dataclass(frozen=True)
+class Format:
+    """The shape of a query's result: a row or a list, and the same for each relationship."""
+
+    singular: bool = False
+    relationships: dict[str, "Format"] = field(default_factory=dict)
+
+
 class Query:
     def __init__(
         self,
@@ -33,12 +42,18 @@ class Query:
         ast: AST,
         system: System = "client",
         current_junction: str | None = None,
+        format: Format | None = None,
     ) -> None:
         self._schema = schema
         self._table = table
         self._ast = ast
         self._system: System = system
         self._junction = current_junction
+        self._format = format or Format()
+
+    @property
+    def format(self) -> Format:
+        return self._format
 
     @property
     def ast(self) -> AST:
@@ -49,14 +64,18 @@ class Query:
     def table(self) -> str:
         return self._table
 
-    def _new(self, table: str, ast: AST, junction: str | None) -> "Query":
-        return Query(self._schema, table, ast, self._system, junction)
+    def _new(self, table: str, ast: AST, junction: str | None, format: Format | None = None) -> "Query":
+        return Query(self._schema, table, ast, self._system, junction, format)
 
-    def _with(self, **update: Any) -> "Query":
-        return self._new(self._table, self._ast.model_copy(update=update), self._junction)
+    def _with(self, format: Format | None = None, **update: Any) -> "Query":
+        return self._new(self._table, self._ast.model_copy(update=update), self._junction, format or self._format)
+
+    def _with_relationship(self, name: str, sub: "Query", entry: CorrelatedSubquery) -> "Query":
+        format = replace(self._format, relationships={**self._format.relationships, name: sub.format})
+        return self._with(format=format, related=(*(self._ast.related or ()), entry))
 
     def one(self) -> "Query":
-        return self._with(limit=1)
+        return self._with(format=replace(self._format, singular=True), limit=1)
 
     def where(self, field_or_factory: str | Callable[[ExpressionBuilder], Condition], *args: Any) -> "Query":
         """`where(field, value)`, `where(field, op, value)`, or `where(lambda eb: ...)`."""
@@ -96,7 +115,12 @@ class Query:
         related = self._relationship(relationship)
         if len(related) == 1:
             (hop,) = related
-            q = self._new(hop.dest_schema, AST(table=hop.dest_schema, alias=relationship), None)
+            q = self._new(
+                hop.dest_schema,
+                AST(table=hop.dest_schema, alias=relationship),
+                None,
+                Format(singular=hop.cardinality == "one"),
+            )
             sub = _as_query(cb(q))
             check(len(hop.source_field) >= 1, "The source of a relationship must specify at last 1 field")
             check(len(hop.dest_field) >= 1, "The destination of a relationship must specify at last 1 field")
@@ -109,13 +133,18 @@ class Query:
                 correlation=Correlation(parent_field=hop.source_field, child_field=hop.dest_field),
                 subquery=sub.ast,
             )
-            return self._with(related=(*(self._ast.related or ()), entry))
+            return self._with_relationship(relationship, sub, entry)
 
         first, second = related
-        q = self._new(second.dest_schema, AST(table=second.dest_schema, alias=relationship), relationship)
+        q = self._new(
+            second.dest_schema,
+            AST(table=second.dest_schema, alias=relationship),
+            relationship,
+            Format(singular=second.cardinality == "one"),
+        )
         sub = _as_query(cb(q))
-        for field in (first.source_field, first.dest_field, second.source_field, second.dest_field):
-            check(len(field) >= 1, "Invalid relationship")
+        for key in (first.source_field, first.dest_field, second.source_field, second.dest_field):
+            check(len(key) >= 1, "Invalid relationship")
         entry = CorrelatedSubquery(
             system=self._system,
             correlation=Correlation(parent_field=first.source_field, child_field=first.dest_field),
@@ -132,7 +161,7 @@ class Query:
                 ),
             ),
         )
-        return self._with(related=(*(self._ast.related or ()), entry))
+        return self._with_relationship(relationship, sub, entry)
 
     def start(self, row: Mapping[str, Any], *, inclusive: bool = False) -> "Query":
         return self._with(start=Bound(row=dict(row), exclusive=not inclusive))
@@ -186,8 +215,8 @@ class Query:
             )
 
         first, second = related
-        for field in (first.source_field, first.dest_field, second.source_field, second.dest_field):
-            check(len(field) >= 1, "Invalid relationship")
+        for key in (first.source_field, first.dest_field, second.source_field, second.dest_field):
+            check(len(key) >= 1, "Invalid relationship")
         to_dest = _as_query(
             cb(
                 self._new(

@@ -25,7 +25,11 @@ function connect(userID: string) {
 
 // oxlint-disable-next-line no-explicit-any
 async function settle(z: any, request: unknown) {
-  const result = await z.mutate(request).server;
+  const pending = z.mutate(request);
+  const client = await pending.client;
+  const result = await pending.server;
+  // Both halves go to the run's log: a refusal that already happened on the client points at the app.
+  console.error(JSON.stringify({client, server: result}));
   return result.type === 'error' ? {error: result.error} : {ok: true};
 }
 
@@ -74,6 +78,11 @@ async function read(z: any, query: unknown) {
 }
 
 const grace = connect('grace');
+mutations['grace task in ada project'] = await settle(
+  grace,
+  mutators.task.create({id: 'tg', projectID: 'p1', title: 'sneaky', priority: 1, createdAt: MS}),
+);
+
 const reads = {
   'ada projects.mine': await read(ada, queries.projects.mine()),
   'ada tasks.open p1': await read(ada, queries.tasks.open({projectID: 'p1'})),

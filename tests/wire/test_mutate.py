@@ -9,14 +9,14 @@ from hypothesis import strategies as st
 from tests.harness import Harness
 from tests.strategies import as_js, cleanup_args, corrupted, json_values, mutation_ids
 from tests.wire.conftest import WireDB
-from tests.wire.mutators import REGISTRY, handler, provider
+from tests.wire.mutators import REGISTRY, handler, provider, use_schema
 from zero_python.schema import load_schema
 from zero_python.server.process_mutations import handle_mutate_request
 from zero_python.server.push_processor import PushProcessor
 from zero_python.server.sqlalchemy import SQLAlchemyDatabase
 
 NAMES = [
-    "item.put", "item.put", "item.put", "item.appError", "item.error", "item.typeError", "item.dbError",
+    "item.put", "item.put", "item.put", "item.count", "item.appError", "item.error", "item.typeError", "item.dbError",
     "pre.appError", "pre.error", "post.put", "nope",
 ]  # fmt: skip
 
@@ -199,6 +199,7 @@ def _scenario(*bodies: dict[str, Any]) -> list[tuple[Any, dict[str, str], str | 
 # One per branch of upstream's process-mutations.ts, so each runs whatever Hypothesis draws.
 BRANCHES = {
     "ok": _scenario(_push(_m(1, id="a", value="x"), _m(2, id="a", value="y"))),
+    "tx.run": _scenario(_push(_m(1, id="a", value="x"), _m(2, id="b", value="y"), _m(3, "item.count", value="y"))),
     "app error": _scenario(_push(_m(1, "item.appError", id="a", value="x", details={"k": [1]}), _m(2))),
     "plain error, retried": _scenario(_push(_m(1, "item.error", message=""), _m(2, "item.typeError"))),
     "database error": _scenario(_push(_m(1, "item.dbError"))),
@@ -237,7 +238,9 @@ def _with_branches(test: Any) -> Any:
 @given(scenarios())
 def test_pushes_match_upstream(harness: Harness, wire_db: WireDB, pushes: list[Any]) -> None:
     wire_db.reset()
-    py_db = provider(SQLAlchemyDatabase(wire_db.py_engine, load_schema(harness.call("wireSchema"))))
+    schema = load_schema(harness.call("wireSchema"))
+    use_schema(schema)
+    py_db = provider(SQLAlchemyDatabase(wire_db.py_engine, schema))
     for body, query, user_id in pushes:
         expected = harness.call("mutate", url=wire_db.ts_url, query=query, body=body, userID=user_id)
         actual = wire_db.run(
