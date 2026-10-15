@@ -11,6 +11,7 @@ from pydantic import Field, StrictStr
 from zero_server.protocol.error import PushFailedBody
 from zero_server.protocol.mutation import MutationResponse
 from zero_server.protocol.wire import WireModel
+from zero_server.shared.json import JSONValue
 
 
 class MutateSuccess(WireModel):
@@ -21,6 +22,13 @@ class MutateSuccess(WireModel):
     kind: Literal["MutateResponse"] = "MutateResponse"
     user_id: StrictStr | None = Field(default=None, alias="userID")
     mutations: list[MutationResponse]
+
+    def to_json(self) -> dict[str, JSONValue]:
+        out: dict[str, JSONValue] = {"kind": self.kind}
+        if self.user_id is not None or "user_id" in self.model_fields_set:
+            out["userID"] = self.user_id
+        out["mutations"] = [m.to_json() for m in self.mutations]
+        return out
 
 
 # The wire body. Handlers see `zero_server.MutateResponse`, what `handle_mutate_request` returns.

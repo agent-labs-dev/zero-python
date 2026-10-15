@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 
 from zero_server.protocol.application_error import (
@@ -16,6 +18,9 @@ from zero_server.protocol.ast import (
     map_condition,
     normalize_ast,
 )
+from zero_server.protocol.mutate_server import MutateSuccess
+from zero_server.protocol.mutation import MutationAppError, MutationOk, MutationResponse
+from zero_server.protocol.mutation_id import MutationID
 from zero_server.protocol.query_server import QuerySuccess
 from zero_server.shared.asserts import AssertionFailedError
 
@@ -40,6 +45,18 @@ def test_wrapping_keeps_message_details_and_cause() -> None:
 def test_user_id_is_reported_only_when_set() -> None:
     assert QuerySuccess(queries=[]).to_json() == {"kind": "QueryResponse", "queries": []}
     assert QuerySuccess(queries=[], user_id=None).to_json() == {"kind": "QueryResponse", "queries": [], "userID": None}
+
+
+@pytest.mark.parametrize("user", [{}, {"userID": None}, {"userID": "u1"}])
+@pytest.mark.parametrize("mutation_id", [1, 2.5])
+@pytest.mark.parametrize(
+    "result", [MutationOk(), MutationOk(data={"a": [1]}), MutationAppError(message="no"), MutationAppError()]
+)
+def test_mutate_response_serializes_as_pydantic_does(user: dict[str, Any], mutation_id: float, result: Any) -> None:
+    response = MutationResponse(id=MutationID(id=mutation_id, clientID="c"), result=result)
+    success = MutateSuccess(mutations=[response], **user)
+    assert success.to_json() == success.model_dump(mode="json")
+    assert list(success.to_json()) == list(success.model_dump(mode="json"))
 
 
 def _eq(column: str, value: int) -> SimpleCondition:

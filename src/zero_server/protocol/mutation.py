@@ -106,6 +106,9 @@ class MutationOk(WireModel):
     # Whatever the mutator returned, if anything.
     data: JSONValue | None = None
 
+    def to_json(self) -> dict[str, JSONValue]:
+        return {} if self.data is None else super().to_json()
+
 
 class MutationAppError(WireModel):
     error: Literal["app"] = "app"
@@ -125,3 +128,6 @@ type MutationResult = MutationAppError | MutationZeroError | MutationOk
 class MutationResponse(WireModel):
     id: MutationID
     result: MutationResult
+
+    def to_json(self) -> dict[str, JSONValue]:
+        return {"id": self.id.to_json(), "result": self.result.to_json()}

@@ -43,6 +43,7 @@ from zero_server.shared.json import JSONValue
 logger = logging.getLogger("zero_server.mutate")
 
 _cleanup_results_arg: TypeAdapter[CleanupResultsArg] = TypeAdapter(CleanupResultsArg)
+_OK = MutationOk()  # frozen, so every successful mutation can share it
 
 
 class TransactionProviderHooks(Protocol):
@@ -363,7 +364,7 @@ class _Transactor[T]:
                 await callback(tx, mutation.name, mutation.args[0] if mutation.args else None)
             else:
                 await hooks.write_mutation_result(_app_error_response(mutation, app_error))
-            return MutationResponse(id=MutationID(clientID=mutation.client_id, id=mutation.id), result=MutationOk())
+            return MutationResponse(id=MutationID(clientID=mutation.client_id, id=mutation.id), result=_OK)
 
         try:
             return await self._db.transaction(
