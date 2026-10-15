@@ -112,6 +112,8 @@ PINNED = [
     # postgres.js types an array by its first leaf: a boolean-led one is the boolean `false`.
     _q("issue", ["where", "ownerID", ">", [True, "b"]], ["where", "title", "!=", [False]]),
     _q("issue", ["where", "title", "IN", [True, "b"]], ["where", "ownerID", ">", [False, "u1"]]),
+    # postgres.js binds a lone surrogate as U+FFFD.
+    _q("issue", ["where", "title", "=", "a\ud800"], ["where", "title", "IN", ["\udc00", "b"]]),
 ]
 
 

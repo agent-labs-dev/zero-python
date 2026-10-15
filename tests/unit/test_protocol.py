@@ -59,6 +59,10 @@ def test_mutate_response_serializes_as_pydantic_does(user: dict[str, Any], mutat
     assert list(success.to_json()) == list(success.model_dump(mode="json"))
 
 
+def test_model_dump_leaves_out_excluded_fields() -> None:
+    assert MutationID(id=1, clientID="c").model_dump(exclude={"id"}) == {"clientID": "c"}
+
+
 def _eq(column: str, value: int) -> SimpleCondition:
     return SimpleCondition(op="=", left=ColumnReference(name=column), right=LiteralReference(value=value))
 

@@ -9,7 +9,7 @@ import asyncpg
 from zero_server.schema import Schema
 from zero_server.server.adapters._session import SessionConnection, session
 from zero_server.server.transaction import DBTransaction, Row
-from zero_server.server.zql_database import PostgresError, ZQLDatabase
+from zero_server.server.zql_database import PostgresError, ZQLDatabase, well_formed_params
 
 
 class AsyncpgTransaction:
@@ -22,7 +22,7 @@ class AsyncpgTransaction:
 
     async def query(self, sql: str, params: Sequence[Any] = ()) -> list[Row]:
         try:
-            records = await self._connection.fetch(sql, *params)
+            records = await self._connection.fetch(sql, *well_formed_params(params))
         except asyncpg.PostgresError as error:
             # asyncpg sets `message` to the primary message alone, or to None for an argument it refused to send.
             message = getattr(error, "message", None)

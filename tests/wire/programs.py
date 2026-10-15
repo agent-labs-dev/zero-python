@@ -1,15 +1,19 @@
 """The Python twin of `harness/query.ts`: the same queries, interpreting the same builder programs."""
 
+import asyncio
 from typing import Any
 
 from hypothesis import strategies as st
 
+from tests.strategies import strings
 from tests.wire import seed
+from zero_server.protocol.application_error import ApplicationError
 from zero_server.protocol.ast import Parameter
 from zero_server.query.builder import Query, create_builder
 from zero_server.query.expression import ExpressionBuilder
 from zero_server.query.registry import QueryParseError, define_queries, define_query, must_get_query
 from zero_server.schema import Schema
+from zero_server.shared.js import js_string
 
 
 def _sub(program: dict[str, Any] | None) -> Any:
@@ -17,7 +21,8 @@ def _sub(program: dict[str, Any] | None) -> Any:
 
 
 def _opts(opts: dict[str, Any] | None) -> dict[str, Any]:
-    return opts or {}
+    # The TypeScript twin reads only these two, whatever else the options hold.
+    return {k: v for k, v in (opts or {}).items() if k in ("flip", "scalar")}
 
 
 def v(value: Any) -> Any:
@@ -40,11 +45,14 @@ def expr(eb: ExpressionBuilder, e: list[Any]) -> Any:
             return eb.or_(*(expr(eb, x) for x in e[1]))
         case "not":
             return eb.not_(expr(eb, e[1]))
-        case _:
+        case "exists":
             return eb.exists(e[1], _sub(e[2]), **_opts(e[3]))
+    raise Exception(f"bad expression {js_string(e[0])}")
 
 
 def apply(q: Query, ops: list[list[Any]]) -> Query:
+    if not isinstance(ops, list):
+        raise TypeError("ops is not iterable")
     for op in ops:
         match op[0]:
             case "where":
@@ -61,8 +69,10 @@ def apply(q: Query, ops: list[list[Any]]) -> Query:
                 q = q.limit(op[1])
             case "start":
                 q = q.start(op[1]) if op[2] is None else q.start(op[1], inclusive=op[2])
-            case _:
+            case "one":
                 q = q.one()
+            case _:
+                raise Exception(f"bad op {js_string(op[0])}")
     return q
 
 
@@ -72,11 +82,20 @@ def is_program(value: Any) -> Any:
     raise ValueError("expected a program")
 
 
-def make_handler(schema: Schema) -> Any:
+def make_queries(schema: Schema) -> Any:
     zql = create_builder(schema)
 
     def run(*, args: Any, ctx: Any) -> Query:
-        return apply(zql.table(args["table"]), args["ops"])
+        ops = args.get("ops")
+        if args["table"] not in schema.tables and isinstance(ops, list):
+            # `zql[table]` is undefined in the TypeScript twin, which fails on the first op read off it.
+            for op in ops:
+                method = {"whereFn": "where"}.get(op[0], op[0])
+                if method in ("where", "whereExists", "related", "orderBy", "limit", "start", "one"):
+                    raise TypeError(f"Cannot read properties of undefined (reading '{method}')")
+                raise Exception(f"bad op {js_string(op[0])}")
+            return None  # ty: ignore[invalid-return-type]
+        return apply(zql.table(args["table"]) if args["table"] in schema.tables else None, ops)  # ty: ignore[invalid-argument-type]
 
     def parse_error(*, args: Any, ctx: Any) -> Query:
         raise QueryParseError(Exception("bad args"))
@@ -84,23 +103,60 @@ def make_handler(schema: Schema) -> Any:
     def app_error(*, args: Any, ctx: Any) -> Query:
         raise Exception("nope")
 
-    queries = define_queries(
+    def app_details(*, args: Any, ctx: Any) -> Query:
+        raise ApplicationError("app", details=args)
+
+    return define_queries(
         {
             "prog": define_query(run),
             "nested": {"prog": define_query(run)},
             "validated": define_query(is_program, run),
             "parseError": define_query(parse_error),
             "appError": define_query(app_error),
+            "appDetails": define_query(app_details),
+            "returns": define_query(lambda *, args, ctx: _returns(args)),
         }
     )
-    return lambda name, args: must_get_query(queries, name).fn(args=args, ctx=None)
+
+
+RETURNS: dict[str, Any] = {"number": 5, "fraction": 1.5, "string": "x", "boolean": True, "object": {}, "array": []}
+"""What a query function may return in place of a query, by name. Anything else is `None`, for `undefined`."""
+
+
+def _returns(args: Any) -> Any:
+    return RETURNS.get(args) if isinstance(args, str) else None
+
+
+def make_handler(schema: Schema) -> Any:
+    """Queries by name through the registry, except `raw`, which returns `RETURNS[args]` itself, and
+    `gate.wait`, which finishes only once `gate.open` has run in the same request. One per request."""
+    queries = make_queries(schema)
+    zql = create_builder(schema)
+    gate = asyncio.Event()
+
+    async def wait() -> Any:
+        await gate.wait()
+        return zql.issue
+
+    # Synchronous except for `gate.wait`, as a Python handler may be.
+    def handler(name: str, args: Any) -> Any:
+        if name == "raw":
+            return _returns(args)
+        if name == "gate.wait":
+            return wait()
+        if name == "gate.open":
+            gate.set()
+            return zql.user
+        return must_get_query(queries, name).fn(args=args, ctx=None)
+
+    return handler
 
 
 # ---------------------------------------------------------------------------------------------------
 # Programs: what Hypothesis generates.
 
 OPS = ["=", "!=", "IS", "IS NOT", "<", ">", "<=", ">=", "LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE", "IN", "NOT IN"]
-scalars = st.none() | st.text(max_size=3) | st.integers(-5, 5) | st.floats(-10, 10) | st.booleans()
+scalars = st.none() | strings(max_size=3) | st.integers(-5, 5) | st.floats(-10, 10) | st.booleans()
 params = st.builds(
     lambda anchor, field: {"$param": [anchor, field]},
     st.sampled_from(["authData", "preMutationRow"]),
@@ -109,7 +165,7 @@ params = st.builds(
 # Upstream's builder takes any JSON value, so arrays hold nulls and arrays, and objects reach json
 # columns and everything else.
 _json = st.recursive(
-    st.none() | st.text(max_size=2) | st.integers(-3, 3) | st.booleans(),
+    st.none() | strings(max_size=2) | st.integers(-3, 3) | st.booleans(),
     lambda inner: st.lists(inner, max_size=3) | st.dictionaries(st.sampled_from(["a", "b"]), inner, max_size=2),
     max_leaves=5,
 )

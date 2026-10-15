@@ -8,7 +8,7 @@ A driver plugs in as a `DBConnection`: something that opens a transaction and ha
 supported driver.
 """
 
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, Protocol, overload
 
@@ -18,7 +18,7 @@ from zero_server.schema import Schema
 from zero_server.server.process_mutations import TransactionProviderHooks, TransactionProviderInput
 from zero_server.server.server_schema import ServerSchema, get_server_schema
 from zero_server.server.transaction import DBTransaction, ServerTransaction
-from zero_server.shared.js import js_number, js_stringify
+from zero_server.shared.js import has_surrogate, js_number, js_stringify, to_well_formed
 from zero_server.z2s.sql import ident
 
 
@@ -42,6 +42,35 @@ class DBConnection[W](Protocol):
     """
 
     async def transaction[R](self, fn: Callable[[DBTransaction[W]], Awaitable[R]]) -> R: ...
+
+
+def _ill_formed(value: Any) -> bool:
+    if type(value) is str:
+        return has_surrogate(value)
+    return isinstance(value, list | tuple) and any(_ill_formed(item) for item in value)
+
+
+def _well_formed(value: Any) -> Any:
+    if type(value) is str:
+        return to_well_formed(value)
+    if isinstance(value, list | tuple):
+        return [_well_formed(item) for item in value]
+    return value
+
+
+def well_formed_params(params: Sequence[Any]) -> Sequence[Any]:
+    """`params` with each lone surrogate in a string replaced by U+FFFD, for an adapter to bind.
+
+    postgres.js encodes a string parameter to UTF-8, which replaces them; Python's drivers refuse them.
+    Most parameters are ASCII strings or not strings at all, which the loop passes over without a call.
+    """
+    for p in params:
+        kind = type(p)
+        if (kind is str and not p.isascii()) or kind is list or kind is tuple:
+            if any(_ill_formed(q) for q in params):
+                return [_well_formed(q) for q in params]
+            break
+    return params
 
 
 class _SessionOpener[W](Protocol):

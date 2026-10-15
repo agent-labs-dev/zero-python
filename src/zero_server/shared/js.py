@@ -1,7 +1,9 @@
-"""JavaScript's `String(value)`, for the places upstream compares stringified values."""
+"""JavaScript's `String(value)`, `JSON.stringify` and the other places upstream's output follows JavaScript."""
 
 import json
-from collections.abc import Callable
+import math
+import re
+from collections.abc import Callable, Mapping
 from decimal import Decimal
 from functools import cmp_to_key
 
@@ -34,6 +36,8 @@ def js_number(value: float) -> str:
         # Python's repr writes the same shortest digits, and in this range lays them out as JavaScript does.
         text = repr(value)
         return text[:-2] if text.endswith(".0") else text
+    if not math.isfinite(value):
+        return "NaN" if value != value else "Infinity" if value > 0 else "-Infinity"
     if value == 0:
         return "0"
     if value < 0:
@@ -90,6 +94,16 @@ def js_sort[T](items: list[T], compare: Callable[[T, T], int]) -> list[T]:
     return out
 
 
+def js_check_in(key: str, value: object) -> None:
+    """Raise the `TypeError` JavaScript throws for `key in value` when `value` is not an object.
+
+    `None` stands for `undefined`, which is what a function that returns nothing gives back.
+    """
+    if value is None or isinstance(value, bool | int | float | str):
+        operand = "undefined" if value is None else js_string(value)
+        raise TypeError(f"Cannot use 'in' operator to search for '{key}' in {operand}")
+
+
 def js_truthy(value: object) -> bool:
     """JavaScript's truthiness for a JSON value: an empty array or object is truthy there."""
     if value is None or value is False or value == "":
@@ -110,24 +124,55 @@ def js_stringify(value: object) -> str:
             return "null"
         case bool():
             return "true" if value else "false"
-        case int() | float():
+        case int():
             return js_number(value)
+        case float():
+            # `JSON.parse("1e400")` is Infinity, which `JSON.stringify` writes as null.
+            return js_number(value) if math.isfinite(value) else "null"
         case str():
-            return _encode_string(value)
+            return _encode_string(value) if value.isascii() else _quote(value)
         case list() | tuple():
             return "[" + ",".join([js_stringify(item) for item in value]) + "]"
         case dict():
-            members = [f"{_encode_string(k)}:{js_stringify(value[k])}" for k in js_keys(value)]
+            members = [
+                f"{_encode_string(k) if k.isascii() else _quote(k)}:{js_stringify(value[k])}" for k in js_keys(value)
+            ]
             return "{" + ",".join(members) + "}"
         case _:
             raise TypeError(f"not a JSON value: {type(value).__name__}")
+
+
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _quote(text: str) -> str:
+    """A JSON string literal as `JSON.stringify` writes it, which escapes a lone surrogate as `\\udXXX`.
+
+    Callers skip it for ASCII text, which needs nothing past the encoder.
+    """
+    quoted = _encode_string(text)
+    if _SURROGATE.search(text) is None:
+        return quoted
+    # A high surrogate followed by a low one is one character in JavaScript, so it is joined first.
+    joined = quoted.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
+    return _SURROGATE.sub(lambda m: f"\\u{ord(m[0]):04x}", joined)
+
+
+def has_surrogate(text: str) -> bool:
+    """Whether `text` holds a surrogate. ASCII text, almost all of it, is answered without the regex."""
+    return not text.isascii() and _SURROGATE.search(text) is not None
+
+
+def to_well_formed(text: str) -> str:
+    """`text.toWellFormed()`: lone surrogates replaced by U+FFFD, as encoding a string to UTF-8 does in JavaScript."""
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
 
 
 def _is_array_index(key: str) -> bool:
     return key.isascii() and key.isdigit() and (key == "0" or key[0] != "0") and int(key) < 2**32 - 1
 
 
-def js_keys(obj: dict[str, object]) -> list[str]:
+def js_keys(obj: Mapping[str, object]) -> list[str]:
     """`Object.keys(obj)`: array-index keys first in numeric order, then the rest as inserted."""
     for key in obj:
         if type(key) is not str or key[:1].isdigit():

@@ -14,7 +14,7 @@ from sqlalchemy.pool import PoolProxiedConnection
 from zero_server.schema import Schema
 from zero_server.server.adapters._session import SessionConnection, session
 from zero_server.server.transaction import DBTransaction, Row
-from zero_server.server.zql_database import PostgresError, ZQLDatabase
+from zero_server.server.zql_database import PostgresError, ZQLDatabase, well_formed_params
 
 
 class SQLAlchemyTransaction:
@@ -46,7 +46,7 @@ class SQLAlchemyTransaction:
         if self._driver_transaction is not None and self._driver_in_transaction():
             return await self._driver_transaction.query(sql, params)
         try:
-            result = await self._connection.exec_driver_sql(sql, tuple(params))
+            result = await self._connection.exec_driver_sql(sql, tuple(well_formed_params(params)))
         except DBAPIError as error:
             cause = error.orig.__cause__ if error.orig is not None and error.orig.__cause__ is not None else error.orig
             # asyncpg's `message` is the primary message alone, which is all postgres.js reports.

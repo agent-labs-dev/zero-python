@@ -11,13 +11,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import Field, StrictBool, StrictStr
 
 from zero_server.protocol.wire import Number, StrictWireModel, WireChecked
 from zero_server.shared.asserts import AssertionFailedError, check
-from zero_server.shared.js import js_sort, js_string
+from zero_server.shared.js import js_keys, js_sort, js_string
 from zero_server.shared.json import JSONValue
 
 SUBQ_PREFIX = "zsubq_"
@@ -73,9 +73,19 @@ type ValuePosition = Annotated[LiteralReference | ColumnReference | Parameter, F
 
 class SimpleCondition(StrictWireModel):
     type: Literal["simple"] = "simple"
-    op: WireChecked[SimpleOperator]
     left: ValuePosition
     right: Annotated[Parameter | LiteralReference, Field(discriminator="type")]
+    op: WireChecked[SimpleOperator]
+
+    def negated(self, op: str) -> SimpleCondition:
+        return _NegatedSimpleCondition(op=op, left=self.left, right=self.right)  # ty: ignore[invalid-argument-type]
+
+
+class _NegatedSimpleCondition(SimpleCondition):
+    """Upstream's `not` writes the negated condition with `op` second."""
+
+    def _ordered(self, dumped: dict[str, Any]) -> dict[str, Any]:
+        return {"type": dumped["type"], "op": dumped["op"], "left": dumped["left"], "right": dumped["right"]}
 
 
 class Conjunction(StrictWireModel):
@@ -95,6 +105,12 @@ class CorrelatedSubqueryCondition(StrictWireModel):
     flip: WireChecked[StrictBool | None] = None
     scalar: WireChecked[StrictBool | None] = None
 
+    def _ordered(self, dumped: dict[str, Any]) -> dict[str, Any]:
+        # The builder writes a condition's subquery `system` first, where `related` on the AST has it last.
+        related = dumped["related"]
+        keys = [k for k in ("system", "correlation", "hidden", "subquery") if k in related]
+        return {**dumped, "related": {k: related[k] for k in keys}}
+
 
 type Condition = Annotated[
     SimpleCondition | Conjunction | Disjunction | CorrelatedSubqueryCondition, Field(discriminator="type")
@@ -108,10 +124,10 @@ class Correlation(StrictWireModel):
 
 class CorrelatedSubquery(StrictWireModel):
     correlation: Correlation
-    subquery: AST
-    system: System | None = None
     # A hop the client never sees, such as the junction table of a many-to-many relationship.
     hidden: StrictBool | None = None
+    subquery: AST
+    system: System | None = None
 
 
 class Bound(StrictWireModel):
@@ -126,9 +142,9 @@ class AST(StrictWireModel):
     alias: StrictStr | None = None
     where: Condition | None = None
     related: tuple[CorrelatedSubquery, ...] | None = None
+    start: Bound | None = None
     limit: Number | None = None
     order_by: Ordering | None = Field(default=None, alias="orderBy")
-    start: Bound | None = None
 
 
 for _model in (Conjunction, Disjunction, CorrelatedSubqueryCondition, CorrelatedSubquery, AST):
@@ -201,10 +217,10 @@ def _transform_ast(ast: AST, transform: _Transform) -> AST:
 
 
 def _entries(row: Row) -> list[tuple[str, Value]]:
-    """`Object.entries(row)`. The builder takes any row, and an array's keys are its indexes."""
+    """`Object.entries(row)`, index-like keys first. The builder takes any row, and an array's keys are its indexes."""
     if isinstance(row, list):
         return [(str(i), value) for i, value in enumerate(row)]
-    return list(row.items())
+    return [(key, row[key]) for key in js_keys(row)]
 
 
 def _transform_where(where: Condition, table: str, transform: _Transform) -> Condition:

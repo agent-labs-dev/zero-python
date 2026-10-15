@@ -106,11 +106,7 @@ def not_(expression: Condition) -> Condition:
                 scalar=expression.scalar,
             )
         case _:
-            return SimpleCondition(
-                op=_negate(expression.op),  # ty: ignore[invalid-argument-type]
-                left=expression.left,
-                right=expression.right,
-            )
+            return expression.negated(_negate(expression.op))
 
 
 def _negate(op: str) -> str:

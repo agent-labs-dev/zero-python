@@ -22,8 +22,8 @@ class QuerySuccess(WireModel):
     nullable = frozenset({"user_id"})
 
     kind: Literal["QueryResponse"] = "QueryResponse"
-    user_id: StrictStr | None = Field(default=None, alias="userID")
     queries: TransformResponseBody
+    user_id: StrictStr | None = Field(default=None, alias="userID")
 
 
 type QueryResponse = QuerySuccess | TransformFailedBody

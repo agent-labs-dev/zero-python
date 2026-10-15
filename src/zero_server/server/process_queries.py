@@ -4,8 +4,8 @@ Ported from rocicorp/mono `packages/zero-server/src/queries/process-queries.ts` 
 (905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
 """
 
+import asyncio
 import inspect
-import json
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -18,17 +18,17 @@ from zero_server.protocol.custom_queries import (
     ParseErroredQuery,
     TransformedQuery,
     TransformRequestMessage,
+    TransformRequestQuery,
 )
 from zero_server.protocol.error import ErrorReason, ServerTransformFailed
 from zero_server.protocol.query_server import QuerySuccess
 from zero_server.protocol.wire import parse_wire
-from zero_server.query.builder import Query
+from zero_server.query.builder import Query, as_query_internals
 from zero_server.query.registry import QueryParseError
 from zero_server.schema import Schema, client_to_server
-from zero_server.shared.asserts import check
 from zero_server.shared.error import get_error_details, get_error_message
-from zero_server.shared.js import js_truthy
-from zero_server.shared.json import JSONValue
+from zero_server.shared.js import js_check_in, js_truthy
+from zero_server.shared.json import JSONValue, parse_json_body
 
 logger = logging.getLogger("zero_server.query")
 
@@ -63,7 +63,7 @@ async def handle_query_request(
     """
     query_ids: list[str] = []
     try:
-        json_body: Any = json.loads(body) if isinstance(body, bytes) else body
+        json_body: Any = parse_json_body(body) if isinstance(body, bytes) else body
         parsed = parse_wire(_transform_request, json_body)
         query_ids = [r.id for r in parsed[1]]
     except (ValueError, ValidationError) as error:
@@ -75,38 +75,44 @@ async def handle_query_request(
             details={"name": "TypeError" if isinstance(error, ValidationError) else "SyntaxError"},
         )
 
-    try:
-        responses: list[Any] = []
-        for request in parsed[1]:
-            try:
-                result = request_query = handler(request.name, request.args[0] if request.args else None)
-                if inspect.isawaitable(request_query):
-                    result = await request_query
-            except Exception as error:
-                details = get_error_details(error)
-                errored = ParseErroredQuery if isinstance(error, QueryParseError) else AppErroredQuery
-                responses.append(
-                    errored(
-                        id=request.id,
-                        name=request.name,
-                        message=get_error_message(error),
-                        details=details if js_truthy(details) else None,
-                    )
-                )
-                continue
-            check(
-                isinstance(result, Query),
-                "Query does not implement QueryInternals. This likely means there are two copies of Zero in your "
-                "runtime.",
+    async def transform_one(request: TransformRequestQuery) -> TransformedQuery | AppErroredQuery | ParseErroredQuery:
+        try:
+            result = handler(request.name, request.args[0] if request.args else None)
+            if inspect.isawaitable(result):
+                result = await result
+            # Upstream unwraps a deprecated `{query}` result here, which needs an object.
+            js_check_in("query", result)
+        except Exception as error:
+            details = get_error_details(error)
+            errored = ParseErroredQuery if isinstance(error, QueryParseError) else AppErroredQuery
+            return errored(
+                id=request.id,
+                name=request.name,
+                message=get_error_message(error),
+                details=details if js_truthy(details) else None,
             )
-            assert isinstance(result, Query)
-            try:
-                ast = server_ast(result, schema)
-            except Exception as error:
-                logger.error("Failed to map AST", exc_info=error)
-                raise
-            responses.append(TransformedQuery(id=request.id, name=request.name, ast=ast))
-        return QuerySuccess(queries=responses, userID=user_id)
+        query = as_query_internals(result)
+        try:
+            ast = map_ast(query.ast, mapper)
+        except Exception as error:
+            logger.error("Failed to map AST", exc_info=error)
+            raise
+        return TransformedQuery(id=request.id, name=request.name, ast=ast)
+
+    try:
+        mapper = client_to_server(schema.tables)
+        # All at once, as upstream's `Promise.all`: the first failure fails the batch, the rest run on.
+        # Each starts eagerly, as each of upstream's handlers is called before the first is awaited, and
+        # one that never suspends is done without a trip through the event loop.
+        if len(parsed[1]) == 1:
+            return QuerySuccess(queries=[await transform_one(parsed[1][0])], userID=user_id)
+        loop = asyncio.get_running_loop()
+        tasks = [asyncio.eager_task_factory(loop, transform_one(request)) for request in parsed[1]]
+        if all(task.done() for task in tasks):
+            responses = [task.result() for task in tasks]
+        else:
+            responses = await asyncio.gather(*tasks)
+        return QuerySuccess(queries=list(responses), userID=user_id)
     except Exception as error:
         details = get_error_details(error)
         return ServerTransformFailed(

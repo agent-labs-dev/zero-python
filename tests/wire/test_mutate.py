@@ -8,7 +8,7 @@ from hypothesis import example, given
 from hypothesis import strategies as st
 
 from tests.harness import Harness, HarnessError
-from tests.strategies import as_js, cleanup_args, corrupted, json_values, mutation_ids
+from tests.strategies import as_js, cleanup_args, corrupted, json_values, mutation_ids, strings
 from tests.wire.conftest import ADAPTERS, WireDB
 from tests.wire.mutators import REGISTRY, handler, provider, use_schema
 from zero_server.schema import load_schema
@@ -16,13 +16,15 @@ from zero_server.server.process_mutations import handle_mutate_request
 from zero_server.server.push_processor import PushProcessor
 from zero_server.server.zql_database import PostgresError
 from zero_server.shared.asserts import AssertionFailedError
+from zero_server.shared.js import js_stringify
 
 NAMES = [
     "item.put", "item.put", "item.put", "item.count", "item.appError", "item.error", "item.typeError", "item.dbError",
+    "item.detailsError",
     "pre.appError", "pre.error", "post.put", "nope",
 ]  # fmt: skip
 
-texts = st.sampled_from(["a", "b", "c", "é"])
+texts = st.sampled_from(["a", "b", "c", "é", "\ud800"])
 
 
 def _rarely(usual: st.SearchStrategy[Any], rare: st.SearchStrategy[Any], one_in: int = 15) -> st.SearchStrategy[Any]:
@@ -38,8 +40,8 @@ THING_COLUMNS: dict[str, st.SearchStrategy[Any]] = {
     "t": _rarely(st.integers(MS_2000, MS_2000 + 10**12), st.just(-1.5)),
     "d": st.integers(0, 3000).map(lambda days: MS_2000 + days * 86_400_000),
     # postgres.js types an array by its first leaf, so a boolean-led one is bound as the boolean `false`.
-    "s": _rarely(st.text(max_size=8), st.sampled_from(["too long for eight", [True, "y"], [[False]], ["y", True]])),
-    "tags": _rarely(st.lists(st.text(max_size=3), max_size=3), st.just([1, None])),
+    "s": _rarely(strings(max_size=8), st.sampled_from(["too long for eight", [True, "y"], [[False]], ["y", True]])),
+    "tags": _rarely(st.lists(strings(max_size=3), max_size=3), st.just([1, None])),
     "u": _rarely(st.uuids().map(str), st.just("not-a-uuid")),
     "mood": _rarely(st.sampled_from(["happy", "sad"]), st.just("meh")),
     "tm": st.integers(0, 86_399_999),
@@ -70,7 +72,7 @@ crud_args = st.one_of(
     st.fixed_dictionaries(
         {
             "table": st.just("pair"),
-            "row": _row({"note": st.text(max_size=3)}, {"a": texts, "b": st.integers(0, 2)}),
+            "row": _row({"note": strings(max_size=3)}, {"a": texts, "b": st.integers(0, 2)}),
         }
     ),
     # Columns the schema does not declare are refused before any SQL runs.
@@ -79,7 +81,7 @@ crud_args = st.one_of(
 CRUD_NAMES = ["crud.insert", "crud.upsert", "crud.update", "crud.delete"]
 mutator_args = st.fixed_dictionaries(
     {"id": texts, "value": texts},
-    optional={"message": st.sampled_from(["no", "nope", ""]), "details": json_values},
+    optional={"message": st.sampled_from(["no", "nope", "", "m\udc00"]), "details": json_values},
 )
 
 
@@ -178,15 +180,15 @@ def scenarios(draw: st.DrawFn, names: list[str] | None = None) -> list[tuple[Any
     return pushes
 
 
-def comparable(response: dict[str, Any]) -> dict[str, Any]:
-    """A response with parse-failure messages cut to their prefix.
+def comparable(response: dict[str, Any]) -> str:
+    """A response as JSON text, key order included, with a parse failure's message cut to its prefix.
 
     Upstream's message embeds valita's description of the first bad field; Python's embeds Pydantic's.
     zero-cache only logs the message, so the prefix and the rest of the body are what must agree.
     """
     if response.get("reason") == "parse":
         response = {**response, "message": response["message"].split(":", 1)[0]}
-    return as_js(response)
+    return js_stringify(response)
 
 
 def _m(mid: float, name: str = "item.put", /, *, client: str = "c1", **args: Any) -> dict[str, Any]:
@@ -217,6 +219,11 @@ BRANCHES = {
     "tx.run": _scenario(_push(_m(1, id="a", value="x"), _m(2, id="b", value="y"), _m(3, "item.count", value="y"))),
     "app error": _scenario(_push(_m(1, "item.appError", id="a", value="x", details={"k": [1]}), _m(2))),
     "plain error, retried": _scenario(_push(_m(1, "item.error", message=""), _m(2, "item.typeError"))),
+    "error details null or absent": _scenario(
+        _push(
+            _m(1, "item.detailsError", details=None), _m(2, "item.detailsError"), _m(3, "item.detailsError", details=0)
+        )
+    ),
     "database error": _scenario(_push(_m(1, "item.dbError"))),
     "unknown mutator": _scenario(_push(_m(1, "nope"))),
     "pre-transaction error": _scenario(_push(_m(1, "pre.appError", details=0), _m(2, "pre.error"))),
@@ -236,6 +243,13 @@ BRANCHES = {
         _push(_cleanup({"type": "bulk", "clientGroupID": "cg1", "clientIDs": ["c2", "c1"]})),
     ),
     "nul byte": _scenario(_push(_m(1, id="n", value="a\x00b"))),
+    "lone surrogates": _scenario(
+        _push(_m(1, id="s", value="a\ud800b"), _m(2, "item.appError", message="m\udc00", details={"\udfff": "\ud83d"})),
+        # A client ID is bound beside the integer first mutation ID.
+        _push(_m(1, client="c\udc00", id="t", value="v")),
+        # Bulk cleanup binds its client IDs as an array.
+        _push(_cleanup({"type": "bulk", "clientGroupID": "cg1", "clientIDs": ["c\udc00"]})),
+    ),
     "malformed body": [({**_push(_m(1)), "clientGroupID": 1}, VALID_QUERY, None)],
     "bad query params": [(_push(_m(1)), {"schema": "zero_0"}, None)],
     "crud rows that are not objects": _scenario(
@@ -325,13 +339,13 @@ def test_transaction_exposes_the_driver_connection(wire_db: WireDB, adapter: str
 
 @pytest.mark.parametrize("first", [True, False])
 def test_asyncpg_reports_a_refused_argument_as_sqlalchemy_does(wire_db: WireDB, first: bool) -> None:
-    # A lone surrogate cannot be encoded, so asyncpg refuses it before Postgres sees the statement.
+    # asyncpg refuses an int for a text parameter before Postgres sees the statement.
     # SQLAlchemy runs a transaction's first statement itself and hands the rest to asyncpg.
     async def message(adapter: str) -> str:
         async def callback(tx: Any, _hooks: Any) -> Any:
             if not first:
                 await tx.db_transaction.query("SELECT 1")
-            await tx.db_transaction.query("SELECT $1::text", ["a\ud800"])
+            await tx.db_transaction.query("SELECT $1::text", [5])
 
         with pytest.raises(PostgresError) as error:
             await wire_db.py[adapter](None).transaction(callback)

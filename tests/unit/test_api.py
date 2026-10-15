@@ -181,7 +181,7 @@ async def test_query_endpoint_takes_raw_bytes_and_async_handlers() -> None:
     assert failed.to_json()["details"] == {"name": "SyntaxError"}
 
     def not_a_query(name: str, args: Any) -> Any:
-        return "nope"
+        return object()
 
     internal = await handle_query_request(handler=not_a_query, schema=schema, body=json.loads(body), user_id="u")
     assert internal.to_json()["reason"] == "internal"

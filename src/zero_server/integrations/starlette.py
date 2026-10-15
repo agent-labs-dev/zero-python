@@ -21,6 +21,7 @@ from zero_server.query.registry import must_get_query
 from zero_server.schema import Schema
 from zero_server.server.process_mutations import Database, TransactFn, handle_mutate_request
 from zero_server.server.process_queries import handle_query_request
+from zero_server.shared.js import js_stringify
 from zero_server.shared.json import JSONValue
 from zero_server.shared.registry import Registry
 
@@ -28,6 +29,13 @@ type Authenticate = Callable[[Request], str | Awaitable[str | None] | None]
 """The request's user ID, or `None` when logged out. Raise `Unauthorized` to answer 401."""
 type MakeContext = Callable[[Request, str | None], Any]
 """The `ctx` queries and mutators receive. May be async."""
+
+
+class _JSONResponse(JSONResponse):
+    """The bytes a TypeScript server sends: `JSON.stringify`'s text, which escapes any lone surrogate."""
+
+    def render(self, content: Any) -> bytes:
+        return js_stringify(content).encode()
 
 
 class Unauthorized(Exception):
@@ -64,7 +72,7 @@ def zero_routes(
         try:
             user_id = await _maybe_await(authenticate(request))
         except Unauthorized as error:
-            return JSONResponse({"error": str(error) or "Unauthorized"}, status_code=401)
+            return _JSONResponse({"error": str(error) or "Unauthorized"}, status_code=401)
         return user_id, await _maybe_await(context(request, user_id))
 
     if queries is not None:
@@ -80,7 +88,7 @@ def zero_routes(
                 body=await request.body(),
                 user_id=user_id,
             )
-            return JSONResponse(response.to_json())
+            return _JSONResponse(response.to_json())
 
         routes.append(Route(query_path, query, methods=["POST"]))
 
@@ -108,7 +116,7 @@ def zero_routes(
                 body=await request.body(),
                 user_id=user_id,
             )
-            return JSONResponse(response.to_json())
+            return _JSONResponse(response.to_json())
 
         routes.append(Route(mutate_path, mutate, methods=["POST"]))
 

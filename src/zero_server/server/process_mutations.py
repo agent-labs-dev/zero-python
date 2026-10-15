@@ -11,7 +11,6 @@ mutator: the second transaction takes the ID and records the error in the `mutat
 where the client's pending mutation learns it failed.
 """
 
-import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, nullcontext
@@ -39,7 +38,7 @@ from zero_server.protocol.wire import parse_wire
 from zero_server.shared.asserts import check
 from zero_server.shared.error import get_error_details, get_error_message
 from zero_server.shared.js import js_number, js_truthy
-from zero_server.shared.json import JSONValue
+from zero_server.shared.json import JSONValue, parse_json_body
 
 logger = logging.getLogger("zero_server.mutate")
 
@@ -148,10 +147,6 @@ class DatabaseTransactionError(Exception):
 _PASSES_THROUGH = (DatabaseTransactionError, OutOfOrderMutation, MutationAlreadyProcessedError, ApplicationError)
 
 
-def _refuse_constant(name: str) -> None:
-    raise ValueError(f"{name} is not valid JSON")
-
-
 def _parse_failure(
     subject: str, error: BaseException, mutation_ids: list[MutationID], *, syntax: bool = False
 ) -> ServerPushFailed:
@@ -212,7 +207,7 @@ async def handle_mutate[T](
             push_body = body
         case bytes():
             try:
-                json_body = json.loads(body, parse_constant=_refuse_constant)
+                json_body = parse_json_body(body)
             except ValueError as error:
                 logger.error("Failed to parse push body", exc_info=error)
                 return _parse_failure("push body", error, [], syntax=True)

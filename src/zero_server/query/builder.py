@@ -28,7 +28,7 @@ from zero_server.protocol.ast import (
 from zero_server.query.expression import MISSING, ExpressionBuilder, and_, cmp, simplify_condition
 from zero_server.schema import Connection, Schema
 from zero_server.shared.asserts import check
-from zero_server.shared.js import js_string
+from zero_server.shared.js import js_check_in, js_string
 
 
 @dataclass(frozen=True)
@@ -326,6 +326,20 @@ def _js_negative(value: object) -> bool:
         text = js_string(value).strip()
         return _JS_NEGATIVE.fullmatch(text) is not None and float(text.replace("Infinity", "inf")) < 0
     return False
+
+
+def as_query_internals(q: object) -> AnyQuery:
+    """`q` as a query, or the error upstream's `asQueryInternals` throws for anything else.
+
+    Ported from `packages/zql/src/query/query-internals.ts`.
+    """
+    js_check_in("Symbol()", q)
+    check(
+        isinstance(q, Query),
+        "Query does not implement QueryInternals. This likely means there are two copies of Zero in your runtime.",
+    )
+    assert isinstance(q, Query)
+    return q
 
 
 def _as_query(q: object) -> AnyQuery:

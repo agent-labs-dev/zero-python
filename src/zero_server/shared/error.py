@@ -71,10 +71,18 @@ def _exception_message(error: BaseException) -> str:
     return str(error)
 
 
+_ABSENT = object()
+
+
 def get_error_details(error: object) -> JSONValue | None:
     if isinstance(error, BaseException):
-        details: Any = getattr(error, "details", None)
-        if details is not None and is_json_value(details):
+        details: Any = getattr(error, "details", _ABSENT)
+        # A `details` of `None` is JavaScript's `null`, which upstream returns as is. `ApplicationError` is the
+        # exception: upstream's stores a null as `undefined`, so its `None` means no details.
+        if details is None:
+            if type(error).__name__ != "ApplicationError":
+                return None
+        elif is_json_value(details):
             return details
         name = error_name(error)
         if name not in ("Exception", "Error"):

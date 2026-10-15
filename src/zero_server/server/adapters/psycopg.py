@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 from zero_server.schema import Schema
 from zero_server.server.adapters._session import SessionConnection, session
 from zero_server.server.transaction import DBTransaction, Row
-from zero_server.server.zql_database import PostgresError, ZQLDatabase
+from zero_server.server.zql_database import PostgresError, ZQLDatabase, well_formed_params
 
 
 class _NulText(str):
@@ -48,7 +48,7 @@ class PsycopgTransaction:
     async def query(self, sql: str, params: Sequence[Any] = ()) -> list[Row]:
         cursor = psycopg.AsyncRawCursor(self._connection, row_factory=dict_row)
         cursor.adapters.register_dumper(_NulText, _NulTextDumper)
-        bound = [_NulText(p) if isinstance(p, str) and "\x00" in p else p for p in params]
+        bound = [_NulText(p) if isinstance(p, str) and "\x00" in p else p for p in well_formed_params(params)]
         try:
             await cursor.execute(sql, bound)  # ty: ignore[invalid-argument-type]
             return await cursor.fetchall() if cursor.description is not None else []

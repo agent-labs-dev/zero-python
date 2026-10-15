@@ -1,18 +1,36 @@
 """Hypothesis strategies for wire values, valid and nearly valid."""
 
+import re
 from typing import Any
 
 from hypothesis import strategies as st
 
 MAX_SAFE = 2**53 - 1
 
+
+# `st.text` drops surrogates from any alphabet, so `strings` joins characters by hand: one in eight a surrogate.
+_CHARACTERS = st.one_of(
+    *[st.characters()] * 7, st.sampled_from(["\ud800", "\udbff", "\udc00", "\udfff", "\ud83d", "\ude00"])
+)
+
+
+@st.composite
+def strings(draw: st.DrawFn, max_size: int, min_size: int = 0) -> str:
+    """Text with the odd lone surrogate, which a JavaScript string can hold and JSON can carry.
+
+    Adjacent halves of a pair are joined into one character, as `JSON.parse` joins them.
+    """
+    text = "".join(draw(st.lists(_CHARACTERS, min_size=min_size, max_size=max_size)))
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
+
+
 _common_names = st.sampled_from(["id", "a", "b", "title", "owner_id", "ownerID", "é", "x.y", ""])
-names = st.one_of(_common_names, _common_names, _common_names, st.text(max_size=4))
+names = st.one_of(_common_names, _common_names, _common_names, strings(max_size=4))
 numbers = st.integers(-MAX_SAFE, MAX_SAFE) | st.floats(allow_nan=False, allow_infinity=False)
-scalars = st.text(max_size=5) | numbers | st.booleans()
+scalars = strings(max_size=5) | numbers | st.booleans()
 json_values: st.SearchStrategy[Any] = st.recursive(
     st.none() | scalars,
-    lambda inner: st.lists(inner, max_size=3) | st.dictionaries(st.text(max_size=4), inner, max_size=3),
+    lambda inner: st.lists(inner, max_size=3) | st.dictionaries(strings(max_size=4), inner, max_size=3),
     max_leaves=8,
 )
 
@@ -148,9 +166,16 @@ def _replace(value: Any, path: tuple[Any, ...], fn: Any) -> Any:
     return out
 
 
+def python_name(key: str) -> str:
+    """The name a Python model may give the wire key `key`: snake case, or a trailing underscore."""
+    snake = re.sub(r"(?<=[a-z0-9])([A-Z]+)", lambda m: "_" + m.group(1).lower(), key)
+    return snake if snake != key else f"{key}_"
+
+
 @st.composite
 def corrupted(draw: st.DrawFn, valid: st.SearchStrategy[Any]) -> Any:
-    """A valid value, or one with a single defect: a missing key, a null, an extra key or a wrong type."""
+    """A valid value, or one with a single defect: a missing key, a null, an extra key, a key under its
+    Python name instead, a null under that name beside it, or a wrong type."""
     value = draw(valid)
     if draw(st.booleans()):
         return value
@@ -159,13 +184,17 @@ def corrupted(draw: st.DrawFn, valid: st.SearchStrategy[Any]) -> Any:
     def damage(node: Any) -> Any:
         if isinstance(node, dict) and node and draw(st.booleans()):
             key = draw(st.sampled_from(sorted(node)))
-            match draw(st.sampled_from(["drop", "null", "extra"])):
+            match draw(st.sampled_from(["drop", "null", "extra", "rename", "null alias"])):
                 case "drop":
                     return {k: v for k, v in node.items() if k != key}
                 case "null":
                     return {**node, key: None}
+                case "rename":
+                    return {python_name(k) if k == key else k: v for k, v in node.items()}
+                case "null alias":
+                    return {**node, python_name(key): None}
                 case _:
-                    return {**node, draw(st.text(min_size=1, max_size=4)): draw(json_values)}
+                    return {**node, draw(strings(min_size=1, max_size=4)): draw(json_values)}
         return draw(json_values)
 
     return _replace(value, path, damage)
@@ -268,9 +297,9 @@ def push_bodies(mutations: st.SearchStrategy[dict[str, Any]] | None = None) -> s
         st.sampled_from([1, 1, 1, 2, 0]),
         st.none() | st.integers(0, 3),
         numbers,
-        st.text(max_size=3),
-        st.none() | st.text(max_size=3),
-        st.none() | st.text(max_size=3),
+        strings(max_size=3),
+        st.none() | strings(max_size=3),
+        st.none() | strings(max_size=3),
     )
 
 
@@ -290,11 +319,20 @@ def cleanup_args() -> st.SearchStrategy[dict[str, Any]]:
     return single | bulk
 
 
+def _registry_name(name: str) -> bool:
+    """Whether upstream's registry lookup would treat `name` as the path to a query or to nothing.
+
+    Upstream walks the path with `in`, so a `~` part finds the registry's type tag. What the caller then
+    does with that string is its own code's error, which Python does not copy.
+    """
+    return "~" not in re.split(r"[.|]", name)
+
+
 def transform_requests() -> st.SearchStrategy[Any]:
     query = st.builds(
         lambda id, name, args: {"id": id, "name": name, "args": args},
-        st.text(max_size=3),
-        names,
+        strings(max_size=3),
+        names.filter(_registry_name),
         st.lists(json_values, max_size=2),
     )
     return st.builds(lambda qs: ["transform", qs], st.lists(query, max_size=3))
@@ -303,7 +341,7 @@ def transform_requests() -> st.SearchStrategy[Any]:
 def mutate_params() -> st.SearchStrategy[dict[str, Any]]:
     return st.builds(
         lambda schema, app, extra: {"schema": schema, "appID": app, **extra},
-        st.text(max_size=4),
-        st.text(max_size=4),
-        st.dictionaries(st.sampled_from(["x", "y"]), st.text(max_size=2), max_size=1),
+        strings(max_size=4),
+        strings(max_size=4),
+        st.dictionaries(st.sampled_from(["x", "y"]), strings(max_size=2), max_size=1),
     )
