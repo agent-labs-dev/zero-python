@@ -15,7 +15,7 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import Field, StrictBool, StrictStr
 
-from zero_server.protocol.wire import Number, StrictWireModel
+from zero_server.protocol.wire import Number, StrictWireModel, WireChecked
 from zero_server.shared.asserts import AssertionFailedError, check
 from zero_server.shared.js import js_sort, js_string
 from zero_server.shared.json import JSONValue
@@ -37,7 +37,8 @@ type SimpleOperator = Literal[
 type CorrelatedSubqueryConditionOperator = Literal["EXISTS", "NOT EXISTS"]
 
 type Scalar = StrictStr | Number | StrictBool
-type LiteralValue = Scalar | tuple[Scalar, ...] | None
+# A list, not a tuple: the SQL compiler tells literals apart by identity, and Python shares `()`.
+type LiteralValue = Scalar | list[Scalar] | None
 
 type Value = JSONValue
 """A row value. Upstream also allows `undefined`, which it treats as `null`."""
@@ -51,12 +52,12 @@ class LiteralReference(StrictWireModel):
     nullable = frozenset({"value"})
 
     type: Literal["literal"] = "literal"
-    value: LiteralValue
+    value: WireChecked[LiteralValue]
 
 
 class ColumnReference(StrictWireModel):
     type: Literal["column"] = "column"
-    name: StrictStr
+    name: WireChecked[StrictStr]
 
 
 class Parameter(StrictWireModel):
@@ -72,7 +73,7 @@ type ValuePosition = Annotated[LiteralReference | ColumnReference | Parameter, F
 
 class SimpleCondition(StrictWireModel):
     type: Literal["simple"] = "simple"
-    op: SimpleOperator
+    op: WireChecked[SimpleOperator]
     left: ValuePosition
     right: Annotated[Parameter | LiteralReference, Field(discriminator="type")]
 
@@ -91,8 +92,8 @@ class CorrelatedSubqueryCondition(StrictWireModel):
     type: Literal["correlatedSubquery"] = "correlatedSubquery"
     related: CorrelatedSubquery
     op: CorrelatedSubqueryConditionOperator
-    flip: StrictBool | None = None
-    scalar: StrictBool | None = None
+    flip: WireChecked[StrictBool | None] = None
+    scalar: WireChecked[StrictBool | None] = None
 
 
 type Condition = Annotated[
@@ -114,7 +115,7 @@ class CorrelatedSubquery(StrictWireModel):
 
 
 class Bound(StrictWireModel):
-    row: Row
+    row: WireChecked[Row]
     exclusive: StrictBool
 
 
@@ -187,13 +188,20 @@ def _transform_ast(ast: AST, transform: _Transform) -> AST:
         where=_transform_where(where, ast.table, transform) if where is not None else None,
         related=related,
         start=(
-            Bound(row={col(name): value for name, value in ast.start.row.items()}, exclusive=ast.start.exclusive)
+            Bound(row={col(name): value for name, value in _entries(ast.start.row)}, exclusive=ast.start.exclusive)
             if ast.start is not None
             else None
         ),
         limit=ast.limit,
         orderBy=tuple((col(name), direction) for name, direction in ast.order_by) if ast.order_by is not None else None,
     )
+
+
+def _entries(row: Row) -> list[tuple[str, Value]]:
+    """`Object.entries(row)`. The builder takes any row, and an array's keys are its indexes."""
+    if isinstance(row, list):
+        return [(str(i), value) for i, value in enumerate(row)]
+    return list(row.items())
 
 
 def _transform_where(where: Condition, table: str, transform: _Transform) -> Condition:

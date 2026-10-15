@@ -23,18 +23,21 @@ from zero_server.protocol.ast import (
     LiteralReference,
     Ordering,
     Parameter,
+    Row,
     SimpleCondition,
+    Value,
 )
 from zero_server.query.builder import Format
 from zero_server.schema import NameMapper, Schema, TableSchema, client_to_server
 from zero_server.server.server_schema import ServerColumnSchema, ServerSchema
-from zero_server.shared.asserts import check
+from zero_server.shared.asserts import AssertionFailedError, check
 from zero_server.shared.js import js_string
 from zero_server.z2s.sql import Params, ident, literal_type
 
 ZQL_RESULT_KEY = "zql_result"
 _ROOT = "zql_root"
 _STATIC = "Static parameters must be bound to a value before compiling to SQL"
+_NOT_AN_ARG = "JsonPackedFormat can only take JsonPackArgs."
 
 
 def complete_ordering(ast: AST, primary_key: Callable[[str], Sequence[str]]) -> AST:
@@ -106,6 +109,8 @@ def compile_query(
         f"SELECT {_to_json(_ROOT, format.singular if format else False)}::text AS {ident(ZQL_RESULT_KEY)} "
         f"FROM ({body}) {ident(_ROOT)}"
     )
+    if compiler.params.failure is not None:
+        raise compiler.params.failure
     return text, compiler.params.values
 
 
@@ -205,13 +210,13 @@ class _Compiler:
         assert order_by is not None
         constraints: list[str] = []
         for i, (i_field, i_direction) in enumerate(order_by):
-            group = [self._start_equality(table, field, bound.row.get(field)) for field, _ in order_by[:i]]
+            group = [self._start_equality(table, field, _row_value(bound.row, field)) for field, _ in order_by[:i]]
             group.append(
-                self._start_range(table, i_field, bound.row.get(i_field), ">" if i_direction == "asc" else "<")
+                self._start_range(table, i_field, _row_value(bound.row, i_field), ">" if i_direction == "asc" else "<")
             )
             constraints.append(f"({' AND '.join(group)})")
         if not bound.exclusive:
-            equal = [self._start_equality(table, field, bound.row.get(field)) for field, _ in order_by]
+            equal = [self._start_equality(table, field, _row_value(bound.row, field)) for field, _ in order_by]
             constraints.append(f"({' AND '.join(equal)})")
         return f"({' OR '.join(constraints)})"
 
@@ -291,11 +296,19 @@ class _Compiler:
         return f"{self._from(first.table)} JOIN {self._from(second.table)} ON {on}", tables
 
     def _where(self, condition: Condition, table: _Table) -> str:
+        sql = self._condition(condition, table)
+        # Upstream interpolates the `undefined` an unknown operator compiles to; its formatter refuses it.
+        return sql if sql is not None else self.params.fail(AssertionFailedError(_NOT_AN_ARG))
+
+    def _condition(self, condition: Condition, table: _Table) -> str | None:
+        """The SQL for `condition`, or `None` where upstream's is `undefined`: under an unknown operator."""
         match condition:
-            case Conjunction():
-                return f"({' AND '.join(self._where(c, table) for c in condition.conditions)})"
-            case Disjunction():
-                return f"({' OR '.join(self._where(c, table) for c in condition.conditions)})"
+            case Conjunction() | Disjunction():
+                parts = [self._condition(c, table) for c in condition.conditions]
+                if None in parts:
+                    # `sql.join` reads each part's items, once every part is built.
+                    raise TypeError("Cannot read properties of undefined (reading '_items')")
+                return f"({f' {condition.type.upper()} '.join(p for p in parts if p is not None)})"
             case CorrelatedSubqueryCondition():
                 # `scalar` is a planner hint for the IVM engines; Postgres decorrelates EXISTS on its own.
                 body = self.select(condition.related.subquery, None, self._parent_correlator(condition.related, table))
@@ -303,7 +316,7 @@ class _Compiler:
             case _:
                 return self._simple(condition, table)
 
-    def _simple(self, condition: SimpleCondition, table: _Table) -> str:
+    def _simple(self, condition: SimpleCondition, table: _Table) -> str | None:
         left, right = condition.left, condition.right
         match condition.op:
             case "IN" | "NOT IN":
@@ -315,10 +328,13 @@ class _Compiler:
                 rhs = self._value(right, table, left, plural=False)
                 distinct = "IS NOT DISTINCT FROM" if condition.op == "IS" else "IS DISTINCT FROM"
                 return f"{lhs} {distinct} {rhs}"
-            case _:
+            case "=" | "!=" | "<" | ">" | "<=" | ">=" | "LIKE" | "NOT LIKE" | "ILIKE" | "NOT ILIKE":
                 lhs = self._value(left, table, right, plural=False)
                 rhs = self._value(right, table, left, plural=False)
                 return f"{lhs} {condition.op} {rhs}"
+            case _:
+                # Only the builder makes such an operator. Upstream's `switch` falls through.
+                return None
 
     def _value(
         self,
@@ -351,12 +367,13 @@ class _Compiler:
             case Parameter():
                 raise Exception(_STATIC)
             case _:
-                check(plural == isinstance(value, tuple), "Expected plural flag to match whether value is an array")
-                if isinstance(value, tuple):
+                is_array = isinstance(value, list | tuple)
+                check(plural == is_array, "Expected plural flag to match whether value is an array")
+                if is_array:
                     # Only the right side of IN is plural, and the left side was compiled first, so it is
                     # a non-null scalar here. An empty list takes its element type from it.
-                    return self.params.plural_literal(literal_type(value[0] if value else other.value), list(value))
-                if value is None:
+                    return self.params.plural_literal(literal_type(value[0] if value else other.value), value)
+                if not isinstance(value, str | int | float):
                     raise Exception(f"Literal of unexpected type. {js_string(value)} of type object")
                 return self.params.literal(value)
 
@@ -367,6 +384,11 @@ _DATE_TIME_TYPES = frozenset(
         "timestamp without time zone", "timestamp with time zone",
     }
 )  # fmt: skip
+
+
+def _row_value(row: Row, field: str) -> Value:
+    """`row[field] ?? null`. The builder takes any row; an array has no column's value."""
+    return row.get(field) if isinstance(row, dict) else None
 
 
 def _must(alias: str | None) -> str:

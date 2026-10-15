@@ -9,16 +9,19 @@ Parsing is the mirror image: an optional field upstream may be absent but not `n
 refused unless the field is `nullable`.
 """
 
-from typing import Any, ClassVar, Self
+from typing import Annotated, Any, ClassVar, Self
 
 from pydantic import (
     BaseModel,
     ConfigDict,
+    PlainSerializer,
     SerializerFunctionWrapHandler,
     StrictFloat,
     StrictInt,
     TypeAdapter,
     ValidationInfo,
+    ValidatorFunctionWrapHandler,
+    WrapValidator,
     model_serializer,
     model_validator,
 )
@@ -31,6 +34,20 @@ WIRE: Any = {"source": "wire"}
 
 def parse_wire[T](adapter: TypeAdapter[T], value: object) -> T:
     return adapter.validate_python(value, context=WIRE)
+
+
+def _validate_off_the_wire(value: Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo) -> Any:
+    return handler(value) if info.context == WIRE else value
+
+
+type WireChecked[T] = Annotated[
+    T, WrapValidator(_validate_off_the_wire), PlainSerializer(lambda value: value, return_type=Any)
+]
+"""A `T` when parsed off the wire, anything when built in Python and serialized as given.
+
+Upstream's query builder puts whatever the caller passed into the AST and only its wire schema checks
+it, so a value the schema refuses can still reach SQL or the query endpoint's response.
+"""
 
 
 class WireModel(BaseModel):

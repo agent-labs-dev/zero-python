@@ -82,6 +82,15 @@ PINNED = [
     _q("issue", ["related", "labels", {"ops": [["limit", 2]]}]),
     _q("issue", ["start", {"id": "a"}, True], ["start", {"id": "b"}, None], ["one"]),
     _q("audit", ["related", "nope", None]),
+    # Upstream's builder checks none of these, so each reaches the response as given.
+    _q("issue", ["where", "meta", {"a": [1, None]}], ["where", "title", "IN", [None, ["a"]]]),
+    _q("issue", ["where", "title", "==", "a"]),
+    _q("issue", ["whereFn", ["not", ["cmp", "title", "==", "a"]]]),
+    _q("issue", ["whereExists", "owner", None, {"flip": "yes", "scalar": 0}]),
+    _q("issue", ["where", 1, "a"]),
+    _q("issue", ["start", ["a"], None]),
+    _q("issue", ["limit", None]),
+    _q("issue", ["limit", "-1"]),
 ]
 
 

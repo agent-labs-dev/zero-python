@@ -6,6 +6,8 @@ Ported from rocicorp/mono `packages/zql/src/query/query-impl.ts` and `create-bui
 The errors match upstream's message for message, because a query endpoint reports them to the client.
 """
 
+import math
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, Generic
@@ -26,6 +28,7 @@ from zero_server.protocol.ast import (
 from zero_server.query.expression import MISSING, ExpressionBuilder, and_, cmp, simplify_condition
 from zero_server.schema import Connection, Schema
 from zero_server.shared.asserts import check
+from zero_server.shared.js import js_string
 
 
 @dataclass(frozen=True)
@@ -121,7 +124,8 @@ class Query(Generic[R, C]):
     ) -> Q:
         """`where(field, value)`, `where(field, op, value)`, or `where(lambda eb: ...)`."""
         cond: Condition
-        if isinstance(field_or_factory, str):
+        # Anything but a function is a field, as upstream has it: a number fails once the column is looked up.
+        if isinstance(field_or_factory, str) or not callable(field_or_factory):
             self._check_column(field_or_factory)
             check(len(args) >= 1, "Invalid condition. Too few arguments.")
             cond = cmp(field_or_factory, args[0]) if len(args) == 1 else cmp(field_or_factory, args[0], args[1])
@@ -207,14 +211,18 @@ class Query(Generic[R, C]):
         return self._with_relationship(relationship, sub, entry)
 
     def start[Q: Query[Any, Any]](self: Q, row: Mapping[str, Any], *, inclusive: bool = False) -> Q:
-        for column in row:
-            self._check_column(column)
-        return self._with(start=Bound(row=dict(row), exclusive=not inclusive))
+        # Upstream stores any row as given: one that is not a mapping only fails once it is used.
+        if isinstance(row, Mapping):
+            for column in row:
+                self._check_column(column)
+            row = dict(row)
+        return self._with(start=Bound(row=row, exclusive=not inclusive))
 
     def limit[Q: Query[Any, Any]](self: Q, limit: int | float) -> Q:
-        if limit < 0:
+        if _js_negative(limit):
             raise Exception("Limit must be non-negative")
-        if not (isinstance(limit, int | float) and limit == int(limit) and -(2**31) <= limit < 2**31):
+        # `(limit | 0) !== limit`: only a number that is already a 32-bit integer survives.
+        if not (_is_number(limit) and math.isfinite(limit) and limit == int(limit) and -(2**31) <= limit < 2**31):
             raise Exception("Limit must be an integer")
         if self._junction:
             raise NotImplementedError(
@@ -301,6 +309,23 @@ class Query(Generic[R, C]):
 
 class OneQuery(Query[R, C]):
     """A query `one()` narrowed to a single row. Its methods keep it singular."""
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+_JS_NEGATIVE = re.compile(r"-(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?|-Infinity")
+
+
+def _js_negative(value: object) -> bool:
+    """JavaScript's `value < 0`, which first turns a string, or an array by way of its string, into a number."""
+    if isinstance(value, int | float):
+        return value < 0
+    if isinstance(value, str | list):
+        text = js_string(value).strip()
+        return _JS_NEGATIVE.fullmatch(text) is not None and float(text.replace("Infinity", "inf")) < 0
+    return False
 
 
 def _as_query(q: object) -> AnyQuery:

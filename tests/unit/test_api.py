@@ -72,6 +72,33 @@ def test_builder_tables() -> None:
         _ = zql.nope
 
 
+@pytest.mark.parametrize(
+    ("limit", "message"),
+    [
+        # Values JSON cannot carry to the differential tier, as JavaScript would treat them.
+        (float("inf"), "Limit must be an integer"),
+        (float("nan"), "Limit must be an integer"),
+        (float("-inf"), "Limit must be non-negative"),
+        ("-Infinity", "Limit must be non-negative"),
+        (["-1"], "Limit must be non-negative"),
+        (" -1e2 ", "Limit must be non-negative"),
+        ("-x", "Limit must be an integer"),
+        ({}, "Limit must be an integer"),
+    ],
+)
+def test_limit_refuses_what_javascript_would(limit: Any, message: str) -> None:
+    with pytest.raises(Exception, match=message):
+        create_builder(load_schema(SCHEMA)).issue.limit(limit)
+
+
+def test_each_literal_is_its_own_list() -> None:
+    eb = create_builder(load_schema(SCHEMA)).issue.expression_builder()
+    first: Any = eb.cmp("id", "IN", ())
+    second: Any = eb.cmp("id", "IN", ())
+    assert first.right.value == second.right.value == []
+    assert first.right.value is not second.right.value
+
+
 class Args(BaseModel):
     id: str
 

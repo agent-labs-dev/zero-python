@@ -67,6 +67,32 @@ PINNED = [
     _q("issue", ["limit", 0]),
     # The second null reuses the first's placeholder, which Postgres has already typed as text.
     _q("comment", ["where", "authorID", None], ["where", "authorID", "IN", None]),
+    # Two empty lists are two objects, so two placeholders: one binds "", the other "[]".
+    _q("comment", ["where", "authorID", []], ["where", "authorID", "IN", []]),
+    # Literals upstream's builder takes though its wire schema would not.
+    _q("issue", ["where", "meta", {"a": 1}]),
+    _q("issue", ["where", "title", {"a": 1}], ["where", "title", "IN", [{"a": 1}]]),
+    _q("issue", ["where", "title", "IN", [None, "a"]]),
+    _q("issue", ["where", "title", "IN", [["a"], "b"]]),
+    _q("audit", ["where", "tags", "IN", [["a"]]]),
+    _q("issue", ["whereFn", ["cmpLit", 1, "IN", [None, 1]]]),
+    _q("issue", ["whereFn", ["cmpLit", "a", "IN", [{"a": 1}]]]),
+    _q("issue", ["whereFn", ["cmpLit", {"a": 1}, "=", {"a": 1}]]),
+    # Builder arguments upstream refuses late or never.
+    _q("issue", ["limit", None]),
+    _q("issue", ["limit", "3"]),
+    _q("issue", ["limit", "-1"]),
+    _q("issue", ["limit", True]),
+    _q("issue", ["where", 1, "a"]),
+    _q("issue", ["start", ["a"], None]),
+    _q("issue", ["whereExists", "owner", None, {"flip": "yes"}]),
+    _q("issue", ["where", "title", "==", "a"]),
+    _q("issue", ["whereFn", ["cmpLit", 1, "<>", 1]]),
+    _q("issue", ["whereFn", ["not", ["cmp", "title", "==", "a"]]]),
+    # An error building the SQL beats one formatting it, wherever each is; between two errors formatting
+    # it, the first in the text wins.
+    _q("issue", ["where", "title", "==", "a"], ["whereFn", ["cmpLit", {"a": 1}, "=", 1]]),
+    _q("issue", ["whereFn", ["cmpLit", 1, "IN", [None]]], ["where", "title", "==", "a"]),
 ]
 
 

@@ -7,13 +7,14 @@ Every value is bound as text and cast in SQL, so the driver never coerces it: a 
 text, a timestamp epoch milliseconds, a JSON value its `JSON.stringify` output.
 """
 
+from collections.abc import Sequence
 from typing import Any, Literal
 
 from zero_server.server.pg_types import is_native_string, is_number, is_string, is_text_represented
 from zero_server.server.server_schema import ServerColumnSchema
 from zero_server.shared.js import js_string, js_stringify
 
-type LiteralType = Literal["boolean", "number", "string"]
+type LiteralType = Literal["boolean", "number", "string", "object"]
 
 _LITERAL_PG_TYPE: dict[str, str] = {"boolean": "boolean", "number": "double precision", "string": "text"}
 
@@ -25,14 +26,16 @@ def ident(*names: str) -> str:
 
 
 def literal_type(value: object) -> LiteralType:
-    """`typeof value` for a scalar literal."""
+    """`typeof value` for a JSON value."""
     match value:
         case bool():
             return "boolean"
         case int() | float():
             return "number"
-        case _:
+        case str():
             return "string"
+        case _:
+            return "object"
 
 
 def _cast(placeholder: str, column: ServerColumnSchema, comparison: bool) -> str:
@@ -65,7 +68,10 @@ def _plural(index: int, select: str) -> str:
 
 
 def _same_value_key(value: object) -> object:
-    """A key equal for values a JavaScript `Map` treats as one key: equal primitives, the same object."""
+    """A key equal for values a JavaScript `Map` treats as one key: equal primitives, the same object.
+
+    The builder gives every literal its own list, as every JavaScript array literal is its own object.
+    """
     match value:
         case None:
             return ("null",)
@@ -85,10 +91,15 @@ class Params:
     Like upstream's formatter, a value already bound with the same type reuses its placeholder. That is
     not only cosmetic: Postgres infers a reused placeholder's type from its first use, so whether a
     bare `$n` works can depend on it. Values must be bound in the order they appear in the SQL text.
+
+    Upstream builds the whole statement before it formats it, so an error it only meets while
+    formatting loses to any error building raises, wherever that is. `fail` keeps the first such error
+    for the caller to raise once the statement is built.
     """
 
     def __init__(self) -> None:
         self.values: list[str | None] = []
+        self.failure: Exception | None = None
         self._seen: dict[tuple[object, str], int] = {}
         # Objects keyed by identity are kept alive so their ids stay unique for the statement.
         self._held: list[object] = []
@@ -119,12 +130,19 @@ class Params:
         common = _cast("value" if plural else f"${index}", column, comparison)
         return _plural(index, common) if plural else common
 
+    def fail(self, error: Exception) -> str:
+        """Record an error upstream raises while formatting, and stand in for the text it never wrote."""
+        self.failure = self.failure or error
+        return ""
+
     def literal(self, value: str | int | float | bool) -> str:
         """A scalar compared with another literal, typed by its own JSON type."""
         kind = literal_type(value)
         index = self._bind(value, kind, value if isinstance(value, str) else js_stringify(value))
         return f"${index}::text::{_LITERAL_PG_TYPE[kind]}"
 
-    def plural_literal(self, kind: LiteralType, values: list[Any]) -> str:
+    def plural_literal(self, kind: LiteralType, values: Sequence[Any]) -> str:
+        if kind not in _LITERAL_PG_TYPE:
+            return self.fail(Exception("Unreachable"))
         index = self._bind(values, kind, js_stringify(values))
         return _plural(index, f"value::{_LITERAL_PG_TYPE[kind]}")

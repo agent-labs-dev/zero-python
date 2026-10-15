@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from zero_server.shared.js import js_stringify
+from zero_server.shared.js import js_string, js_stringify
 
 type ValueType = Literal["string", "number", "boolean", "null", "json"]
 type Cardinality = Literal["one", "many"]
@@ -100,6 +100,8 @@ class NameMapper:
         return table.table_name if table is not None else None
 
     def column_name(self, table: str, src: str, context: Any = None) -> str:
+        # Upstream looks the column up as an object key, which a builder handed a number turns into a string.
+        src = src if isinstance(src, str) else js_string(src)
         dest = self._table(table, context).columns.get(src)
         if not dest:
             raise Exception(f'unknown column "{src}" of "{table}" table {_in_context(context)}')
