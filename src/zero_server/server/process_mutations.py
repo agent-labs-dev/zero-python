@@ -131,15 +131,6 @@ class DatabaseTransactionError(Exception):
 _PASSES_THROUGH = (DatabaseTransactionError, OutOfOrderMutation, MutationAlreadyProcessedError, ApplicationError)
 
 
-async def _application_error_wrapper[R](fn: Callable[[], Awaitable[R]]) -> R:
-    try:
-        return await fn()
-    except _PASSES_THROUGH:
-        raise
-    except Exception as error:
-        raise wrap_with_application_error(error) from error
-
-
 def _refuse_constant(name: str) -> None:
     raise ValueError(f"{name} is not valid JSON")
 
@@ -230,7 +221,7 @@ async def handle_mutate[T](
     try:
         transactor = _Transactor(db_provider, push_body, params)
 
-        for m in push_body.mutations:
+        for m, mutation_id in zip(push_body.mutations, mutation_ids, strict=True):
             if m.type == "custom" and m.name == CLEANUP_RESULTS_MUTATION_NAME:
                 try:
                     await _process_cleanup_results_mutation(db_provider, m, params)
@@ -242,7 +233,7 @@ async def handle_mutate[T](
 
             check(m.type == "custom", "Expected custom mutation")
             assert isinstance(m, CustomMutation)
-            response = await _process_one(transactor, handler, m)
+            response = await _process_one(transactor, handler, m, mutation_id)
             responses.append(response)
             processed_count += 1
 
@@ -269,28 +260,34 @@ async def handle_mutate[T](
 
 
 async def _process_one[T](
-    transactor: "_Transactor[T]", handler: MutateRequestHandler[T], m: CustomMutation
+    transactor: "_Transactor[T]", handler: MutateRequestHandler[T], m: CustomMutation, mutation_id: MutationID
 ) -> MutationResponse:
     phase: _MutationPhase = "preTransaction"
 
     async def transact(callback: TransactFnCallback[T]) -> MutationResponse:
         nonlocal phase
         phase = "transactionPending"
-        result = await transactor.transact(m, callback)
+        result = await transactor.transact(m, mutation_id, callback)
         phase = "postCommit"
         return result
 
     try:
-        return await _application_error_wrapper(lambda: handler(transact, m))
+        # Upstream's `applicationErrorWrapper`, inline.
+        try:
+            return await handler(transact, m)
+        except _PASSES_THROUGH:
+            raise
+        except Exception as error:
+            raise wrap_with_application_error(error) from error
     except ApplicationError as error:
         if phase == "preTransaction":
-            await transactor.persist_pre_transaction_failure(m, error)
+            await transactor.persist_pre_transaction_failure(m, mutation_id, error)
         elif phase == "postCommit":  # pragma: no branch - `transact` never raises an ApplicationError
             logger.error(
                 "Post-commit mutation handler failed for mutation %s for client %s", m.id, m.client_id, exc_info=error
             )
         logger.warning("Application error processing mutation %s for client %s", m.id, m.client_id, exc_info=error)
-        return _app_error_response(m, error)
+        return _app_error_response(mutation_id, error)
 
 
 class _Transactor[T]:
@@ -299,11 +296,13 @@ class _Transactor[T]:
         self._push = push
         self._params = params
 
-    async def transact(self, mutation: CustomMutation, callback: TransactFnCallback[T]) -> MutationResponse:
+    async def transact(
+        self, mutation: CustomMutation, mutation_id: MutationID, callback: TransactFnCallback[T]
+    ) -> MutationResponse:
         app_error: ApplicationError | None = None
         while True:
             try:
-                result = await self._transact_impl(mutation, callback, app_error)
+                result = await self._transact_impl(mutation, mutation_id, callback, app_error)
                 if app_error is not None:
                     logger.warning(
                         "Mutation %s for client %s was retried after an error",
@@ -311,7 +310,7 @@ class _Transactor[T]:
                         mutation.client_id,
                         exc_info=app_error,
                     )
-                    return _app_error_response(mutation, app_error)
+                    return _app_error_response(mutation_id, app_error)
                 return result
             except OutOfOrderMutation as error:
                 logger.error("%s", error)
@@ -319,7 +318,7 @@ class _Transactor[T]:
             except MutationAlreadyProcessedError as error:
                 logger.warning("%s", error)
                 return MutationResponse(
-                    id=MutationID(clientID=mutation.client_id, id=mutation.id),
+                    id=mutation_id,
                     result=MutationZeroError(error="alreadyProcessed", details=str(error)),
                 )
             except Exception as error:
@@ -343,13 +342,19 @@ class _Transactor[T]:
                     exc_info=app_error,
                 )
 
-    async def persist_pre_transaction_failure(self, mutation: CustomMutation, app_error: ApplicationError) -> None:
+    async def persist_pre_transaction_failure(
+        self, mutation: CustomMutation, mutation_id: MutationID, app_error: ApplicationError
+    ) -> None:
         """The handler raised before calling `transact`. The ID still advances and the failure is recorded."""
 
-        await self._transact_impl(mutation, None, app_error)
+        await self._transact_impl(mutation, mutation_id, None, app_error)
 
     async def _transact_impl(
-        self, mutation: CustomMutation, callback: TransactFnCallback[T] | None, app_error: ApplicationError | None
+        self,
+        mutation: CustomMutation,
+        mutation_id: MutationID,
+        callback: TransactFnCallback[T] | None,
+        app_error: ApplicationError | None,
     ) -> MutationResponse:
         """Bump the ID, then run `callback`, or with `app_error` set, record that error in its place."""
         phase: _DatabaseTransactionPhase = "open"
@@ -357,14 +362,18 @@ class _Transactor[T]:
         async def run(tx: T, hooks: TransactionProviderHooks) -> MutationResponse:
             nonlocal phase
             phase = "execute"
-            await self._check_and_increment_last_mutation_id(hooks, mutation.client_id, mutation.id)
+            last_mutation_id = await hooks.update_client_mutation_id()
+            if mutation.id < last_mutation_id:
+                raise MutationAlreadyProcessedError(mutation.client_id, mutation.id, last_mutation_id)
+            if mutation.id > last_mutation_id:
+                raise OutOfOrderMutation(mutation.client_id, mutation.id, last_mutation_id)
             if app_error is None:
                 assert callback is not None
                 logger.debug("Executing mutator '%s' (id=%s)", mutation.name, mutation.id)
                 await callback(tx, mutation.name, mutation.args[0] if mutation.args else None)
             else:
-                await hooks.write_mutation_result(_app_error_response(mutation, app_error))
-            return MutationResponse(id=MutationID(clientID=mutation.client_id, id=mutation.id), result=_OK)
+                await hooks.write_mutation_result(_app_error_response(mutation_id, app_error))
+            return MutationResponse(id=mutation_id, result=_OK)
 
         try:
             return await self._db.transaction(
@@ -381,19 +390,10 @@ class _Transactor[T]:
         except Exception as error:
             raise DatabaseTransactionError(phase, error) from error
 
-    async def _check_and_increment_last_mutation_id(
-        self, hooks: TransactionProviderHooks, client_id: str, received: float
-    ) -> None:
-        last_mutation_id = await hooks.update_client_mutation_id()
-        if received < last_mutation_id:
-            raise MutationAlreadyProcessedError(client_id, received, last_mutation_id)
-        if received > last_mutation_id:
-            raise OutOfOrderMutation(client_id, received, last_mutation_id)
 
-
-def _app_error_response(m: CustomMutation, error: ApplicationError) -> MutationResponse:
+def _app_error_response(mutation_id: MutationID, error: ApplicationError) -> MutationResponse:
     return MutationResponse(
-        id=MutationID(clientID=m.client_id, id=m.id),
+        id=mutation_id,
         result=MutationAppError(message=error.message, details=error.details if js_truthy(error.details) else None),
     )
 
