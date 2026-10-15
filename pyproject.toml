@@ -17,6 +17,12 @@ classifiers = [
 ]
 dependencies = ["pydantic>=2.14", "typing-extensions>=4.12"]
 
+[project.urls]
+Homepage = "https://github.com/agent-labs-dev/zero-python"
+Source = "https://github.com/agent-labs-dev/zero-python"
+Issues = "https://github.com/agent-labs-dev/zero-python/issues"
+Changelog = "https://github.com/agent-labs-dev/zero-python/releases"
+
 [project.scripts]
 zero-python = "zero_python.codegen:main"
 
