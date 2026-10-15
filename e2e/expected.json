@@ -1,0 +1,283 @@
+{
+  "mutations": {
+    "register": {
+      "ok": true
+    },
+    "project p1": {
+      "ok": true
+    },
+    "project p2": {
+      "ok": true
+    },
+    "project blank": {
+      "error": {
+        "type": "app",
+        "message": "A project needs a name",
+        "details": {
+          "field": "name"
+        }
+      }
+    },
+    "task t1": {
+      "ok": true
+    },
+    "task t2": {
+      "ok": true
+    },
+    "task t3": {
+      "ok": true
+    },
+    "task t4": {
+      "ok": true
+    },
+    "task t5": {
+      "ok": true
+    },
+    "label bug": {
+      "ok": true
+    },
+    "label ops": {
+      "ok": true
+    },
+    "attach t2 bug": {
+      "ok": true
+    },
+    "attach t3 ops": {
+      "ok": true
+    },
+    "attach t3 bug": {
+      "ok": true
+    },
+    "toggle t2": {
+      "ok": true
+    },
+    "retitle t3 refused": {
+      "error": {
+        "type": "app",
+        "message": "That title is not allowed",
+        "details": {
+          "title": "forbidden fruit"
+        }
+      }
+    },
+    "retitle t4": {
+      "ok": true
+    },
+    "remove t5": {
+      "ok": true
+    },
+    "rename p1": {
+      "ok": true
+    },
+    "grace task in ada project": {
+      "error": {
+        "type": "app",
+        "message": "Not your project",
+        "details": {
+          "projectID": "p1"
+        }
+      }
+    }
+  },
+  "reads": {
+    "ada projects.mine": [
+      {
+        "id": "p1",
+        "name": "Alpha prime",
+        "ownerID": "ada",
+        "owner": {
+          "id": "ada",
+          "name": "Ada"
+        },
+        "tasks": [
+          {
+            "id": "t2",
+            "projectID": "p1",
+            "title": "Fix bug",
+            "done": true,
+            "priority": 2,
+            "tags": null,
+            "due": null,
+            "createdAt": 1767225602000,
+            "labels": [
+              {
+                "id": "l1",
+                "name": "bug"
+              }
+            ]
+          },
+          {
+            "id": "t1",
+            "projectID": "p1",
+            "title": "write spec",
+            "done": false,
+            "priority": 1,
+            "tags": [
+              "a",
+              "n1"
+            ],
+            "due": 1767312000000,
+            "createdAt": 1767225601000,
+            "labels": []
+          },
+          {
+            "id": "t4",
+            "projectID": "p1",
+            "title": "Triage inbox",
+            "done": false,
+            "priority": 1,
+            "tags": null,
+            "due": null,
+            "createdAt": 1767225604000,
+            "labels": []
+          },
+          {
+            "id": "t3",
+            "projectID": "p1",
+            "title": "ship it",
+            "done": false,
+            "priority": 0,
+            "tags": [
+              "a",
+              "n3"
+            ],
+            "due": null,
+            "createdAt": 1767225603000,
+            "labels": [
+              {
+                "id": "l1",
+                "name": "bug"
+              },
+              {
+                "id": "l2",
+                "name": "ops"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "p2",
+        "name": "archived beta",
+        "ownerID": "ada",
+        "owner": {
+          "id": "ada",
+          "name": "Ada"
+        },
+        "tasks": []
+      }
+    ],
+    "ada tasks.open p1": [
+      {
+        "id": "t4",
+        "projectID": "p1",
+        "title": "Triage inbox",
+        "done": false,
+        "priority": 1,
+        "tags": null,
+        "due": null,
+        "createdAt": 1767225604000
+      },
+      {
+        "id": "t3",
+        "projectID": "p1",
+        "title": "ship it",
+        "done": false,
+        "priority": 0,
+        "tags": [
+          "a",
+          "n3"
+        ],
+        "due": null,
+        "createdAt": 1767225603000
+      },
+      {
+        "id": "t1",
+        "projectID": "p1",
+        "title": "write spec",
+        "done": false,
+        "priority": 1,
+        "tags": [
+          "a",
+          "n1"
+        ],
+        "due": 1767312000000,
+        "createdAt": 1767225601000
+      }
+    ],
+    "ada tasks.open p2": [],
+    "ada tasks.search": [
+      {
+        "id": "t1",
+        "projectID": "p1",
+        "title": "write spec",
+        "done": false,
+        "priority": 1,
+        "tags": [
+          "a",
+          "n1"
+        ],
+        "due": 1767312000000,
+        "createdAt": 1767225601000
+      },
+      {
+        "id": "t4",
+        "projectID": "p1",
+        "title": "Triage inbox",
+        "done": false,
+        "priority": 1,
+        "tags": null,
+        "due": null,
+        "createdAt": 1767225604000
+      },
+      {
+        "id": "t2",
+        "projectID": "p1",
+        "title": "Fix bug",
+        "done": true,
+        "priority": 2,
+        "tags": null,
+        "due": null,
+        "createdAt": 1767225602000
+      }
+    ],
+    "ada tasks.byID t1": {
+      "id": "t1",
+      "projectID": "p1",
+      "title": "write spec",
+      "done": false,
+      "priority": 1,
+      "tags": [
+        "a",
+        "n1"
+      ],
+      "due": 1767312000000,
+      "createdAt": 1767225601000,
+      "project": {
+        "id": "p1",
+        "name": "Alpha prime",
+        "ownerID": "ada"
+      }
+    },
+    "ada tasks.byID t5": null,
+    "grace projects.mine": [],
+    "grace tasks.byID t3": {
+      "id": "t3",
+      "projectID": "p1",
+      "title": "ship it",
+      "done": false,
+      "priority": 0,
+      "tags": [
+        "a",
+        "n3"
+      ],
+      "due": null,
+      "createdAt": 1767225603000,
+      "project": {
+        "id": "p1",
+        "name": "Alpha prime",
+        "ownerID": "ada"
+      }
+    }
+  }
+}

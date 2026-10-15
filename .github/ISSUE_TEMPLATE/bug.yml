@@ -1,0 +1,29 @@
+name: Bug
+description: zero-server fails, or behaves differently from @rocicorp/zero/server.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Paste the request and response if it's an endpoint.
+    validations:
+      required: true
+  - type: textarea
+    id: upstream
+    attributes:
+      label: What the TypeScript server does
+      description: For the same input, if you know. A difference from upstream is the most useful report there is.
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: zero-server, @rocicorp/zero, Python.
+      placeholder: zero-server 0.0.1, @rocicorp/zero 1.10.0, Python 3.12.8
+    validations:
+      required: true
+  - type: dropdown
+    id: adapter
+    attributes:
+      label: Database adapter
+      options: [SQLAlchemy, asyncpg, psycopg, my own, none]

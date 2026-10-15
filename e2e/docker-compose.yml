@@ -1,0 +1,43 @@
+# Postgres and one zero-cache per app server. The app servers run on the host.
+services:
+  postgres:
+    image: postgres:17
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_connections=400"]
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports: ["55432:5432"]
+    volumes:
+      - ./init.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+      - ./schema.sql:/schema.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 1s
+      retries: 60
+
+  zero-ts: &zero
+    image: rocicorp/zero:1.10.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: &zero-env
+      ZERO_UPSTREAM_DB: postgres://postgres:postgres@postgres:5432/e2e_ts
+      ZERO_REPLICA_FILE: /tmp/replica.db
+      # Replication slots are cluster-wide and named after the app, so each zero-cache needs its own.
+      ZERO_APP_ID: zts
+      ZERO_MUTATE_URL: http://host.docker.internal:3001/mutate
+      ZERO_QUERY_URL: http://host.docker.internal:3001/query
+      ZERO_LOG_LEVEL: info
+      ZERO_ADMIN_PASSWORD: e2e
+      ZERO_NUM_SYNC_WORKERS: "1"
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["4848:4848"]
+
+  zero-py:
+    <<: *zero
+    environment:
+      <<: *zero-env
+      ZERO_UPSTREAM_DB: postgres://postgres:postgres@postgres:5432/e2e_py
+      ZERO_APP_ID: zpy
+      ZERO_MUTATE_URL: http://host.docker.internal:3002/mutate
+      ZERO_QUERY_URL: http://host.docker.internal:3002/query
+    ports: ["4849:4848"]

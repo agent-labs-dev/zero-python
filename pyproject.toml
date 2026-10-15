@@ -1,0 +1,77 @@
+[project]
+name = "zero-server"
+version = "0.0.1"
+description = "Community Python server SDK for Rocicorp Zero. Not affiliated with Rocicorp."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "Agent Labs" }]
+keywords = ["zero", "rocicorp", "sync", "zql"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+dependencies = ["pydantic>=2.14", "typing-extensions>=4.12"]
+
+[project.urls]
+Homepage = "https://github.com/agent-labs-dev/zero-python"
+Source = "https://github.com/agent-labs-dev/zero-python"
+Issues = "https://github.com/agent-labs-dev/zero-python/issues"
+Changelog = "https://github.com/agent-labs-dev/zero-python/releases"
+
+[project.scripts]
+zero-server = "zero_server.codegen:main"
+
+[project.optional-dependencies]
+sqlalchemy = ["sqlalchemy[asyncio]>=2.1", "asyncpg>=0.32"]
+asyncpg = ["asyncpg>=0.32"]
+psycopg = ["psycopg>=3.3", "psycopg-pool>=3.3"]
+starlette = ["starlette>=1.8"]
+
+[dependency-groups]
+dev = [
+    "zero-server[sqlalchemy,asyncpg,psycopg,starlette]",
+    "httpx2>=2.13",
+    # psycopg's prebuilt libpq, so the tests need no system libpq.
+    "psycopg[binary]>=3.3",
+    "hypothesis>=6.169",
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+    "pytest-cov>=7.1",
+    "ruff>=0.17",
+    "ty>=0.0.87",
+]
+
+# The Python app server of the end-to-end tier.
+e2e = ["starlette>=1.8", "uvicorn>=0.54"]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.14"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "ASYNC", "PT"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+addopts = "--cov=zero_server --cov-branch --cov-report=term-missing"
+
+[tool.coverage.run]
+# SQLAlchemy's asyncio layer resumes coroutines inside greenlets.
+concurrency = ["greenlet", "thread"]
+
+[tool.coverage.report]
+fail_under = 100
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "@overload", "raise NotImplementedError", "\\.\\.\\."]

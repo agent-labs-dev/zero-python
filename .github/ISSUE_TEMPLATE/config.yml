@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/agent-labs-dev/zero-python/security/advisories/new
+    about: Report it privately, not in an issue.
+  - name: Bug in Zero itself
+    url: https://github.com/rocicorp/mono/issues
+    about: A bug in the Zero client or zero-cache that happens with a TypeScript backend too.
