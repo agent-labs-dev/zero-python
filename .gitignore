@@ -8,3 +8,4 @@ build/
 .ruff_cache/
 .coverage
 node_modules/
+runner.log

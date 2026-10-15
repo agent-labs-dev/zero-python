@@ -9,6 +9,7 @@ import {
   transformRequestMessageSchema,
   v,
 } from './zero.ts';
+import {mutate} from './mutate.ts';
 
 // The schemas upstream parses requests with, and the mode it parses each in.
 const schemas = {
@@ -20,6 +21,8 @@ const schemas = {
 } as const;
 
 export const ops = {
+  mutate,
+
   /** Whether upstream accepts `value` as a `schema`. */
   accepts({schema, value}: {schema: keyof typeof schemas; value: unknown}) {
     const [type, mode] = schemas[schema];

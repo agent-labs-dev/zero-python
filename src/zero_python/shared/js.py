@@ -1,5 +1,6 @@
 """JavaScript's `String(value)`, for the places upstream compares stringified values."""
 
+import json
 from collections.abc import Callable
 from decimal import Decimal
 from functools import cmp_to_key
@@ -77,3 +78,42 @@ def js_sort[T](items: list[T], compare: Callable[[T, T], int]) -> list[T]:
         out[left + 1 : start + 1] = out[left:start]
         out[left] = pivot
     return out
+
+
+def js_truthy(value: object) -> bool:
+    """JavaScript's truthiness for a JSON value: an empty array or object is truthy there."""
+    if value is None or value is False or value == "":
+        return False
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return value == value and value != 0  # NaN is falsy
+    return True
+
+
+def js_stringify(value: object) -> str:
+    """`JSON.stringify(value)` for a JSON value: compact, numbers written as JavaScript writes them."""
+    match value:
+        case None:
+            return "null"
+        case bool():
+            return "true" if value else "false"
+        case int() | float():
+            return js_number(value)
+        case str():
+            return json.dumps(value, ensure_ascii=False)
+        case list() | tuple():
+            return "[" + ",".join(js_stringify(item) for item in value) + "]"
+        case dict():
+            members = (f"{json.dumps(k, ensure_ascii=False)}:{js_stringify(value[k])}" for k in js_keys(value))
+            return "{" + ",".join(members) + "}"
+        case _:
+            raise TypeError(f"not a JSON value: {type(value).__name__}")
+
+
+def _is_array_index(key: str) -> bool:
+    return key.isascii() and key.isdigit() and (key == "0" or key[0] != "0") and int(key) < 2**32 - 1
+
+
+def js_keys(obj: dict[str, object]) -> list[str]:
+    """`Object.keys(obj)`: array-index keys first in numeric order, then the rest as inserted."""
+    indexes = sorted((k for k in obj if _is_array_index(k)), key=int)
+    return indexes + [k for k in obj if not _is_array_index(k)]
