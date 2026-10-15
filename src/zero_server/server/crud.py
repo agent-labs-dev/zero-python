@@ -15,7 +15,7 @@ from typing_extensions import TypeVar
 from zero_server.schema import Schema, TableSchema
 from zero_server.server.server_schema import ServerSchema, ServerTableSchema
 from zero_server.server.transaction import DBTransaction
-from zero_server.shared.asserts import check
+from zero_server.shared.asserts import AssertionFailedError
 from zero_server.shared.js import js_keys
 from zero_server.z2s.sql import Params, ident
 
@@ -55,8 +55,8 @@ def _server_name(table: TableSchema) -> str:
 
 def _server_column(table: TableSchema, column: str) -> str:
     schema = table.columns.get(column)
-    check(schema, f"Column {column} was not found in the Zero schema for the table {table.name}")
-    assert schema is not None
+    if schema is None:  # `check`, without formatting the message for every column that passes
+        raise AssertionFailedError(f"Column {column} was not found in the Zero schema for the table {table.name}")
     return schema.server_name if schema.server_name is not None else column
 
 
@@ -95,11 +95,13 @@ class TableCRUD(Generic[I, U, K]):
         pk = [_server_column(self._table, k) for k in self._table.primary_key]
         params = Params()
         values = ", ".join(
-            params.column(self._server_table[server], value[k], comparison=False)
-            for k, server in zip(keys, targeted, strict=True)
+            [
+                params.column(self._server_table[server], value[k], comparison=False)
+                for k, server in zip(keys, targeted, strict=True)
+            ]
         )
         action = "DO NOTHING"
-        updated = self._non_pk(value)
+        updated = [k for k in keys if k not in self._table.primary_key]
         if upsert and updated:
             sets = ", ".join(
                 f"{ident(server)} = {params.column(self._server_table[server], value[k], comparison=False)}"
@@ -107,7 +109,7 @@ class TableCRUD(Generic[I, U, K]):
             )
             action = f"DO UPDATE SET {sets}"
         sql = (
-            f"INSERT INTO {ident(_server_name(self._table))} ({','.join(ident(c) for c in targeted)}) "
+            f"INSERT INTO {ident(_server_name(self._table))} ({','.join([ident(c) for c in targeted])}) "
             f"VALUES ({values}) ON CONFLICT ({', '.join(ident(c) for c in pk)}) {action}"
         )
         await self._tx.query(sql, params.values)

@@ -8,7 +8,8 @@ A driver plugs in as a `DBConnection`: something that opens a transaction and ha
 supported driver.
 """
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, Protocol, overload
 
 from zero_server.protocol.mutation import CleanupResultsArg, CleanupResultsBulkArg, MutationResponse
@@ -34,9 +35,17 @@ class PostgresError(Exception):
 
 
 class DBConnection[W](Protocol):
-    """Opens one transaction, runs `fn` in it, and commits when `fn` returns or rolls back when it raises."""
+    """Opens one transaction, runs `fn` in it, and commits when `fn` returns or rolls back when it raises.
+
+    A connection may also have a `session()`: an async context manager yielding a `DBConnection` whose
+    transactions all run on one connection from the pool, in turn, as a push's mutations do.
+    """
 
     async def transaction[R](self, fn: Callable[[DBTransaction[W]], Awaitable[R]]) -> R: ...
+
+
+class _SessionOpener[W](Protocol):
+    def session(self) -> AbstractAsyncContextManager[DBConnection[W]]: ...
 
 
 class _Hooks:
@@ -104,6 +113,28 @@ class ZQLDatabase[W]:
         callback: Callable[[ServerTransaction[W], TransactionProviderHooks], Awaitable[R]],
         transaction_input: TransactionProviderInput | None = None,
     ) -> R:
+        return await self._transaction(self.connection, callback, transaction_input)
+
+    @asynccontextmanager
+    async def session(self) -> "AsyncGenerator[_Session[W] | ZQLDatabase[W]]":
+        """This database, with every transaction on one connection until the block ends.
+
+        `handle_mutate_request` runs a push's mutations in one, so the push takes a connection from the
+        pool once rather than once per mutation. A connection without sessions runs as before.
+        """
+        if not hasattr(self.connection, "session"):
+            yield self
+            return
+        opener: _SessionOpener[W] = self.connection  # ty: ignore[invalid-assignment]
+        async with opener.session() as connection:
+            yield _Session(self, connection)
+
+    async def _transaction[R](
+        self,
+        connection: DBConnection[W],
+        callback: Callable[[ServerTransaction[W], TransactionProviderHooks], Awaitable[R]],
+        transaction_input: TransactionProviderInput | None,
+    ) -> R:
         transaction_input = transaction_input or TransactionProviderInput(
             upstream_schema="", client_group_id="", client_id="", mutation_id=0
         )
@@ -116,7 +147,7 @@ class ZQLDatabase[W]:
             )
             return await callback(server_tx, _Hooks(tx, transaction_input))
 
-        return await self.connection.transaction(run)
+        return await connection.transaction(run)
 
     @overload
     async def run[R](self, query: OneQuery[R, Any]) -> R | None: ...
@@ -129,3 +160,18 @@ class ZQLDatabase[W]:
             return await tx.run(query)
 
         return await self.transaction(run)
+
+
+class _Session[W]:
+    """A `ZQLDatabase`'s transactions, on the one connection of a session of its `DBConnection`."""
+
+    def __init__(self, database: ZQLDatabase[W], connection: DBConnection[W]) -> None:
+        self._database = database
+        self._connection = connection
+
+    async def transaction[R](
+        self,
+        callback: Callable[[ServerTransaction[W], TransactionProviderHooks], Awaitable[R]],
+        transaction_input: TransactionProviderInput | None = None,
+    ) -> R:
+        return await self._database._transaction(self._connection, callback, transaction_input)

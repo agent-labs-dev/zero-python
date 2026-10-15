@@ -5,6 +5,7 @@ same text the other adapters send.
 """
 
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any
 
 import psycopg
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from psycopg_pool import AsyncConnectionPool
 
 from zero_server.schema import Schema
+from zero_server.server.adapters._session import SessionConnection, session
 from zero_server.server.transaction import DBTransaction, Row
 from zero_server.server.zql_database import PostgresError, ZQLDatabase
 
@@ -61,8 +63,21 @@ class PsycopgConnection:
         self.pool = pool
 
     async def transaction[R](self, fn: Callable[[DBTransaction[psycopg.AsyncConnection[Any]]], Awaitable[R]]) -> R:
-        async with self.pool.connection() as connection, connection.transaction():
-            return await fn(PsycopgTransaction(connection))
+        async with self.pool.connection() as connection:
+            return await _transaction(connection, fn)
+
+    def session(
+        self,
+    ) -> AbstractAsyncContextManager[SessionConnection[psycopg.AsyncConnection[Any], psycopg.AsyncConnection[Any]]]:
+        """One connection for a push's transactions, returned to the pool once, at the end."""
+        return session(self.pool.getconn, self.pool.putconn, _transaction)
+
+
+async def _transaction[R](
+    connection: psycopg.AsyncConnection[Any], fn: Callable[[DBTransaction[psycopg.AsyncConnection[Any]]], Awaitable[R]]
+) -> R:
+    async with connection.transaction():
+        return await fn(PsycopgTransaction(connection))
 
 
 class PsycopgDatabase(ZQLDatabase[psycopg.AsyncConnection[Any]]):

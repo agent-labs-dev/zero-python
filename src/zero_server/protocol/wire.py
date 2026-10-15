@@ -9,6 +9,7 @@ Parsing is the mirror image: an optional field upstream may be absent but not `n
 refused unless the field is `nullable`.
 """
 
+import functools
 from typing import Annotated, Any, ClassVar, Self
 
 from pydantic import (
@@ -64,12 +65,9 @@ class WireModel(BaseModel):
     @classmethod
     def _refuse_null_for_optional(cls, data: Any, info: ValidationInfo) -> Any:
         if info.context == WIRE and isinstance(data, dict):
-            for name, field in cls.model_fields.items():
-                if name in cls.nullable or field.is_required():
-                    continue
-                for key in {name, field.alias or name}:
-                    if key in data and data[key] is None:
-                        raise ValueError(f"{key} may be absent but not null")
+            for key in _optional_keys(cls):
+                if key in data and data[key] is None:
+                    raise ValueError(f"{key} may be absent but not null")
         return data
 
     @model_serializer(mode="wrap")
@@ -93,6 +91,19 @@ class WireModel(BaseModel):
     @classmethod
     def from_json(cls, value: object) -> Self:
         return cls.model_validate(value, context=WIRE)
+
+
+@functools.cache
+def _optional_keys(cls: type[WireModel]) -> tuple[str, ...]:
+    """The keys, by name or alias, of the fields that may be absent but not null."""
+    return tuple(
+        dict.fromkeys(
+            key
+            for name, field in cls.model_fields.items()
+            if not (name in cls.nullable or field.is_required())
+            for key in (name, field.alias or name)
+        )
+    )
 
 
 type Number = StrictInt | StrictFloat

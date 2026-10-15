@@ -22,8 +22,18 @@ def js_string(value: object) -> str:
             return str(value)
 
 
+# Integers below 2**53 are exactly representable as a double, so JavaScript prints their digits as they are.
+_MAX_EXACT = 2**53
+
+
 def js_number(value: float) -> str:
     """`Number.prototype.toString()`: the shortest round-trip digits, laid out by ECMA-262's rules."""
+    if type(value) is int and -_MAX_EXACT < value < _MAX_EXACT:
+        return str(value)
+    if type(value) is float and 1e-4 <= abs(value) < 1e16:
+        # Python's repr writes the same shortest digits, and in this range lays them out as JavaScript does.
+        text = repr(value)
+        return text[:-2] if text.endswith(".0") else text
     if value == 0:
         return "0"
     if value < 0:
@@ -36,8 +46,6 @@ def js_number(value: float) -> str:
     n = k + exponent
     if k <= n <= 21:
         return digits + "0" * (n - k)
-    if 0 < n <= 21:
-        return digits[:n] + "." + digits[n:]
     if -6 < n <= 0:
         return "0." + "0" * -n + digits
     e = n - 1
@@ -91,6 +99,10 @@ def js_truthy(value: object) -> bool:
     return True
 
 
+# `JSON.stringify`'s escaping of a string, without `json.dumps` building an encoder for every call.
+_encode_string = json.JSONEncoder(ensure_ascii=False).encode
+
+
 def js_stringify(value: object) -> str:
     """`JSON.stringify(value)` for a JSON value: compact, numbers written as JavaScript writes them."""
     match value:
@@ -101,11 +113,11 @@ def js_stringify(value: object) -> str:
         case int() | float():
             return js_number(value)
         case str():
-            return json.dumps(value, ensure_ascii=False)
+            return _encode_string(value)
         case list() | tuple():
-            return "[" + ",".join(js_stringify(item) for item in value) + "]"
+            return "[" + ",".join([js_stringify(item) for item in value]) + "]"
         case dict():
-            members = (f"{json.dumps(k, ensure_ascii=False)}:{js_stringify(value[k])}" for k in js_keys(value))
+            members = [f"{_encode_string(k)}:{js_stringify(value[k])}" for k in js_keys(value)]
             return "{" + ",".join(members) + "}"
         case _:
             raise TypeError(f"not a JSON value: {type(value).__name__}")
@@ -117,5 +129,10 @@ def _is_array_index(key: str) -> bool:
 
 def js_keys(obj: dict[str, object]) -> list[str]:
     """`Object.keys(obj)`: array-index keys first in numeric order, then the rest as inserted."""
+    for key in obj:
+        if type(key) is not str or key[:1].isdigit():
+            break
+    else:
+        return list(obj)
     indexes = sorted((k for k in obj if _is_array_index(k)), key=int)
     return indexes + [k for k in obj if not _is_array_index(k)]
