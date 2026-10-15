@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.pool import PoolProxiedConnection
 
 from zero_server.schema import Schema
 from zero_server.server.adapters._session import SessionConnection, session
@@ -23,7 +24,8 @@ class SQLAlchemyTransaction:
     same connection, inside the transaction SQLAlchemy opened. On asyncpg, SQLAlchemy defers `BEGIN` to
     the first statement it runs itself, so until the transaction is open a statement goes through
     `exec_driver_sql`, which hands the `$1` placeholders to asyncpg as they are. After that, statements
-    go straight to the asyncpg connection, as the asyncpg adapter sends them.
+    go straight to the asyncpg connection, as the asyncpg adapter sends them. In a push's session,
+    `BEGIN` goes out before the callback runs, so every statement does.
     """
 
     def __init__(
@@ -93,7 +95,21 @@ async def _transaction[R](
     connection: AsyncConnection, fn: Callable[[DBTransaction[AsyncConnection]], Awaitable[R]]
 ) -> R:
     async with connection.begin():
+        if connection.dialect.driver == "asyncpg":
+            await _send_begin(await connection.get_raw_connection())
         return await fn(await sqlalchemy_transaction(connection))
+
+
+async def _send_begin(pooled: PoolProxiedConnection) -> None:
+    """Have SQLAlchemy's asyncpg dialect send `BEGIN` now, so every statement can go straight to asyncpg.
+
+    The dialect defers `BEGIN` to the first statement it runs itself and has no public way to send it
+    sooner; that first statement through SQLAlchemy cost a push of 100 puts about 20%.
+    """
+    # Private: the asyncpg dialect's `_start_transaction`. A public way to begin, or its removal, retires this.
+    start = getattr(pooled.dbapi_connection, "_start_transaction", None)
+    if start is not None:
+        await start()
 
 
 class SQLAlchemyDatabase(ZQLDatabase[AsyncConnection]):

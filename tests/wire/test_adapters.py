@@ -1,6 +1,7 @@
 """Sessions: a push's transactions on one connection from the adapter's pool."""
 
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 import asyncpg
@@ -8,6 +9,7 @@ import pytest
 
 from tests.wire.conftest import ADAPTERS, WireDB
 from zero_server.server.adapters.asyncpg import AsyncpgDatabase
+from zero_server.server.adapters.sqlalchemy import _send_begin
 from zero_server.server.zql_database import ZQLDatabase
 
 
@@ -77,3 +79,8 @@ async def test_a_connection_without_sessions_runs_each_transaction_on_its_own() 
     database = ZQLDatabase(Connection())
     async with database.session() as db:
         assert db is database
+
+
+async def test_sqlalchemy_begins_on_its_first_statement_without_start_transaction() -> None:
+    # A SQLAlchemy without the dialect's private `_start_transaction` sends nothing early.
+    await _send_begin(SimpleNamespace(dbapi_connection=object()))  # ty: ignore[invalid-argument-type]

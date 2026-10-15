@@ -189,6 +189,10 @@ async def handle_mutate_request[T](
     A caller that needs push-level fields such as `timestamp` parses once with `PushBody.from_json` and
     passes the result. If that parse fails, pass the raw body instead and return the parse failure this
     produces.
+
+    With a database that opens sessions, as `ZQLDatabase` does, the push's mutations share one pooled
+    connection: they see each other's session state, and a handler that takes another connection from
+    the same pool can deadlock when the pool is smaller than the number of concurrent pushes.
     """
     return await handle_mutate(db_provider, handler, query, body, user_id, report_user_id=True)
 
