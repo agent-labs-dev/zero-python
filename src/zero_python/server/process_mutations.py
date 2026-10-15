@@ -160,7 +160,7 @@ async def handle_mutate_request[T](
     db_provider: Database[T],
     handler: MutateRequestHandler[T],
     query: Mapping[str, str],
-    body: bytes | JSONValue,
+    body: object,
     user_id: str | None,
 ) -> MutateResponse:
     """Process one `/mutate` request from zero-cache.
@@ -169,6 +169,19 @@ async def handle_mutate_request[T](
     `user_id` is the authenticated user, `None` when logged out; reporting it back is what makes
     zero-cache treat the connection's user as server-validated.
     """
+    return await handle_mutate(db_provider, handler, query, body, user_id, report_user_id=True)
+
+
+async def handle_mutate[T](
+    db_provider: Database[T],
+    handler: MutateRequestHandler[T],
+    query: Mapping[str, str],
+    body: object,
+    user_id: str | None,
+    *,
+    report_user_id: bool,
+) -> MutateResponse:
+    """`handle_mutate_request`, and the legacy form that reports no user ID at all."""
     json_body: Any = body
     if isinstance(body, bytes):
         try:
@@ -220,7 +233,9 @@ async def handle_mutate_request[T](
             responses.append(response)
             processed_count += 1
 
-        return MutateSuccess(mutations=responses, userID=user_id)
+        if report_user_id:
+            return MutateSuccess(mutations=responses, userID=user_id)
+        return MutateSuccess(mutations=responses)
     except Exception as error:
         logger.error("Failed to process push request", exc_info=error)
         details = get_error_details(error)

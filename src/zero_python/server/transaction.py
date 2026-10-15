@@ -6,7 +6,10 @@ Apache-2.0, Copyright Rocicorp.
 """
 
 from collections.abc import Sequence
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
+
+if TYPE_CHECKING:
+    from zero_python.server.crud import Mutate
 
 type Row = dict[str, Any]
 
@@ -24,7 +27,21 @@ class ServerTransaction[W]:
     location: Literal["server"] = "server"
     reason: Literal["authoritative"] = "authoritative"
 
-    def __init__(self, db_transaction: DBTransaction[W], client_id: str, mutation_id: int) -> None:
+    def __init__(
+        self,
+        db_transaction: DBTransaction[W],
+        client_id: str,
+        mutation_id: int,
+        mutate: "Mutate | None" = None,
+    ) -> None:
         self.db_transaction = db_transaction
         self.client_id = client_id
         self.mutation_id = mutation_id
+        self._mutate = mutate
+
+    @property
+    def mutate(self) -> "Mutate":
+        """CRUD on the schema's tables. Needs a database built with a schema."""
+        if self._mutate is None:
+            raise RuntimeError("tx.mutate needs a schema: pass one to the database")
+        return self._mutate

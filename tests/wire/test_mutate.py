@@ -9,8 +9,10 @@ from hypothesis import strategies as st
 from tests.harness import Harness
 from tests.strategies import as_js, cleanup_args, corrupted, json_values, mutation_ids
 from tests.wire.conftest import WireDB
-from tests.wire.mutators import handler, provider
+from tests.wire.mutators import REGISTRY, handler, provider
+from zero_python.schema import load_schema
 from zero_python.server.process_mutations import handle_mutate_request
+from zero_python.server.push_processor import PushProcessor
 from zero_python.server.sqlalchemy import SQLAlchemyDatabase
 
 NAMES = [
@@ -19,6 +21,48 @@ NAMES = [
 ]  # fmt: skip
 
 texts = st.sampled_from(["a", "b", "c", "é"])
+
+
+def _rarely(usual: st.SearchStrategy[Any], rare: st.SearchStrategy[Any], one_in: int = 15) -> st.SearchStrategy[Any]:
+    return st.sampled_from([False] * (one_in - 1) + [True]).flatmap(lambda r: rare if r else usual)
+
+
+MS_2000 = 946_684_800_000
+THING_COLUMNS: dict[str, st.SearchStrategy[Any]] = {
+    "n": _rarely(st.integers(-1000, 1000), st.sampled_from([1.5, "abc", 2**40])),
+    "f": _rarely(st.floats(-1e6, 1e6), st.just("x")),
+    "b": _rarely(st.booleans(), st.just("yes")),
+    "j": json_values,
+    "t": _rarely(st.integers(MS_2000, MS_2000 + 10**12), st.just(-1.5)),
+    "d": st.integers(0, 3000).map(lambda days: MS_2000 + days * 86_400_000),
+    "s": _rarely(st.text(max_size=8), st.just("too long for eight")),
+    "tags": _rarely(st.lists(st.text(max_size=3), max_size=3), st.just([1, None])),
+    "u": _rarely(st.uuids().map(str), st.just("not-a-uuid")),
+    "mood": _rarely(st.sampled_from(["happy", "sad"]), st.just("meh")),
+    "tm": st.integers(0, 86_399_999),
+    "ttz": st.integers(0, 86_399_999),
+    "amount": _rarely(st.integers(-(10**6), 10**6).map(lambda cents: cents / 100), st.just(10**9)),
+    "ip": _rarely(st.sampled_from(["10.0.0.1", "::1", "192.168.0.0/24"]), st.just("nope")),
+}
+
+
+def _row(columns: dict[str, st.SearchStrategy[Any]], pk: dict[str, st.SearchStrategy[Any]]) -> st.SearchStrategy[Any]:
+    optional = {name: st.none() | strategy for name, strategy in columns.items()}
+    return st.fixed_dictionaries(pk, optional=optional)
+
+
+crud_args = st.one_of(
+    st.fixed_dictionaries({"table": st.just("thing"), "row": _row(THING_COLUMNS, {"id": texts})}),
+    st.fixed_dictionaries(
+        {
+            "table": st.just("pair"),
+            "row": _row({"note": st.text(max_size=3)}, {"a": texts, "b": st.integers(0, 2)}),
+        }
+    ),
+    # Columns the schema does not declare are refused before any SQL runs.
+    st.just({"table": "thing", "row": {"id": "a", "nope": 1}}),
+)
+CRUD_NAMES = ["crud.insert", "crud.upsert", "crud.update", "crud.delete"]
 mutator_args = st.fixed_dictionaries(
     {"id": texts, "value": texts},
     optional={"message": st.sampled_from(["no", "nope", ""]), "details": json_values},
@@ -30,17 +74,17 @@ BAD_QUERIES = [{"schema": "zero_0"}, {"appID": "zero"}, {"schema": "zero_0", "ap
 
 
 def _weighted(draw: st.DrawFn, choices: list[tuple[int, Any]]) -> Any:
-    total = sum(w for w, _ in choices)
-    roll = draw(st.integers(0, total - 1))
-    for weight, value in choices:
-        if roll < weight:
-            return value
-        roll -= weight
-    raise AssertionError
+    # Indexes into an expanded list: an integer draw would favour its bounds, and so the rare choices.
+    expanded = [i for i, (weight, _) in enumerate(choices) for _ in range(weight)]
+    return choices[draw(st.sampled_from(expanded))][1]
+
+
+def _one_in(draw: st.DrawFn, n: int) -> bool:
+    return draw(st.sampled_from([False] * (n - 1) + [True]))
 
 
 @st.composite
-def scenarios(draw: st.DrawFn) -> list[tuple[Any, dict[str, str], str | None]]:
+def scenarios(draw: st.DrawFn, names: list[str] | None = None) -> list[tuple[Any, dict[str, str], str | None]]:
     """Pushes as a client group sends them: per-client IDs in sequence, with the odd duplicate, gap or
     malformed request, so every branch of the state machine runs and most mutations get through."""
     next_id: dict[str, int] = {}
@@ -49,11 +93,11 @@ def scenarios(draw: st.DrawFn) -> list[tuple[Any, dict[str, str], str | None]]:
         mutations = []
         for _ in range(draw(st.integers(0, 4))):
             kind = _weighted(draw, [(85, "custom"), (10, "cleanup"), (2, "crud")])
-            client = _weighted(draw, [(45, "c1"), (45, "c2"), (3, "cfail")])
+            client = _weighted(draw, [(49, "c1"), (49, "c2"), (1, "cfail")])
             if kind == "cleanup":
                 # Cleanup args name their own clients; `cfail` makes the cleanup's transaction fail.
                 args = draw(st.lists(cleanup_args() | json_values, max_size=1))
-                if args and isinstance(args[0], dict) and "clientID" in args[0] and draw(st.integers(0, 9)) == 0:
+                if args and isinstance(args[0], dict) and "clientID" in args[0] and _one_in(draw, 10):
                     args = [{**args[0], "clientID": "cfail"}]
                 mutations.append(
                     {
@@ -68,7 +112,7 @@ def scenarios(draw: st.DrawFn) -> list[tuple[Any, dict[str, str], str | None]]:
                 continue
             expected = next_id.get(client, 1)
             mutation_id = _weighted(
-                draw, [(85, expected), (7, max(expected - 1, 0)), (4, expected + 1), (4, draw(mutation_ids))]
+                draw, [(93, expected), (4, max(expected - 1, 0)), (2, expected + 1), (1, draw(mutation_ids))]
             )
             next_id[client] = max(expected, mutation_id + 1)
             if kind == "crud":
@@ -83,28 +127,38 @@ def scenarios(draw: st.DrawFn) -> list[tuple[Any, dict[str, str], str | None]]:
                     }
                 )
                 continue
+            if names is None and draw(st.booleans()):
+                mutations.append(
+                    {
+                        "type": "custom",
+                        "id": mutation_id,
+                        "clientID": client,
+                        "name": draw(st.sampled_from(CRUD_NAMES)),
+                        "args": [draw(crud_args)],
+                        "timestamp": 1,
+                    }
+                )
+                continue
             mutations.append(
                 {
                     "type": "custom",
                     "id": mutation_id,
                     "clientID": client,
-                    "name": draw(st.sampled_from(NAMES)),
-                    "args": draw(st.lists(mutator_args, max_size=1))
-                    if draw(st.integers(0, 9)) == 0
-                    else [draw(mutator_args)],
+                    "name": draw(st.sampled_from(names or NAMES)),
+                    "args": draw(st.lists(mutator_args, max_size=1)) if _one_in(draw, 10) else [draw(mutator_args)],
                     "timestamp": 1,
                 }
             )
         body = {
             "clientGroupID": "cg1",
             "mutations": mutations,
-            "pushVersion": _weighted(draw, [(95, 1), (5, 2)]),
+            "pushVersion": _weighted(draw, [(49, 1), (1, 2)]),
             "timestamp": 1,
             "requestID": "r",
         }
-        if draw(st.integers(0, 19)) == 0:
+        if _one_in(draw, 40):
             body = draw(corrupted(st.just(body)))
-        query = VALID_QUERY if draw(st.integers(0, 19)) else draw(st.sampled_from(BAD_QUERIES))
+        query = draw(st.sampled_from(BAD_QUERIES)) if _one_in(draw, 40) else VALID_QUERY
         pushes.append((body, query, draw(st.sampled_from([None, "u1"]))))
     return pushes
 
@@ -165,6 +219,7 @@ BRANCHES = {
         _push(_m(1, "item.appError"), _m(1, "item.appError", client="c2")),
         _push(_cleanup({"type": "bulk", "clientGroupID": "cg1", "clientIDs": ["c2", "c1"]})),
     ),
+    "bad query params": [(_push(_m(1)), {"schema": "zero_0"}, None)],
     "cleanup invalid and failing": _scenario(
         _push(_cleanup({"type": "bulk", "clientGroupID": "cg1", "clientIDs": []}), _m(1)),
         _push(_cleanup({"clientGroupID": "cg1", "clientID": "cfail", "upToMutationID": 2}), _m(2)),
@@ -182,7 +237,7 @@ def _with_branches(test: Any) -> Any:
 @given(scenarios())
 def test_pushes_match_upstream(harness: Harness, wire_db: WireDB, pushes: list[Any]) -> None:
     wire_db.reset()
-    py_db = provider(SQLAlchemyDatabase(wire_db.py_engine))
+    py_db = provider(SQLAlchemyDatabase(wire_db.py_engine, load_schema(harness.call("wireSchema"))))
     for body, query, user_id in pushes:
         expected = harness.call("mutate", url=wire_db.ts_url, query=query, body=body, userID=user_id)
         actual = wire_db.run(
@@ -201,3 +256,17 @@ def test_transaction_exposes_the_connection(wire_db: WireDB) -> None:
         assert connection.__class__.__name__ == "AsyncConnection"
 
     wire_db.run(check())
+
+
+PROCESSOR_NAMES = ["item.put", "item|put", "item.appError", "legacy.put", "legacy|put", "item", "nope"]
+
+
+@given(scenarios(PROCESSOR_NAMES))
+def test_push_processor_matches_upstream(harness: Harness, wire_db: WireDB, pushes: list[Any]) -> None:
+    wire_db.reset()
+    processor = PushProcessor(provider(SQLAlchemyDatabase(wire_db.py_engine)), context={"tag": "ctx"})
+    for body, query, _user_id in pushes:
+        expected = harness.call("pushProcessor", url=wire_db.ts_url, query=query, body=body)
+        actual = wire_db.run(processor.process(REGISTRY, query, body)).to_json()
+        assert comparable(actual) == comparable(expected)
+    assert as_js(wire_db.dump(wire_db.py_engine)) == as_js(wire_db.dump(wire_db.ts_engine))

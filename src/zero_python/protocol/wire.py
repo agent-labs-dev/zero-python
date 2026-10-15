@@ -61,6 +61,8 @@ class WireModel(BaseModel):
         out: dict[str, Any] = {}
         for name, info in type(self).model_fields.items():
             key = info.serialization_alias or info.alias or name
+            if key not in dumped:
+                continue
             value = dumped[key]
             if value is None and not (name in self.nullable and name in self.model_fields_set):
                 continue

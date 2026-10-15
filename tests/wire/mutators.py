@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from zero_python.mutators import define_mutator, define_mutators
 from zero_python.protocol.application_error import ApplicationError
 from zero_python.protocol.mutation import CustomMutation, MutationResponse
 from zero_python.server.process_mutations import (
@@ -55,7 +56,18 @@ async def db_error(tx: Tx, _args: dict[str, Any]) -> None:
     await tx.db_transaction.query("SELECT * FROM missing_table")
 
 
+def crud(kind: str) -> Callable[[Tx, dict[str, Any]], Awaitable[None]]:
+    async def run(tx: Tx, args: dict[str, Any]) -> None:
+        if args.get("table") is None:
+            # What `tx.mutate[undefined].insert` throws in the TypeScript twin.
+            raise TypeError(f"Cannot read properties of undefined (reading '{kind}')")
+        await getattr(tx.mutate[args["table"]], kind)(args.get("row"))
+
+    return run
+
+
 MUTATORS: dict[str, Callable[[Tx, dict[str, Any]], Awaitable[None]]] = {
+    **{f"crud.{kind}": crud(kind) for kind in ("insert", "upsert", "update", "delete")},
     "item.put": put,
     "item.appError": app_error,
     "item.error": error,
@@ -105,3 +117,24 @@ class FailingForCfail:
 
 def provider(db: SQLAlchemyDatabase) -> Database[Tx]:
     return FailingForCfail(db)
+
+
+async def _registry_put(*, tx: Tx, args: Any, ctx: Any) -> None:
+    args = _args(args)
+    await put(tx, {**args, "value": f"{_js_string(args.get('value'), '')}@{ctx['tag']}"})
+
+
+async def _registry_app_error(*, tx: Tx, args: Any, ctx: Any) -> None:
+    await app_error(tx, _args(args))
+
+
+async def _legacy_put(tx: Tx, args: Any) -> None:
+    await put(tx, _args(args))
+
+
+REGISTRY = {
+    **define_mutators(
+        {"item": {"put": define_mutator(_registry_put), "appError": define_mutator(_registry_app_error)}}
+    ),
+    "legacy": {"put": _legacy_put},
+}
