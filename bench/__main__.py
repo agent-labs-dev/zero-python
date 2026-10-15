@@ -1,4 +1,17 @@
-"""Run the benchmark tier: see `bench/__init__.py`."""
+"""The paired Postgres benchmarks: TypeScript and Python on the same cases, against the same database.
+
+    uv run python -m bench [--groups run,mutate,pushproc,startup] [--filter REGEX] [--rounds 15]
+
+Times `tx.run`, the mutate endpoint and `PushProcessor` per Python adapter against postgres.js, and
+process startup. Each side is a long-lived worker (`harness/bench/cases.ts`, `bench/cases.py`). For each
+case the driver warms both up, then alternates 100 ms bursts between them, so a round's two bursts run
+milliseconds apart under the same load. A case's ratio is the median of the rounds' Python/TS ratios.
+
+These cases wait on Postgres, which CodSpeed's instruction counts leave out, so they are not gated. CI
+prints the table in the job summary. Output lands in `bench/build/`: `results.json` (every round's time
+per case and side) and `report.md` (the table). Needs `npm ci` in `harness/`, and Docker or
+`ZERO_SERVER_PG`. The CPU-only cases are CodSpeed benchmarks instead: see `bench/test_cpu.py`.
+"""
 
 import argparse
 import asyncio
@@ -16,19 +29,14 @@ from typing import Any
 
 import asyncpg
 
-from bench.report import Combined, Rounds, Row, combine, gate, markdown, pair, update
-from tests.harness import Harness
+from bench.report import Rounds, markdown, pair
 from tests.postgres import postgres_server
 from tests.wire import seed
 from tests.wire.conftest import DDL as WIRE_DDL
-from zero_server.schema import load_schema
-from zero_server.server.server_schema import get_server_schema
-from zero_server.server.transaction import Row as DBRow
 
 ROOT = Path(__file__).resolve().parent.parent
 HERE = ROOT / "bench"
 HARNESS = ROOT / "harness"
-BASELINE = HERE / "baseline.json"
 
 NODE_IMPORT = (
     "await import('@rocicorp/zero/server'); await import('@rocicorp/zero/server/adapters/postgresjs'); "
@@ -45,13 +53,15 @@ STARTUP: dict[str, dict[str, list[str]]] = {
         },
     },
 }
+GROUPS = ["run", "mutate", "pushproc", "startup"]
+"""A case's group is its name's first part."""
 
 
 def step(message: str) -> None:
     print(f"==> {message}", file=sys.stderr, flush=True)
 
 
-async def create_databases(base: str, build: Path) -> tuple[str, str]:
+async def create_databases(base: str) -> tuple[str, str]:
     """`bench_mut` holds the wire tier's tables; `bench_q` the SQL tier's, scaled up to 10k issues."""
     admin = await asyncpg.connect(f"{base}/postgres")
     for name in ("bench_mut", "bench_q"):
@@ -102,21 +112,6 @@ async def create_databases(base: str, build: Path) -> tuple[str, str]:
         await conn.execute(statement)
     await conn.close()
 
-    # What the server-schema query returns for the wire schema, for the mutate endpoint's fake database.
-    conn = await asyncpg.connect(mutate_url)
-    captured: list[DBRow] = []
-
-    class Recording:
-        wrapped_transaction = None
-
-        async def query(self, sql: str, params: Any = ()) -> list[DBRow]:
-            rows = [dict(r) for r in await conn.fetch(sql, *params)]
-            captured[:] = rows
-            return rows
-
-    await get_server_schema(Recording(), load_schema((build / "wire_schema.json").read_text()))
-    await conn.close()
-    (build / "server_schema_rows.json").write_text(json.dumps(captured))
     return mutate_url, query_url
 
 
@@ -163,17 +158,8 @@ def startup(filt: re.Pattern[str], spawns: int, flip: bool) -> list[dict[str, An
     return out
 
 
-GROUPS = ["query", "query_json", "parse", "parse_json", "mutate_cpu", "z2s", "run", "mutate", "pushproc", "startup"]
-"""A case's group is its name's first part. CI runs disjoint sets of groups on separate runners."""
-NEEDS_POSTGRES = {"mutate_cpu", "z2s", "run", "mutate", "pushproc"}
-
-
-def run_rounds(config_path: Path, args: argparse.Namespace, filt: str, groups: list[str], rounds: int) -> Rounds:
-    """Time each case in `rounds` short bursts per side, alternating sides burst by burst.
-
-    The two sides of one round run within a burst or two of each other, so a stretch of load from a
-    neighbour on a shared runner lands on both, and the round's ratio cancels it.
-    """
+def run_rounds(config_path: Path, args: argparse.Namespace, groups: list[str]) -> Rounds:
+    """Time each case in `args.rounds` short bursts per side, alternating sides burst by burst."""
     build: Path = args.out.resolve()
     out: Rounds = {}
     workers = [g for g in groups if g != "startup"]
@@ -190,7 +176,7 @@ def run_rounds(config_path: Path, args: argparse.Namespace, filt: str, groups: l
                     sides = [(ts, ts_impl)] + [(py, impl) for impl in py_impls.get(case, [])]
                     for worker, impl in sides:
                         worker.call(op="warm", case=case, impl=impl, ms=args.warm_ms)
-                    for r in range(rounds):
+                    for r in range(args.rounds):
                         for worker, impl in sides if r % 2 == 0 else reversed(sides):
                             us = worker.call(op="time", case=case, impl=impl, ms=args.burst_ms)["us"]
                             out.setdefault((case, impl), []).append(us)
@@ -200,39 +186,12 @@ def run_rounds(config_path: Path, args: argparse.Namespace, filt: str, groups: l
             py.close()
     if "startup" in groups:
         # Process starts are slow and steady, so they get fewer rounds.
-        compiled = re.compile(filt)
+        compiled = re.compile(args.filter)
         for r in range(args.startup_rounds):
             for result in startup(compiled, args.spawns, flip=r % 2 == 1):
                 out.setdefault((result["case"], result["impl"]), []).append(result["median_us"])
         step("startup done")
     return out
-
-
-def measure(args: argparse.Namespace, filt: str, groups: list[str], rounds: int) -> Rounds:
-    """Time `rounds` rounds of `groups` on both sides, against a freshly seeded Postgres if they need one."""
-    build: Path = args.out.resolve()
-    harness = Harness()
-    (build / "schema.json").write_text(json.dumps(harness.call("schema")))
-    (build / "wire_schema.json").write_text(json.dumps(harness.call("wireSchema")))
-    harness.close()
-    config = {
-        "filter": filt,
-        "workloads": str(HERE / "workloads.json"),
-        "schema": str(build / "schema.json"),
-        "wireSchema": str(build / "wire_schema.json"),
-        "serverSchemaRows": str(build / "server_schema_rows.json"),
-        "queryURL": "",
-        "mutateURL": "",
-    }
-    config_path = build / "config.json"
-    if not NEEDS_POSTGRES & set(groups):
-        config_path.write_text(json.dumps(config))
-        return run_rounds(config_path, args, filt, groups, rounds)
-    with postgres_server() as base:
-        step("seeding Postgres")
-        config["mutateURL"], config["queryURL"] = asyncio.run(create_databases(base, build))
-        config_path.write_text(json.dumps(config))
-        return run_rounds(config_path, args, filt, groups, rounds)
 
 
 def machine() -> str:
@@ -242,22 +201,6 @@ def machine() -> str:
             if line.startswith("model name"):
                 return f"{platform.node()}: {line.split(':', 1)[1].strip()} x{os.cpu_count()}"
     return f"{platform.node()}: {platform.machine()} x{os.cpu_count()}"
-
-
-def save_shard(path: Path, rounds: Rounds) -> None:
-    rows = [{"case": case, "impl": impl, "us": us} for (case, impl), us in rounds.items()]
-    path.write_text(json.dumps({"machine": machine(), "rounds": rows}, indent=1) + "\n")
-
-
-def load_shards(paths: list[Path]) -> list[list[Row]]:
-    """Every `results.json` under `paths`, each one shard."""
-    files = sorted(f for p in paths for f in ([p] if p.is_file() else p.rglob("results.json")))
-    shards = []
-    for f in files:
-        data = json.loads(f.read_text())
-        shards.append(pair({(r["case"], r["impl"]): r["us"] for r in data["rounds"]}))
-        step(f"shard {f} ({data['machine']})")
-    return shards
 
 
 def main() -> None:
@@ -270,50 +213,28 @@ def main() -> None:
     parser.add_argument("--startup-rounds", type=int, default=5, help="rounds of the startup group")
     parser.add_argument("--spawns", type=int, default=2, help="process starts per startup case per round")
     parser.add_argument("--out", type=Path, default=HERE / "build")
-    parser.add_argument("--no-gate", action="store_true", help="measure and report, never fail")
-    parser.add_argument(
-        "--update-baseline", nargs="+", type=Path, metavar="SHARD", help="rebuild the baseline from these results"
-    )
-    parser.add_argument("--force", action="store_true", help="with --update-baseline, replace every ratio")
     args = parser.parse_args()
     build: Path = args.out.resolve()
     build.mkdir(parents=True, exist_ok=True)
-    baseline = json.loads(BASELINE.read_text())
-
-    if args.update_baseline:
-        updated = update(baseline, load_shards(args.update_baseline), force=args.force)
-        for key in sorted(updated["ratios"]):
-            old, new = baseline["ratios"].get(key), updated["ratios"][key]
-            if old != new:
-                step(f"{key}: {old} -> {new}")
-        BASELINE.write_text(json.dumps(updated, indent=2) + "\n")
-        step(f"wrote {BASELINE.relative_to(ROOT)}")
-        return
-
     groups = [g for g in GROUPS if g in args.groups.split(",")]
-    rounds = measure(args, args.filter, groups, args.rounds)
-    save_shard(build / "results.json", rounds)
-    cases = combine([pair(rounds)])
-    verdicts = gate(cases, baseline)
-    failed = {v.case.key for v in verdicts if v.failed}
-    if failed and not args.no_gate:
-        # Time the failing cases again, alone and with twice the rounds. A case fails only if it fails
-        # both times, so one stretch of load on a shared runner does not fail the build.
-        names = sorted({key.split(" ")[0] for key in failed})
-        step(f"retrying {len(names)} case(s) over the gate: {', '.join(names)}")
-        filt = "^(" + "|".join(re.escape(n) for n in names) + ")$"
-        retry_groups = [g for g in groups if g in {n.split(".")[0] for n in names}]
-        retried = {row.key: row for row in pair(measure(args, filt, retry_groups, args.rounds * 2))}
-        verdicts = gate([Combined([retried[c.key]]) if c.key in failed else c for c in cases], baseline)
 
-    table = markdown(verdicts)
-    (build / "report.md").write_text(table)
+    config_path = build / "config.json"
+    config = {"filter": args.filter, "queryURL": "", "mutateURL": ""}
+    if set(groups) - {"startup"}:
+        with postgres_server() as base:
+            step("seeding Postgres")
+            config["mutateURL"], config["queryURL"] = asyncio.run(create_databases(base))
+            config_path.write_text(json.dumps(config))
+            rounds = run_rounds(config_path, args, groups)
+    else:
+        config_path.write_text(json.dumps(config))
+        rounds = run_rounds(config_path, args, groups)
+
+    rows = [{"case": case, "impl": impl, "us": us} for (case, impl), us in rounds.items()]
+    (build / "results.json").write_text(json.dumps({"machine": machine(), "rounds": rows}, indent=1) + "\n")
+    table = markdown(pair(rounds))
+    (build / "report.md").write_text(f"Python/TypeScript on {machine()}, not gated.\n\n{table}")
     print(table)
-    failures = [v for v in verdicts if v.failed]
-    if failures and not args.no_gate:
-        for v in failures:
-            step(f"FAIL {v.case.key}: Py/TS {v.case.ratio:.2f} > {v.limit:.2f} (baseline {v.baseline:.2f})")
-        raise SystemExit(1)
 
 
 if __name__ == "__main__":

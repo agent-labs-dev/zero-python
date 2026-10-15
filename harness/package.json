@@ -12,5 +12,9 @@
     "@opentelemetry/auto-instrumentations-node": "^0.81.0",
     "tinypool": "^2.1.2",
     "uuid": "^11.1.1"
+  },
+  "devDependencies": {
+    "@codspeed/tinybench-plugin": "6.0.1",
+    "tinybench": "6.2.2"
   }
 }

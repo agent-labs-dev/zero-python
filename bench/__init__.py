@@ -1,45 +1,27 @@
 """The benchmark tier: zero-server against the published @rocicorp/zero package, on the same workloads.
 
-    uv run python -m bench [--rounds 15] [--filter REGEX] [--no-gate]   # measure one shard, gate on it
-    uv run python -m bench --gate SHARD...                              # gate on shards measured elsewhere
-    uv run python -m bench --update-baseline SHARD... [--force]         # rebuild baseline.json
+Two suites, both driven by `workloads.json`:
 
-A SHARD is a `results.json` or a directory holding some. Measuring needs what `uv run pytest` needs:
-`npm ci` in `harness/`, and Docker or `ZERO_SERVER_PG`.
+- CPU-only cases, as CodSpeed benchmarks: `bench/test_cpu.py` for Python, `harness/bench/cpu.ts` for
+  TypeScript, with the same case names. The query endpoint at batches of 1 and 100 (`query`, and
+  `query_json` with the JSON parse and serialization an HTTP endpoint adds), parsing 1000-item push
+  and transform bodies (`parse`, `parse_json`), the mutate endpoint over an in-memory database
+  (`mutate_cpu`), and compiling ZQL to SQL (`z2s`). CI runs them under CodSpeed's CPU simulation,
+  which counts instructions, so CodSpeed's check on a pull request flags a Python regression without
+  tolerances or retries. The TypeScript side only moves when the pin does; it is there so the gap
+  shows on the dashboard.
 
-`harness/bench/cases.ts` times the TypeScript package and `bench/cases.py` times Python, case for case,
-both driven by `workloads.json`. Each runs as a long-lived worker. For each case the driver warms both
-up, then alternates short bursts between them (100 ms, 15 rounds), so the two bursts of a round run
-milliseconds apart and share whatever load the machine is under. A burst's time is the median of its
-samples; a case's ratio is the median over rounds of each round's Python/TS ratio.
+      uv run pytest bench --codspeed --no-cov   # checks every Python case runs; no numbers locally
+      node harness/bench/cpu.ts                 # the same for TypeScript
 
-Cases:
+- Cases that wait on Postgres, which instruction counts leave out: `tx.run` (`run`), the mutate
+  endpoint (`mutate`) and `PushProcessor` (`pushproc`) per Python adapter against postgres.js, plus
+  process startup. `bench/__main__.py` alternates the two sides on one machine and prints the
+  Python/TS ratio per case. CI puts the table in the job summary and never fails on it.
 
-- `query`, `query_json`: `handle_query_request` on batches of 1, 10 and 100 simple and complex queries
-  (`related`, `exists`), with `_json` adding the request's JSON parse and the response's serialization.
-- `parse`, `parse_json`: validating 1000-item push and transform bodies, given as objects or as text.
-- `mutate_cpu`: the mutate endpoint over an in-memory fake database, so only SDK time counts.
-- `mutate`, `pushproc`: the mutate endpoint and `PushProcessor` against Postgres, per Python adapter,
-  against postgres.js.
-- `z2s`: compiling ZQL to SQL. `run`: `tx.run` end to end, decode included, at 1, 100 and 10k rows.
-- `startup`: starting the interpreter, then importing the server SDK and one adapter.
+      uv run python -m bench [--groups run,mutate,pushproc,startup] [--filter REGEX]
 
-The gate compares ratios, never absolute times. CI measures three shards on separate runners, then
-`bench-gate` takes each case's median shard ratio. A case fails when that exceeds its entry in
-`baseline.json` by more than its tolerance, and still does when the gate runner times it again alone
-with twice the rounds. A case with no entry passes, which is how a new case starts.
-
-The baseline holds each case's worst shard ratio over at least three CI runs, so a lucky run cannot set
-it. `--update-baseline` refuses fewer than three shards and lowers a ratio only when every shard beat
-it. After a speedup, download the shards of three CI runs on the PR and rebuild:
-
-    gh run download RUN_ID -p 'bench-shard-*' -D bench/build/runs/RUN_ID   # for each of three runs
-    uv run python -m bench --update-baseline bench/build/runs
-
-`--force` replaces every ratio, for a regression the PR accepts on purpose.
-
-TOLERANCES
-
-Output lands in `build/`: `results.json` (one shard: every round's time per case and side) and
-`report.md` (the gate's table).
+The CPU benchmarks need neither Node nor Postgres for their setup: `fixtures/` holds the harness's
+schemas and the rows Postgres returns for the server-schema query. `uv run python -m bench.capture`
+regenerates them, and `tests/wire/test_bench_fixtures.py` fails when they go stale.
 """

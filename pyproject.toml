@@ -46,6 +46,7 @@ dev = [
     "pytest-cov>=7.1",
     "ruff>=0.17",
     "ty>=0.0.87",
+    "pytest-codspeed>=5.0.3",
 ]
 
 # The Python app server of the end-to-end tier.

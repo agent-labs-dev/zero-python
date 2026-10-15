@@ -94,25 +94,41 @@ jobs:
           name: e2e-logs
           path: e2e/build/
 
-  # Python against the published package on the same workloads, one group of cases per runner. Each
-  # job fails when one of its cases' Python/TS ratio rises past bench/baseline.json by more than its
-  # tolerance, twice in a row.
+  # The CPU-only benchmarks, Python (bench/test_cpu.py) and TypeScript (harness/bench/cpu.ts), under
+  # CodSpeed's CPU simulation. Instruction counts do not depend on runner load, so CodSpeed's check on
+  # the pull request flags a regression without tolerances.
+  codspeed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: harness/package-lock.json
+      - run: npm ci
+        working-directory: harness
+      - run: uv sync --locked
+      - uses: CodSpeedHQ/action@821a40cd6c80e3cfe387caf55668287addd808da # v5.5.0
+        with:
+          mode: simulation
+          run: uv run --no-sync pytest bench --codspeed --no-cov && node harness/bench/cpu.ts
+
+  # The Postgres cases, TypeScript and Python alternating on one runner. Report only: the ratio table
+  # lands in the job summary and never fails the build.
   bench:
-    name: bench (${{ matrix.name }})
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 8
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: query+parse
-            groups: query,query_json,parse,parse_json
-          - name: mutate_cpu+z2s+startup
-            groups: mutate_cpu,z2s,startup
-          - name: run
-            groups: run
-          - name: mutate
-            groups: mutate,pushproc
+    continue-on-error: true
     services:
       postgres:
         image: postgres:17
@@ -133,18 +149,16 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
-          cache: npm
-          cache-dependency-path: harness/package-lock.json
       - run: npm ci
         working-directory: harness
       - run: uv sync --locked
-      - run: uv run python -m bench --groups ${{ matrix.groups }} --rounds 30
+      - run: uv run python -m bench
       - if: always()
         run: cat bench/build/report.md >> "$GITHUB_STEP_SUMMARY" || true
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: bench-${{ matrix.name }}
+          name: bench
           if-no-files-found: ignore
           path: |
             bench/build/results.json

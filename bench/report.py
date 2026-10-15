@@ -1,22 +1,17 @@
-"""Ratios from rounds, the gate against `baseline.json`, the baseline update, and the markdown table.
-
-A shard is one measurement on one machine: several rounds of some cases, each timing both sides. CI
-times each group of cases on its own runner; a baseline update combines shards from several CI runs.
-"""
+"""The paired runner's ratio per case and its markdown table."""
 
 import statistics
 from dataclasses import dataclass
-from typing import Any
 
 type Rounds = dict[tuple[str, str], list[float]]
-"""Per `(case, impl)`, the median time in microseconds from each round."""
+"""Per `(case, impl)`, the time in microseconds from each round."""
 
 TS_IMPLS = {"node", "postgres.js"}
 
 
 @dataclass
 class Row:
-    """One Python implementation of a case against the TypeScript one, in one shard."""
+    """One Python implementation of a case against the TypeScript one."""
 
     case: str
     ts_impl: str
@@ -25,13 +20,13 @@ class Row:
     py: list[float]
 
     @property
-    def key(self) -> str:
-        return f"{self.case} {self.py_impl}"
+    def ratios(self) -> list[float]:
+        """Each round's Python/TS ratio. A round's two sides ran within milliseconds of each other."""
+        return [p / t for p, t in zip(self.py, self.ts, strict=True)]
 
     @property
     def ratio(self) -> float:
-        """The median over rounds of each round's ratio: a round's two sides ran seconds apart."""
-        return statistics.median(p / t for p, t in zip(self.py, self.ts, strict=True))
+        return statistics.median(self.ratios)
 
 
 def pair(rounds: Rounds) -> list[Row]:
@@ -43,104 +38,17 @@ def pair(rounds: Rounds) -> list[Row]:
     ]
 
 
-@dataclass
-class Combined:
-    """A case across shards. Its ratio is the median of the shards' ratios."""
-
-    shards: list[Row]
-
-    @property
-    def key(self) -> str:
-        return self.shards[0].key
-
-    @property
-    def ratio(self) -> float:
-        return statistics.median(r.ratio for r in self.shards)
-
-
-def combine(shards: list[list[Row]]) -> list[Combined]:
-    by_key: dict[str, list[Row]] = {}
-    for rows in shards:
-        for row in rows:
-            by_key.setdefault(row.key, []).append(row)
-    return [Combined(rows) for rows in by_key.values()]
-
-
-def tolerance(baseline: dict[str, Any], key: str) -> float:
-    """The longest matching prefix in `baseline["tolerance"]` wins; `""` is the default."""
-    table: dict[str, float] = baseline["tolerance"]
-    return table[max((p for p in table if key.startswith(p)), key=len)]
-
-
-@dataclass
-class Verdict:
-    case: Combined
-    baseline: float | None
-    limit: float | None
-
-    @property
-    def failed(self) -> bool:
-        return self.limit is not None and self.case.ratio > self.limit
-
-
-def gate(cases: list[Combined], baseline: dict[str, Any]) -> list[Verdict]:
-    """A case fails when its ratio exceeds its baseline by more than its tolerance. A case with no
-    baseline passes, so a new case, or a first run on a new runner class, records rather than fails."""
-    out = []
-    for case in cases:
-        base = baseline["ratios"].get(case.key)
-        limit = None if base is None else base * (1 + tolerance(baseline, case.key))
-        out.append(Verdict(case, base, limit))
-    return out
-
-
-MIN_SHARDS = 3
-"""Measurements of a case, each from a separate CI run, that a baseline update needs."""
-
-
-def update(baseline: dict[str, Any], shards: list[list[Row]], force: bool = False) -> dict[str, Any]:
-    """The baseline from at least `MIN_SHARDS` measurements of every case, taking each case's worst.
-
-    A case's ratio only goes down, and only when every shard beat it: one lucky run cannot lower it. A
-    case the baseline lacks is added. `force` replaces every ratio, for a deliberate regression.
-    """
-    cases = combine(shards)
-    if short := sorted(c.key for c in cases if len(c.shards) < MIN_SHARDS):
-        raise ValueError(f"a baseline needs at least {MIN_SHARDS} measurements of each case: {', '.join(short)}")
-    ratios = dict(baseline["ratios"])
-    for case in cases:
-        worst = round(max(r.ratio for r in case.shards), 4)
-        old = ratios.get(case.key)
-        if force or old is None or worst < old:
-            ratios[case.key] = worst
-    return {**baseline, "ratios": dict(sorted(ratios.items()))}
-
-
 def fmt(us: float) -> str:
     return f"{us / 1000:.2f} ms" if us >= 1000 else f"{us:.1f} µs"
 
 
-def markdown(verdicts: list[Verdict]) -> str:
-    """Times are the median over every round of every shard; Py/TS lists each shard's ratio too."""
+def markdown(rows: list[Row]) -> str:
     lines = [
-        "| case | TS | TS median | Python | Python median | Py/TS | per shard | baseline | limit | gate |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| case | TS | TS median | Python | Python median | Py/TS | rounds' Py/TS |",
+        "|---|---|---|---|---|---|---|",
     ]
-    for v in verdicts:
-        first = v.case.shards[0]
-        ts = statistics.median(t for r in v.case.shards for t in r.ts)
-        py = statistics.median(t for r in v.case.shards for t in r.py)
-        cells = [
-            first.case,
-            first.ts_impl,
-            fmt(ts),
-            first.py_impl,
-            fmt(py),
-            f"{v.case.ratio:.2f}",
-            " ".join(f"{r.ratio:.2f}" for r in v.case.shards),
-            "new" if v.baseline is None else f"{v.baseline:.2f}",
-            "" if v.limit is None else f"{v.limit:.2f}",
-            "FAIL" if v.failed else "ok",
-        ]
-        lines.append("| " + " | ".join(cells) + " |")
+    for r in rows:
+        spread = f"{min(r.ratios):.2f}-{max(r.ratios):.2f}"
+        cells = [r.case, r.ts_impl, fmt(statistics.median(r.ts)), r.py_impl, fmt(statistics.median(r.py))]
+        lines.append("| " + " | ".join([*cells, f"{r.ratio:.2f}", spread]) + " |")
     return "\n".join(lines) + "\n"
