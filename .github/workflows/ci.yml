@@ -10,7 +10,7 @@ defaults:
     shell: bash
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     services:
       postgres:
         image: postgres:17
@@ -22,7 +22,7 @@ jobs:
     env:
       ZERO_SERVER_PG: postgresql://postgres:postgres@localhost:5432
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a # v1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -43,9 +43,9 @@ jobs:
   # An unmodified Zero client syncing through zero-cache, once with the TypeScript reference app server
   # and once with the Python one. Fails on any difference in what the client ends up with.
   e2e:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a # v1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
