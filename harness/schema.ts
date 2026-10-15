@@ -1,11 +1,18 @@
-// The wire tier's test schema. It has a table and columns renamed on the server, a compound primary
-// key, one-hop relationships of both cardinalities, a compound correlation, two-hop relationships
-// through a junction table, and a table with no relationships at all.
-import {boolean, createSchema, json, number, relationships, string, table} from '@rocicorp/zero';
+// The wire tier's test schema. It has a table and columns renamed on the server, a table in another
+// Postgres schema, a compound primary key, one-hop relationships of both cardinalities, a relationship
+// from a table to itself, a compound correlation, two-hop relationships of both cardinalities through a
+// junction table, and a table with no relationships at all.
+import {boolean, createSchema, enumeration, json, number, relationships, string, table} from '@rocicorp/zero';
 
 const user = table('user')
   .from('users')
-  .columns({id: string(), name: string().from('full_name'), age: number().optional(), active: boolean()})
+  .columns({
+    id: string(),
+    name: string().from('full_name'),
+    age: number().optional(),
+    active: boolean(),
+    managerID: string().from('manager_id').optional(),
+  })
   .primaryKey('id');
 const issue = table('issue')
   .columns({
@@ -40,15 +47,37 @@ const audit = table('audit')
   })
   .primaryKey('id');
 const counter = table('counter').columns({id: string(), n: number()}).primaryKey('id');
+// One column per Postgres type a comparison casts its value to, in a schema other than `public`.
+const gadget = table('gadget')
+  .from('extra.gadgets')
+  .columns({
+    id: string(),
+    ownerID: string().from('owner_id'),
+    serial: string(),
+    ip: string(),
+    amount: number().optional(),
+    code: string().optional(),
+    mood: enumeration<'happy' | 'sad'>().optional(),
+    moods: json().optional(),
+    seen: number().optional(),
+  })
+  .primaryKey('id');
 
-const userRelationships = relationships(user, ({many}) => ({
+const userRelationships = relationships(user, ({one, many}) => ({
   issues: many({sourceField: ['id'], destField: ['ownerID'], destSchema: issue}),
+  manager: one({sourceField: ['managerID'], destField: ['id'], destSchema: user}),
+  reports: many({sourceField: ['id'], destField: ['managerID'], destSchema: user}),
+  gadgets: many({sourceField: ['id'], destField: ['ownerID'], destSchema: gadget}),
 }));
 const issueRelationships = relationships(issue, ({one, many}) => ({
   owner: one({sourceField: ['ownerID'], destField: ['id'], destSchema: user}),
   comments: many({sourceField: ['id'], destField: ['issueID'], destSchema: comment}),
   ownComments: many({sourceField: ['id', 'ownerID'], destField: ['issueID', 'authorID'], destSchema: comment}),
   labels: many(
+    {sourceField: ['id'], destField: ['issueID'], destSchema: issueLabel},
+    {sourceField: ['labelID'], destField: ['id'], destSchema: label},
+  ),
+  label: one(
     {sourceField: ['id'], destField: ['issueID'], destSchema: issueLabel},
     {sourceField: ['labelID'], destField: ['id'], destSchema: label},
   ),
@@ -63,8 +92,17 @@ const labelRelationships = relationships(label, ({many}) => ({
     {sourceField: ['issueID'], destField: ['id'], destSchema: issue},
   ),
 }));
+const gadgetRelationships = relationships(gadget, ({one}) => ({
+  owner: one({sourceField: ['ownerID'], destField: ['id'], destSchema: user}),
+}));
 
 export const schema = createSchema({
-  tables: [user, issue, comment, label, issueLabel, audit, counter],
-  relationships: [userRelationships, issueRelationships, commentRelationships, labelRelationships],
+  tables: [user, issue, comment, label, issueLabel, audit, counter, gadget],
+  relationships: [
+    userRelationships,
+    issueRelationships,
+    commentRelationships,
+    labelRelationships,
+    gadgetRelationships,
+  ],
 });

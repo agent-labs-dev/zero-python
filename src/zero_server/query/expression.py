@@ -18,6 +18,7 @@ from zero_server.protocol.ast import (
     SimpleCondition,
     SimpleOperator,
 )
+from zero_server.shared.asserts import check
 
 if TYPE_CHECKING:
     from zero_server.query.builder import Query
@@ -49,7 +50,11 @@ _NEGATED: Final[dict[str, str]] = {
 
 
 def _position(value: Any) -> LiteralReference | Parameter:
-    return value if isinstance(value, Parameter) else LiteralReference(value=value)
+    if isinstance(value, Parameter):
+        return value
+    # Each literal gets its own array, as each JavaScript array literal is its own object: the SQL
+    # compiler shares a placeholder between two literals only when they are the same object.
+    return LiteralReference(value=list(value) if isinstance(value, tuple) else value)
 
 
 def cmp(field: str, op_or_value: Any, value: Any = MISSING) -> Condition:
@@ -96,16 +101,22 @@ def not_(expression: Condition) -> Condition:
         case CorrelatedSubqueryCondition():
             return CorrelatedSubqueryCondition(
                 related=expression.related,
-                op=_NEGATED[expression.op],  # ty: ignore[invalid-argument-type]
+                op=_negate(expression.op),  # ty: ignore[invalid-argument-type]
                 flip=expression.flip,
                 scalar=expression.scalar,
             )
         case _:
             return SimpleCondition(
-                op=_NEGATED[expression.op],  # ty: ignore[invalid-argument-type]
+                op=_negate(expression.op),  # ty: ignore[invalid-argument-type]
                 left=expression.left,
                 right=expression.right,
             )
+
+
+def _negate(op: str) -> str:
+    negated = _NEGATED.get(op)
+    check(negated is not None, "Unexpected undefined value")
+    return negated  # ty: ignore[invalid-return-type]
 
 
 def _flatten(kind: str, conditions: Sequence[Condition]) -> list[Condition]:

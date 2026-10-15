@@ -67,6 +67,45 @@ PINNED = [
     _q("issue", ["limit", 0]),
     # The second null reuses the first's placeholder, which Postgres has already typed as text.
     _q("comment", ["where", "authorID", None], ["where", "authorID", "IN", None]),
+    # Two empty lists are two objects, so two placeholders: one binds "", the other "[]".
+    _q("comment", ["where", "authorID", []], ["where", "authorID", "IN", []]),
+    # Literals upstream's builder takes though its wire schema would not.
+    _q("issue", ["where", "meta", {"a": 1}]),
+    _q("issue", ["where", "title", {"a": 1}], ["where", "title", "IN", [{"a": 1}]]),
+    _q("issue", ["where", "title", "IN", [None, "a"]]),
+    _q("issue", ["where", "title", "IN", [["a"], "b"]]),
+    _q("audit", ["where", "tags", "IN", [["a"]]]),
+    _q("issue", ["whereFn", ["cmpLit", 1, "IN", [None, 1]]]),
+    _q("issue", ["whereFn", ["cmpLit", "a", "IN", [{"a": 1}]]]),
+    _q("issue", ["whereFn", ["cmpLit", {"a": 1}, "=", {"a": 1}]]),
+    # Builder arguments upstream refuses late or never.
+    _q("issue", ["limit", None]),
+    _q("issue", ["limit", "3"]),
+    _q("issue", ["limit", "-1"]),
+    _q("issue", ["limit", True]),
+    _q("issue", ["where", 1, "a"]),
+    _q("issue", ["start", ["a"], None]),
+    _q("issue", ["whereExists", "owner", None, {"flip": "yes"}]),
+    _q("issue", ["where", "title", "==", "a"]),
+    _q("issue", ["whereFn", ["cmpLit", 1, "<>", 1]]),
+    _q("issue", ["whereFn", ["not", ["cmp", "title", "==", "a"]]]),
+    # An error building the SQL beats one formatting it, wherever each is; between two errors formatting
+    # it, the first in the text wins.
+    _q("issue", ["where", "title", "==", "a"], ["whereFn", ["cmpLit", {"a": 1}, "=", 1]]),
+    _q("issue", ["whereFn", ["cmpLit", 1, "IN", [None]]], ["where", "title", "==", "a"]),
+    # A comparison cast to each Postgres type, in a table of a schema other than `public`.
+    _q("gadget", ["where", "serial", "00000000-0000-0000-0000-00000000000A"]),
+    _q("gadget", ["where", "serial", "IN", ["{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a12}"]]),
+    _q("gadget", ["where", "ip", "10.0.0.1/32"], ["where", "amount", ">", 1.25]),
+    _q("gadget", ["where", "code", "<", "abcde"], ["where", "mood", "IN", ["happy", "meh"]]),
+    _q("gadget", ["where", "moods", "=", ["happy"]]),
+    _q("gadget", ["where", "seen", ">=", 946_684_800_000.5], ["orderBy", "seen", "desc"]),
+    _q("gadget", ["orderBy", "serial", "asc"], ["start", {"serial": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"}, True]),
+    _q("gadget", ["orderBy", "amount", "desc"], ["start", {"amount": 1.5, "id": "g3"}, False]),
+    _q("user", ["whereExists", "gadgets", {"ops": [["where", "ip", "::1"]]}, None], ["related", "gadgets", None]),
+    # A relationship from a table to itself, and a `one` relationship through a junction table.
+    _q("user", ["related", "manager", {"ops": [["related", "reports", None]]}], ["whereExists", "reports", None, None]),
+    _q("issue", ["related", "label", None], ["whereExists", "label", {"ops": [["where", "name", "a"]]}, None]),
 ]
 
 
