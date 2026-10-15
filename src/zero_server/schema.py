@@ -58,11 +58,16 @@ class Schema(_SchemaModel):
 
 
 def load_schema(source: str | Path | Mapping[str, Any]) -> Schema:
-    """A schema from `JSON.stringify(schema)`: the JSON text, a path to it, or the parsed object."""
+    """A schema from `JSON.stringify(schema)`: the JSON text as a `str`, a `Path` to it, or the parsed object."""
     if isinstance(source, Path):
-        source = source.read_text()
-    if isinstance(source, str):
-        source = json.loads(source)
+        source = json.loads(source.read_text())
+    elif isinstance(source, str):
+        try:
+            source = json.loads(source)
+        except json.JSONDecodeError as e:
+            raise json.JSONDecodeError(
+                f"{e.msg} (a str is JSON text; pass a pathlib.Path to read a file)", e.doc, e.pos
+            ) from e
     return Schema.model_validate(source)
 
 
