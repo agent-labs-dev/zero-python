@@ -1,0 +1,475 @@
+{
+ "tables": {
+  "user": {
+   "name": "user",
+   "columns": {
+    "id": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "name": {
+     "type": "string",
+     "optional": false,
+     "customType": null,
+     "serverName": "full_name"
+    },
+    "age": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    },
+    "active": {
+     "type": "boolean",
+     "optional": false,
+     "customType": null
+    },
+    "managerID": {
+     "type": "string",
+     "optional": true,
+     "customType": null,
+     "serverName": "manager_id"
+    }
+   },
+   "primaryKey": [
+    "id"
+   ],
+   "serverName": "users"
+  },
+  "issue": {
+   "name": "issue",
+   "columns": {
+    "id": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "ownerID": {
+     "type": "string",
+     "optional": false,
+     "customType": null,
+     "serverName": "owner_id"
+    },
+    "title": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "meta": {
+     "type": "json",
+     "optional": true,
+     "customType": null
+    },
+    "priority": {
+     "type": "number",
+     "optional": false,
+     "customType": null
+    },
+    "open": {
+     "type": "boolean",
+     "optional": false,
+     "customType": null
+    }
+   },
+   "primaryKey": [
+    "id"
+   ]
+  },
+  "comment": {
+   "name": "comment",
+   "columns": {
+    "id": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "issueID": {
+     "type": "string",
+     "optional": false,
+     "customType": null,
+     "serverName": "issue_id"
+    },
+    "authorID": {
+     "type": "string",
+     "optional": false,
+     "customType": null,
+     "serverName": "author_id"
+    },
+    "body": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    }
+   },
+   "primaryKey": [
+    "id"
+   ]
+  },
+  "label": {
+   "name": "label",
+   "columns": {
+    "id": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "name": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    }
+   },
+   "primaryKey": [
+    "id"
+   ]
+  },
+  "issueLabel": {
+   "name": "issueLabel",
+   "columns": {
+    "issueID": {
+     "type": "string",
+     "optional": false,
+     "customType": null,
+     "serverName": "issue_id"
+    },
+    "labelID": {
+     "type": "string",
+     "optional": false,
+     "customType": null,
+     "serverName": "label_id"
+    }
+   },
+   "primaryKey": [
+    "issueID",
+    "labelID"
+   ],
+   "serverName": "issue_label"
+  },
+  "audit": {
+   "name": "audit",
+   "columns": {
+    "id": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "at": {
+     "type": "number",
+     "optional": false,
+     "customType": null
+    },
+    "day": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    },
+    "tm": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    },
+    "ttz": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    },
+    "plain": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    },
+    "stamps": {
+     "type": "json",
+     "optional": true,
+     "customType": null
+    },
+    "tags": {
+     "type": "json",
+     "optional": true,
+     "customType": null
+    },
+    "mood": {
+     "type": "string",
+     "optional": true,
+     "customType": null
+    }
+   },
+   "primaryKey": [
+    "id"
+   ]
+  },
+  "counter": {
+   "name": "counter",
+   "columns": {
+    "id": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "n": {
+     "type": "number",
+     "optional": false,
+     "customType": null
+    }
+   },
+   "primaryKey": [
+    "id"
+   ]
+  },
+  "gadget": {
+   "name": "gadget",
+   "columns": {
+    "id": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "ownerID": {
+     "type": "string",
+     "optional": false,
+     "customType": null,
+     "serverName": "owner_id"
+    },
+    "serial": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "ip": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "amount": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    },
+    "code": {
+     "type": "string",
+     "optional": true,
+     "customType": null
+    },
+    "mood": {
+     "type": "string",
+     "optional": true,
+     "customType": null
+    },
+    "moods": {
+     "type": "json",
+     "optional": true,
+     "customType": null
+    },
+    "seen": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    }
+   },
+   "primaryKey": [
+    "id"
+   ],
+   "serverName": "extra.gadgets"
+  }
+ },
+ "relationships": {
+  "user": {
+   "issues": [
+    {
+     "sourceField": [
+      "id"
+     ],
+     "destField": [
+      "ownerID"
+     ],
+     "destSchema": "issue",
+     "cardinality": "many"
+    }
+   ],
+   "manager": [
+    {
+     "sourceField": [
+      "managerID"
+     ],
+     "destField": [
+      "id"
+     ],
+     "destSchema": "user",
+     "cardinality": "one"
+    }
+   ],
+   "reports": [
+    {
+     "sourceField": [
+      "id"
+     ],
+     "destField": [
+      "managerID"
+     ],
+     "destSchema": "user",
+     "cardinality": "many"
+    }
+   ],
+   "gadgets": [
+    {
+     "sourceField": [
+      "id"
+     ],
+     "destField": [
+      "ownerID"
+     ],
+     "destSchema": "gadget",
+     "cardinality": "many"
+    }
+   ]
+  },
+  "issue": {
+   "owner": [
+    {
+     "sourceField": [
+      "ownerID"
+     ],
+     "destField": [
+      "id"
+     ],
+     "destSchema": "user",
+     "cardinality": "one"
+    }
+   ],
+   "comments": [
+    {
+     "sourceField": [
+      "id"
+     ],
+     "destField": [
+      "issueID"
+     ],
+     "destSchema": "comment",
+     "cardinality": "many"
+    }
+   ],
+   "ownComments": [
+    {
+     "sourceField": [
+      "id",
+      "ownerID"
+     ],
+     "destField": [
+      "issueID",
+      "authorID"
+     ],
+     "destSchema": "comment",
+     "cardinality": "many"
+    }
+   ],
+   "labels": [
+    {
+     "sourceField": [
+      "id"
+     ],
+     "destField": [
+      "issueID"
+     ],
+     "destSchema": "issueLabel",
+     "cardinality": "many"
+    },
+    {
+     "sourceField": [
+      "labelID"
+     ],
+     "destField": [
+      "id"
+     ],
+     "destSchema": "label",
+     "cardinality": "many"
+    }
+   ],
+   "label": [
+    {
+     "sourceField": [
+      "id"
+     ],
+     "destField": [
+      "issueID"
+     ],
+     "destSchema": "issueLabel",
+     "cardinality": "one"
+    },
+    {
+     "sourceField": [
+      "labelID"
+     ],
+     "destField": [
+      "id"
+     ],
+     "destSchema": "label",
+     "cardinality": "one"
+    }
+   ]
+  },
+  "comment": {
+   "issue": [
+    {
+     "sourceField": [
+      "issueID"
+     ],
+     "destField": [
+      "id"
+     ],
+     "destSchema": "issue",
+     "cardinality": "one"
+    }
+   ],
+   "author": [
+    {
+     "sourceField": [
+      "authorID"
+     ],
+     "destField": [
+      "id"
+     ],
+     "destSchema": "user",
+     "cardinality": "one"
+    }
+   ]
+  },
+  "label": {
+   "issues": [
+    {
+     "sourceField": [
+      "id"
+     ],
+     "destField": [
+      "labelID"
+     ],
+     "destSchema": "issueLabel",
+     "cardinality": "many"
+    },
+    {
+     "sourceField": [
+      "issueID"
+     ],
+     "destField": [
+      "id"
+     ],
+     "destSchema": "issue",
+     "cardinality": "many"
+    }
+   ]
+  },
+  "gadget": {
+   "owner": [
+    {
+     "sourceField": [
+      "ownerID"
+     ],
+     "destField": [
+      "id"
+     ],
+     "destSchema": "user",
+     "cardinality": "one"
+    }
+   ]
+  }
+ }
+}

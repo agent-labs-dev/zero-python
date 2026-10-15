@@ -13,7 +13,7 @@ type Q = any;
 type Sub = {ops: unknown[][]} | null;
 type Opts = {flip?: boolean; scalar?: boolean} | null;
 
-const zql = createBuilder(schema) as Q;
+export const zql = createBuilder(schema) as Q;
 
 function sub(program: Sub): ((q: Q) => Q) | undefined {
   return program ? q => apply(q, program.ops) : undefined;
@@ -46,7 +46,7 @@ function expr(eb: Q, e: unknown[]): unknown {
   throw new Error(`bad expression ${e[0]}`);
 }
 
-function apply(q: Q, ops: unknown[][]): Q {
+export function apply(q: Q, ops: unknown[][]): Q {
   for (const op of ops) {
     switch (op[0]) {
       case 'where':

@@ -96,7 +96,7 @@ const mutators: Record<string, (tx: Tx, args: Args) => Promise<void>> = {
   },
 };
 
-const handler: MutateRequestHandler<Database<Tx>> = async (transact, mutation) => {
+export const handler: MutateRequestHandler<Database<Tx>> = async (transact, mutation) => {
   const args = (mutation.args[0] ?? {}) as Args;
   if (mutation.name === 'pre.appError') {
     throw new ApplicationError(String(args.message ?? 'pre'), {details: args.details as never});

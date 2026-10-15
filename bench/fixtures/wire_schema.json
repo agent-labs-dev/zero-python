@@ -1,0 +1,132 @@
+{
+ "tables": {
+  "item": {
+   "name": "item",
+   "columns": {
+    "id": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "value": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    }
+   },
+   "primaryKey": [
+    "id"
+   ]
+  },
+  "thing": {
+   "name": "thing",
+   "columns": {
+    "id": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "n": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    },
+    "f": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    },
+    "b": {
+     "type": "boolean",
+     "optional": true,
+     "customType": null
+    },
+    "j": {
+     "type": "json",
+     "optional": true,
+     "customType": null
+    },
+    "t": {
+     "type": "number",
+     "optional": true,
+     "customType": null,
+     "serverName": "happened_at"
+    },
+    "d": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    },
+    "s": {
+     "type": "string",
+     "optional": true,
+     "customType": null
+    },
+    "tags": {
+     "type": "json",
+     "optional": true,
+     "customType": null
+    },
+    "u": {
+     "type": "string",
+     "optional": true,
+     "customType": null
+    },
+    "mood": {
+     "type": "string",
+     "optional": true,
+     "customType": null
+    },
+    "tm": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    },
+    "ttz": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    },
+    "amount": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    },
+    "ip": {
+     "type": "string",
+     "optional": true,
+     "customType": null
+    }
+   },
+   "primaryKey": [
+    "id"
+   ],
+   "serverName": "things"
+  },
+  "pair": {
+   "name": "pair",
+   "columns": {
+    "a": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "b": {
+     "type": "number",
+     "optional": false,
+     "customType": null
+    },
+    "note": {
+     "type": "string",
+     "optional": true,
+     "customType": null
+    }
+   },
+   "primaryKey": [
+    "a",
+    "b"
+   ]
+  }
+ },
+ "relationships": {}
+}
