@@ -15,7 +15,7 @@ from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import Field, StrictBool, StrictStr
 
-from zero_server.protocol.wire import Number, StrictWireModel, WireChecked
+from zero_server.protocol.wire import Number, PlainJSON, RefusesNullOffWire, StrictWireModel, WireChecked
 from zero_server.shared.asserts import AssertionFailedError, check
 from zero_server.shared.js import js_keys, js_sort, js_string
 from zero_server.shared.json import JSONValue
@@ -42,7 +42,7 @@ type LiteralValue = Scalar | list[Scalar] | None
 
 type Value = JSONValue
 """A row value. Upstream also allows `undefined`, which it treats as `null`."""
-type Row = dict[str, Value]
+type Row = PlainJSON[dict[str, Value]]
 
 type PrimaryKey = tuple[StrictStr, ...]
 type CompoundKey = Annotated[tuple[StrictStr, ...], Field(min_length=1)]
@@ -98,7 +98,7 @@ class Disjunction(StrictWireModel):
     conditions: tuple[Condition, ...]
 
 
-class CorrelatedSubqueryCondition(StrictWireModel):
+class CorrelatedSubqueryCondition(StrictWireModel, RefusesNullOffWire):
     type: Literal["correlatedSubquery"] = "correlatedSubquery"
     related: CorrelatedSubquery
     op: CorrelatedSubqueryConditionOperator
@@ -122,7 +122,7 @@ class Correlation(StrictWireModel):
     child_field: CompoundKey = Field(alias="childField")
 
 
-class CorrelatedSubquery(StrictWireModel):
+class CorrelatedSubquery(StrictWireModel, RefusesNullOffWire):
     correlation: Correlation
     # A hop the client never sees, such as the junction table of a many-to-many relationship.
     hidden: StrictBool | None = None
@@ -135,7 +135,7 @@ class Bound(StrictWireModel):
     exclusive: StrictBool
 
 
-class AST(StrictWireModel):
+class AST(StrictWireModel, RefusesNullOffWire):
     schema_: StrictStr | None = Field(default=None, alias="schema")
     table: StrictStr
     # Set on every subquery, to tell apart two subqueries over the same table.

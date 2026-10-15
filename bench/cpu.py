@@ -68,8 +68,8 @@ async def cases() -> dict[str, Callable[[], Any]]:
         transform_text = json.dumps(transform).encode()
         out[f"parse.push.m{m}"] = lambda push=push: PushBody.from_json(push)
         out[f"parse.transform.q{m}"] = lambda t=transform: parse_wire(TRANSFORM, t)
-        out[f"parse_json.push.m{m}"] = lambda t=push_text: PushBody.from_json(json.loads(t))
-        out[f"parse_json.transform.q{m}"] = lambda t=transform_text: parse_wire(TRANSFORM, json.loads(t))
+        out[f"parse_json.push.m{m}"] = lambda t=push_text: PushBody.from_json(t)
+        out[f"parse_json.transform.q{m}"] = lambda t=transform_text: parse_wire(TRANSFORM, t)
 
     # The mutate endpoint over a database that answers from memory: the SDK's own work, no I/O.
     mutators.use_schema(mutate_schema)

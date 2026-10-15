@@ -10,7 +10,7 @@ from pydantic import Field, StrictBool, StrictStr
 
 from zero_server.protocol.ast import PrimaryKey, Row
 from zero_server.protocol.mutation_id import MutationID
-from zero_server.protocol.wire import Number, StrictWireModel, WireModel
+from zero_server.protocol.wire import Number, PlainJSON, RefusesNullOffWire, StrictWireModel, WireModel
 from zero_server.shared.json import JSONValue
 
 CRUD_MUTATION_NAME = "_zero_crud"
@@ -95,31 +95,28 @@ class CustomMutation(WireModel):
     id: Number
     client_id: StrictStr = Field(alias="clientID")
     name: StrictStr
-    args: list[JSONValue]
+    args: PlainJSON[list[JSONValue]]
     timestamp: Number
 
 
 type Mutation = Annotated[CRUDMutation | CustomMutation, Field(discriminator="type")]
 
 
-class MutationOk(WireModel):
+class MutationOk(RefusesNullOffWire):
     # Whatever the mutator returned, if anything.
-    data: JSONValue | None = None
-
-    def to_json(self) -> dict[str, JSONValue]:
-        return {} if self.data is None else super().to_json()
+    data: PlainJSON[JSONValue | None] = None
 
 
-class MutationAppError(WireModel):
+class MutationAppError(RefusesNullOffWire):
     error: Literal["app"] = "app"
     message: StrictStr | None = None
-    details: JSONValue | None = None
+    details: PlainJSON[JSONValue | None] = None
 
 
-class MutationZeroError(WireModel):
+class MutationZeroError(RefusesNullOffWire):
     # `oooMutation` is reported as a failed push now; the literal stays for older peers.
     error: Literal["oooMutation", "alreadyProcessed"]
-    details: JSONValue | None = None
+    details: PlainJSON[JSONValue | None] = None
 
 
 type MutationResult = MutationAppError | MutationZeroError | MutationOk
@@ -128,11 +125,6 @@ type MutationResult = MutationAppError | MutationZeroError | MutationOk
 class MutationResponse(WireModel):
     id: MutationID
     result: MutationResult
-
-    def to_json(self) -> dict[str, JSONValue]:
-        # Upstream writes a response's ID `clientID` first, unlike the IDs a failed push lists.
-        mutation_id = self.id.to_json()
-        return {"id": {"clientID": mutation_id["clientID"], "id": mutation_id["id"]}, "result": self.result.to_json()}
 
     def _ordered(self, dumped: dict[str, Any]) -> dict[str, Any]:
         # Upstream writes a response's ID `clientID` first, unlike the IDs a failed push lists.

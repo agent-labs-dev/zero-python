@@ -1,6 +1,9 @@
+import dataclasses
+from enum import StrEnum
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from zero_server.protocol.application_error import (
     ApplicationError,
@@ -19,9 +22,10 @@ from zero_server.protocol.ast import (
     normalize_ast,
 )
 from zero_server.protocol.mutate_server import MutateSuccess
-from zero_server.protocol.mutation import MutationAppError, MutationOk, MutationResponse
+from zero_server.protocol.mutation import CustomMutation, MutationAppError, MutationOk, MutationResponse
 from zero_server.protocol.mutation_id import MutationID
 from zero_server.protocol.query_server import QuerySuccess
+from zero_server.protocol.wire import WireModel
 from zero_server.shared.asserts import AssertionFailedError
 
 
@@ -160,3 +164,49 @@ def test_condition_comparator_edges() -> None:
     assert _cmp_condition(flipped, flipped.model_copy(update={"scalar": True})) < 0
     pair = (_eq("a", 1), _eq("b", 1))
     assert _cmp_condition(Conjunction(conditions=pair), Disjunction(conditions=pair)) < 0
+
+
+class Mood(StrEnum):
+    HAPPY = "happy"
+
+
+@dataclasses.dataclass
+class Point:
+    xy: tuple[int, int]
+    mood: Mood
+
+
+def test_a_literal_built_in_python_serializes_as_pydantic_does() -> None:
+    def literal(value: Any) -> Any:
+        return LiteralReference(value=value).to_json()["value"]
+
+    assert literal((1, Mood.HAPPY)) == [1, "happy"]
+    assert literal({"p": Point(xy=(1, 2), mood=Mood.HAPPY)}) == {"p": {"xy": [1, 2], "mood": "happy"}}
+
+
+def _custom(args: Any) -> CustomMutation:
+    return CustomMutation(type="custom", id=1, clientID="c", name="m", args=args, timestamp=0)
+
+
+def test_json_args_other_than_plain_json_get_pydantics_check() -> None:
+    plain = [{"a": [1, 2.5, None, True]}]
+    assert _custom(plain).args is plain
+    assert _custom((1,)).args == [1]
+    assert type(_custom([Mood.HAPPY]).args[0]) is str
+    for args in ([(1,)], [{1: 2}], [{"a": {1}}], None):
+        with pytest.raises(ValidationError):
+            _custom(args)
+
+
+@pytest.mark.parametrize("body", [{"table": "t", "limit": None}, b'{"table": "t", "limit": null}'])
+def test_an_ast_off_the_wire_refuses_null_for_an_optional_field(body: object) -> None:
+    with pytest.raises(ValidationError, match="limit may be absent but not null"):
+        AST.from_json(body)
+    assert AST(table="t", limit=None).to_json() == {"table": "t"}
+
+
+def test_an_optional_field_must_say_how_it_refuses_null() -> None:
+    with pytest.raises(TypeError, match="Omittable or extend RefusesNullOffWire"):
+
+        class Loose(WireModel):
+            note: str | None = None
