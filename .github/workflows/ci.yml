@@ -3,6 +3,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 defaults:
@@ -93,11 +94,16 @@ jobs:
           name: e2e-logs
           path: e2e/build/
 
-  # Python against the published package on the same workloads, interleaved on one runner. Fails when a
-  # case's Python/TS time ratio rises past bench/baseline.json by more than its tolerance.
+  # Python against the published package on the same workloads. Each of three shards times both sides
+  # on its own runner; bench-gate fails when a case's median Python/TS ratio across the shards rises
+  # past bench/baseline.json by more than its tolerance.
   bench:
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     services:
       postgres:
         image: postgres:17
@@ -121,14 +127,52 @@ jobs:
       - run: npm ci
         working-directory: harness
       - run: uv sync --locked
-      - run: uv run python -m bench
+      - run: uv run python -m bench --no-gate
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-shard-${{ matrix.shard }}
+          path: bench/build/results.json
+
+  bench-gate:
+    needs: bench
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    # For the retry, which times failing cases again on this runner.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      ZERO_SERVER_PG: postgresql://postgres:postgres@localhost:5432
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a # v1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - run: npm ci
+        working-directory: harness
+      - run: uv sync --locked
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bench-shard-*
+          path: bench/build/shards
+      - run: uv run python -m bench --gate bench/build/shards
       - if: always()
-        run: cat bench/build/results.md >> "$GITHUB_STEP_SUMMARY" || true
+        run: cat bench/build/report.md >> "$GITHUB_STEP_SUMMARY" || true
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: bench-results
+          name: bench-report
+          if-no-files-found: ignore
           path: |
-            bench/build/results.md
-            bench/build/results.json
-            bench/build/baseline.json
+            bench/build/report.md
+            bench/build/retry.json

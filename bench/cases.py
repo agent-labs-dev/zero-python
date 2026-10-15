@@ -1,7 +1,7 @@
-"""The Python side of the benchmark tier: `harness/bench/cases.ts` in Python, case for case.
+"""The Python side of the benchmark tier: `harness/bench/cases.ts` in Python, group for group.
 
-Run by `python -m bench`, which passes a config file and a group of cases, and reads one JSON line of
-results from stdout.
+Run by `python -m bench` as `python -m bench.cases <config.json> <group>`. Prints one JSON line of
+results to stdout.
 """
 
 import asyncio
@@ -11,7 +11,9 @@ import os
 import re
 import sys
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -40,47 +42,62 @@ from zero_server.z2s.compiler import compile_query
 
 type Program = dict[str, Any]
 
-CONFIG: dict[str, Any] = json.loads(Path(sys.argv[1]).read_text()) if __name__ == "__main__" else {}
-GROUP = sys.argv[2] if __name__ == "__main__" else ""
-"""Only cases whose name starts with this part run."""
-results: list[dict[str, Any]] = []
+WARMUP = 0.5
+"""Warmup time, as a fraction of the sampling budget."""
+SAMPLE_MS = 1
+"""The least time one sample takes: enough calls that timer resolution and a stray interrupt matter less."""
 
 
-async def bench(name: str, impl: str, fn: Callable[[], Any]) -> None:
-    """The median time of one call of `fn`, by the same procedure as `harness/bench/cases.ts`."""
-    if name.split(".")[0] != GROUP or not re.search(CONFIG["filter"], name):
-        return
-    budget = CONFIG["budgetMs"] / 1000
-    first = fn()
-    if inspect.isawaitable(first):
-        await first
+@dataclass
+class Bench:
+    filter: str
+    budget_ms: float
+    workloads: dict[str, Any]
+    schema: Schema
+    wire_schema: Schema
+    server_schema_rows: list[Row]
+    query_url: str
+    mutate_url: str
+    results: list[dict[str, Any]]
 
-        async def loop(n: int) -> None:
-            for _ in range(n):
-                await fn()
-    else:
+    async def time(self, name: str, impl: str, fn: Callable[[], Any]) -> None:
+        """The median time of one call of `fn`, by the same procedure as `harness/bench/cases.ts`."""
+        if not re.search(self.filter, name):
+            return
+        first = fn()
+        if inspect.isawaitable(first):
+            await first
 
-        async def loop(n: int) -> None:
-            for _ in range(n):
-                fn()
+            async def loop(n: int) -> None:
+                for _ in range(n):
+                    await fn()
+        else:
 
-    # Enough calls per sample that one sample takes at least 0.2 ms.
-    t0 = time.perf_counter()
-    await loop(1)
-    inner = max(1, min(1000, -int(-0.2 // max((time.perf_counter() - t0) * 1000, 1e-4))))
-    warm_end = time.perf_counter() + budget * 0.3
-    warmups = 0
-    while time.perf_counter() < warm_end or warmups < 5:
-        await loop(1)
-        warmups += 1
-    samples: list[float] = []
-    end = time.perf_counter() + budget
-    while (time.perf_counter() < end or len(samples) < 7) and len(samples) < 5000:
-        t0 = time.perf_counter()
-        await loop(inner)
-        samples.append((time.perf_counter() - t0) * 1e6 / inner)
-    samples.sort()
-    results.append({"case": name, "impl": impl, "median_us": samples[len(samples) // 2], "samples": len(samples)})
+            async def loop(n: int) -> None:
+                for _ in range(n):
+                    fn()
+
+        budget = self.budget_ms / 1000
+        warm_start = time.perf_counter()
+        calls = 0
+        while time.perf_counter() < warm_start + budget * WARMUP or calls < 5:
+            await loop(1)
+            calls += 1
+        per_call_ms = (time.perf_counter() - warm_start) * 1000 / calls
+        inner = max(1, min(10_000, -int(-SAMPLE_MS // per_call_ms)))
+        samples: list[float] = []
+        end = time.perf_counter() + budget
+        while (time.perf_counter() < end or len(samples) < 7) and len(samples) < 5000:
+            t0 = time.perf_counter()
+            await loop(inner)
+            samples.append((time.perf_counter() - t0) * 1e6 / inner)
+        samples.sort()
+        self.results.append(
+            {"case": name, "impl": impl, "median_us": samples[len(samples) // 2], "samples": len(samples)}
+        )
+
+    def build(self, program: Program) -> Query:
+        return apply(create_builder(self.schema).table(program["table"]), program["ops"])
 
 
 def with_limit(program: Program, n: int) -> Program:
@@ -168,147 +185,192 @@ class FakeConnection:
         return await fn(self.tx)
 
 
-async def open_adapters(url: str, schema: Schema) -> tuple[dict[str, ZQLDatabase[Any]], Callable[[], Awaitable[None]]]:
+@asynccontextmanager
+async def adapters(url: str, schema: Schema) -> AsyncGenerator[dict[str, ZQLDatabase[Any]]]:
+    """One `ZQLDatabase` per Python adapter on the database at `url`."""
     pool = await asyncpg.create_pool(url, min_size=1, max_size=10)
     psycopg_pool = AsyncConnectionPool(url, min_size=1, max_size=10, open=False)
     await psycopg_pool.open()
     engine = create_async_engine(url.replace("postgresql://", "postgresql+asyncpg://", 1))
-
-    async def close() -> None:
+    try:
+        databases: dict[str, ZQLDatabase[Any]] = {
+            "asyncpg": AsyncpgDatabase(pool, schema),
+            "psycopg": PsycopgDatabase(psycopg_pool, schema),
+            "sqlalchemy": SQLAlchemyDatabase(engine, schema),
+        }
+        yield databases
+    finally:
         await pool.close()
         await psycopg_pool.close()
         await engine.dispose()
 
-    return {
-        "asyncpg": AsyncpgDatabase(pool, schema),
-        "psycopg": PsycopgDatabase(psycopg_pool, schema),
-        "sqlalchemy": SQLAlchemyDatabase(engine, schema),
-    }, close
 
-
-async def main(workloads: dict[str, Any], schema: Schema, wire_schema: Schema, server_schema_rows: list[Row]) -> None:
-    zql = create_builder(schema)
-    handler = make_handler(schema)
-
-    def build(program: Program) -> Query:
-        return apply(zql.table(program["table"]), program["ops"])
-
-    # ---- query endpoint ----
+async def query(b: Bench) -> None:
+    handler = make_handler(b.schema)
     for kind in ("simple", "complex"):
-        for n in workloads["batchSizes"]:
-            body = transform_body(workloads["programs"][kind], n)
-            text = json.dumps(body).encode()
-            await bench(
+        for n in b.workloads["batchSizes"]:
+            body = transform_body(b.workloads["programs"][kind], n)
+            await b.time(
                 f"query.{kind}.b{n}",
                 "python",
-                lambda body=body: handle_query_request(handler=handler, schema=schema, body=body, user_id="u1"),
+                lambda body=body: handle_query_request(handler=handler, schema=b.schema, body=body, user_id="u1"),
             )
 
+
+async def query_json(b: Bench) -> None:
+    """What an HTTP endpoint adds: parsing the request text and serializing the response."""
+    handler = make_handler(b.schema)
+    for kind in ("simple", "complex"):
+        for n in b.workloads["batchSizes"]:
+            text = json.dumps(transform_body(b.workloads["programs"][kind], n)).encode()
+
             async def with_json(text: bytes = text) -> bytes:
-                response = await handle_query_request(handler=handler, schema=schema, body=text, user_id="u1")
+                response = await handle_query_request(handler=handler, schema=b.schema, body=text, user_id="u1")
                 return json_response(response.to_json())
 
-            await bench(f"query_json.{kind}.b{n}", "python", with_json)
+            await b.time(f"query_json.{kind}.b{n}", "python", with_json)
 
-    # ---- request parsing ----
-    transform_adapter: TypeAdapter[Any] = TypeAdapter(TransformRequestMessage)
-    for m in workloads["parseSizes"]:
-        push = push_body(workloads, "c1", "crud", m)
-        push_text = json.dumps(push).encode()
-        await bench(f"parse.push.m{m}", "python", lambda push=push: PushBody.from_json(push))
-        await bench(f"parse_json.push.m{m}", "python", lambda t=push_text: PushBody.from_json(json.loads(t)))
-        transform = transform_body(workloads["programs"]["complex"], m)
-        transform_text = json.dumps(transform).encode()
-        await bench(f"parse.transform.q{m}", "python", lambda t=transform: parse_wire(transform_adapter, t))
-        await bench(
+
+TRANSFORM: TypeAdapter[Any] = TypeAdapter(TransformRequestMessage)
+
+
+async def parse(b: Bench) -> None:
+    for m in b.workloads["parseSizes"]:
+        push = push_body(b.workloads, "c1", "crud", m)
+        await b.time(f"parse.push.m{m}", "python", lambda push=push: PushBody.from_json(push))
+        transform = transform_body(b.workloads["programs"]["complex"], m)
+        await b.time(f"parse.transform.q{m}", "python", lambda t=transform: parse_wire(TRANSFORM, t))
+
+
+async def parse_json(b: Bench) -> None:
+    for m in b.workloads["parseSizes"]:
+        push_text = json.dumps(push_body(b.workloads, "c1", "crud", m)).encode()
+        await b.time(f"parse_json.push.m{m}", "python", lambda t=push_text: PushBody.from_json(json.loads(t)))
+        transform_text = json.dumps(transform_body(b.workloads["programs"]["complex"], m)).encode()
+        await b.time(
             f"parse_json.transform.q{m}",
             "python",
-            lambda t=transform_text: parse_wire(transform_adapter, json.loads(t)),
+            lambda t=transform_text: parse_wire(TRANSFORM, json.loads(t)),
         )
 
-    # ---- mutate endpoint, CPU only: a fake database that answers from memory ----
-    mutators.use_schema(wire_schema)
-    fake_db: ZQLDatabase[Any] = ZQLDatabase(FakeConnection(FakeTransaction(server_schema_rows)), wire_schema)
-    for kind in ("put", "crud"):
-        for n in workloads["pushSizes"]:
 
-            async def run_fake(kind: str = kind, n: int = n) -> bytes:
+async def mutate_cpu(b: Bench) -> None:
+    """The mutate endpoint over a fake database that answers from memory: the SDK's time only."""
+    mutators.use_schema(b.wire_schema)
+    fake_db: ZQLDatabase[Any] = ZQLDatabase(FakeConnection(FakeTransaction(b.server_schema_rows)), b.wire_schema)
+    for kind in ("put", "crud"):
+        for n in b.workloads["pushSizes"]:
+
+            async def run(kind: str = kind, n: int = n) -> bytes:
                 response = await handle_mutate_request(
                     db_provider=fake_db,
                     handler=mutators.handler,
                     query=MUTATE_QUERY,
-                    body=push_body(workloads, fresh_client(), kind, n),
+                    body=push_body(b.workloads, fresh_client(), kind, n),
                     user_id="u1",
                 )
                 return json_response(response.to_json())
 
-            check_push(json.loads(await run_fake()), n)
-            await bench(f"mutate_cpu.{kind}.n{n}", "python", run_fake)
+            check_push(json.loads(await run()), n)
+            await b.time(f"mutate_cpu.{kind}.n{n}", "python", run)
 
-    # ---- z2s compile, and tx.run end to end ----
-    databases, close = await open_adapters(CONFIG["queryURL"], schema)
-    server_schema = await databases["asyncpg"].connection.transaction(lambda tx: get_server_schema(tx, schema))
-    compile_cases = {
-        "simple": workloads["programs"]["simple"],
-        "complex": workloads["programs"]["complex"],
-        "related": with_limit(workloads["run"]["related"], workloads["compileRelatedLimit"]),
+
+async def z2s(b: Bench) -> None:
+    async with adapters(b.query_url, b.schema) as databases:
+        server_schema = await databases["asyncpg"].connection.transaction(lambda tx: get_server_schema(tx, b.schema))
+    cases = {
+        "simple": b.workloads["programs"]["simple"],
+        "complex": b.workloads["programs"]["complex"],
+        "related": with_limit(b.workloads["run"]["related"], b.workloads["compileRelatedLimit"]),
     }
-    for k, program in compile_cases.items():
-        q = build(program)
-        await bench(f"z2s.{k}", "python", lambda q=q: compile_query(server_schema, schema, q.ast, q.format))
-    for k, program in workloads["run"].items():
-        for n in workloads["rowCounts"]:
-            q = build(with_limit(program, n))
-            for impl, db in databases.items():
-                rows = await db.run(q)
-                if len(rows) != n:
-                    raise RuntimeError(f"run.{k} on {impl}: expected {n} rows, got {len(rows)}")
-                await bench(f"run.{k}.r{n}", impl, lambda db=db, q=q: db.run(q))
-    await close()
+    for k, program in cases.items():
+        q = b.build(program)
+        await b.time(f"z2s.{k}", "python", lambda q=q: compile_query(server_schema, b.schema, q.ast, q.format))
 
-    # ---- mutate endpoint against Postgres ----
-    connection = await asyncpg.connect(CONFIG["mutateURL"])
+
+async def run(b: Bench) -> None:
+    """`tx.run` end to end: compile, query, decode."""
+    async with adapters(b.query_url, b.schema) as databases:
+        for k, program in b.workloads["run"].items():
+            for n in b.workloads["rowCounts"]:
+                q = b.build(with_limit(program, n))
+                for impl, db in databases.items():
+                    rows = await db.run(q)
+                    if len(rows) != n:
+                        raise RuntimeError(f"run.{k} on {impl}: expected {n} rows, got {len(rows)}")
+                    await b.time(f"run.{k}.r{n}", impl, lambda db=db, q=q: db.run(q))
+
+
+async def mutate(b: Bench) -> None:
+    connection = await asyncpg.connect(b.mutate_url)
     await connection.execute('TRUNCATE item, things, pair, zero_0."clients", zero_0."mutations"')
     await connection.close()
-    databases, close = await open_adapters(CONFIG["mutateURL"], wire_schema)
-    for kind in ("put", "crud"):
-        for n in workloads["pushSizes"]:
-            for impl, db in databases.items():
+    mutators.use_schema(b.wire_schema)
+    async with adapters(b.mutate_url, b.wire_schema) as databases:
+        for kind in ("put", "crud"):
+            for n in b.workloads["pushSizes"]:
+                for impl, db in databases.items():
 
-                async def run_push(db: ZQLDatabase[Any] = db, kind: str = kind, n: int = n) -> dict[str, Any]:
-                    response = await handle_mutate_request(
-                        db_provider=mutators.provider(db),
-                        handler=mutators.handler,
-                        query=MUTATE_QUERY,
-                        body=push_body(workloads, fresh_client(), kind, n),
-                        user_id="u1",
-                    )
-                    return response.to_json()
+                    async def push(db: ZQLDatabase[Any] = db, kind: str = kind, n: int = n) -> dict[str, Any]:
+                        response = await handle_mutate_request(
+                            db_provider=mutators.provider(db),
+                            handler=mutators.handler,
+                            query=MUTATE_QUERY,
+                            body=push_body(b.workloads, fresh_client(), kind, n),
+                            user_id="u1",
+                        )
+                        return response.to_json()
 
-                check_push(await run_push(), n)
-                await bench(f"mutate.{kind}.n{n}", impl, run_push)
-    for impl, db in databases.items():
+                    check_push(await push(), n)
+                    await b.time(f"mutate.{kind}.n{n}", impl, push)
 
-        async def push_processor(db: ZQLDatabase[Any] = db) -> Any:
-            body = push_body(workloads, fresh_client(), "put", 10)
-            for m in body["mutations"]:
-                m["name"] = "legacy.put"
-            return await PushProcessor(mutators.provider(db), {"tag": "ctx"}).process(
-                mutators.REGISTRY, MUTATE_QUERY, body
-            )
 
-        await bench("pushproc.put.n10", impl, push_processor)
-    await close()
+async def pushproc(b: Bench) -> None:
+    mutators.use_schema(b.wire_schema)
+    async with adapters(b.mutate_url, b.wire_schema) as databases:
+        for impl, db in databases.items():
 
-    sys.stdout.write(json.dumps(results) + "\n")
+            async def process(db: ZQLDatabase[Any] = db) -> Any:
+                body = push_body(b.workloads, fresh_client(), "put", 10)
+                for m in body["mutations"]:
+                    m["name"] = "legacy.put"
+                return await PushProcessor(mutators.provider(db), {"tag": "ctx"}).process(
+                    mutators.REGISTRY, MUTATE_QUERY, body
+                )
+
+            await b.time("pushproc.put.n10", impl, process)
+
+
+GROUPS: dict[str, Callable[[Bench], Coroutine[Any, Any, None]]] = {
+    "query": query,
+    "query_json": query_json,
+    "parse": parse,
+    "parse_json": parse_json,
+    "mutate_cpu": mutate_cpu,
+    "z2s": z2s,
+    "run": run,
+    "mutate": mutate,
+    "pushproc": pushproc,
+}
+"""Each group's cases, with only the setup that group needs. A case's group is its name's first part."""
+
+
+def main(config_path: str, group: str) -> None:
+    config = json.loads(Path(config_path).read_text())
+    b = Bench(
+        filter=config["filter"],
+        budget_ms=config["budgetMs"],
+        workloads=json.loads(Path(config["workloads"]).read_text()),
+        schema=load_schema(Path(config["schema"]).read_text()),
+        wire_schema=load_schema(Path(config["wireSchema"]).read_text()),
+        server_schema_rows=json.loads(Path(config["serverSchemaRows"]).read_text()),
+        query_url=config["queryURL"],
+        mutate_url=config["mutateURL"],
+        results=[],
+    )
+    asyncio.run(GROUPS[group](b))
+    sys.stdout.write(json.dumps(b.results) + "\n")
 
 
 if __name__ == "__main__":
-    asyncio.run(
-        main(
-            json.loads(Path(CONFIG["workloads"]).read_text()),
-            load_schema(Path(CONFIG["schema"]).read_text()),
-            load_schema(Path(CONFIG["wireSchema"]).read_text()),
-            json.loads(Path(CONFIG["serverSchemaRows"]).read_text()),
-        )
-    )
+    main(sys.argv[1], sys.argv[2])

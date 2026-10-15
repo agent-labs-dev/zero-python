@@ -3,6 +3,8 @@
 import argparse
 import asyncio
 import json
+import os
+import platform
 import random
 import re
 import statistics
@@ -14,14 +16,14 @@ from typing import Any
 
 import asyncpg
 
-from bench.report import Rounds, gate, markdown, pair, ratchet
+from bench.report import Combined, Rounds, Row, combine, gate, markdown, pair, update
 from tests.harness import Harness
 from tests.postgres import postgres_server
 from tests.wire import seed
 from tests.wire.conftest import DDL as WIRE_DDL
 from zero_server.schema import load_schema
 from zero_server.server.server_schema import get_server_schema
-from zero_server.server.transaction import Row
+from zero_server.server.transaction import Row as DBRow
 
 ROOT = Path(__file__).resolve().parent.parent
 HERE = ROOT / "bench"
@@ -102,12 +104,12 @@ async def create_databases(base: str, build: Path) -> tuple[str, str]:
 
     # What the server-schema query returns for the wire schema, for the mutate endpoint's fake database.
     conn = await asyncpg.connect(mutate_url)
-    captured: list[Row] = []
+    captured: list[DBRow] = []
 
     class Recording:
         wrapped_transaction = None
 
-        async def query(self, sql: str, params: Any = ()) -> list[Row]:
+        async def query(self, sql: str, params: Any = ()) -> list[DBRow]:
             rows = [dict(r) for r in await conn.fetch(sql, *params)]
             captured[:] = rows
             return rows
@@ -166,31 +168,18 @@ def run_rounds(config_path: Path, config: dict[str, Any], groups: list[str], rou
     return out
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(prog="python -m bench", description=__doc__)
-    parser.add_argument("--rounds", type=int, default=5)
-    parser.add_argument("--budget-ms", type=float, default=300, help="sampling time per case per round")
-    parser.add_argument("--spawns", type=int, default=5, help="process starts per startup case per round")
-    parser.add_argument("--filter", default=".", help="regex over case names")
-    parser.add_argument("--out", type=Path, default=HERE / "build")
-    parser.add_argument("--no-gate", action="store_true", help="report only, never fail")
-    parser.add_argument("--update-baseline", action="store_true", help="lower baseline ratios this run improved")
-    parser.add_argument("--force", action="store_true", help="with --update-baseline, replace every ratio")
-    args = parser.parse_args()
-
+def measure(args: argparse.Namespace, filt: str, groups: list[str], rounds: int) -> Rounds:
+    """Seed a Postgres and time `rounds` rounds of `groups` on both sides."""
     build: Path = args.out.resolve()
-    build.mkdir(parents=True, exist_ok=True)
-    step("schemas from the harness")
     harness = Harness()
     (build / "schema.json").write_text(json.dumps(harness.call("schema")))
     (build / "wire_schema.json").write_text(json.dumps(harness.call("wireSchema")))
     harness.close()
-
     with postgres_server() as base:
         step("seeding Postgres")
         mutate_url, query_url = asyncio.run(create_databases(base, build))
         config = {
-            "filter": args.filter,
+            "filter": filt,
             "budgetMs": args.budget_ms,
             "workloads": str(HERE / "workloads.json"),
             "schema": str(build / "schema.json"),
@@ -201,53 +190,91 @@ def main() -> None:
         }
         config_path = build / "config.json"
         config_path.write_text(json.dumps(config))
-        rounds = run_rounds(config_path, config, GROUPS, args.rounds, args.spawns)
+        return run_rounds(config_path, config, groups, rounds, args.spawns)
 
-        baseline = json.loads(BASELINE.read_text())
-        verdicts = gate(pair(rounds), baseline)
-        failed = [v.row for v in verdicts if v.failed]
-        if failed and not args.no_gate:
-            # One retry of the failing cases alone, so a burst of load on a shared runner does not fail it.
-            names = sorted({r.case for r in failed})
-            step(f"retrying {len(names)} case(s) over the gate: {', '.join(names)}")
-            retry = {**config, "filter": "^(" + "|".join(re.escape(n) for n in names) + ")$"}
-            config_path.write_text(json.dumps(retry))
-            groups = sorted({n.split(".")[0] for n in names} - {"startup"})
-            rounds.update(run_rounds(config_path, retry, groups, args.rounds, args.spawns))
-            verdicts = gate(pair(rounds), baseline)
 
-    rows = [v.row for v in verdicts]
-    table = markdown(verdicts)
-    (build / "results.md").write_text(table)
-    (build / "results.json").write_text(
-        json.dumps(
-            [
-                {
-                    "case": v.row.case,
-                    "ts_impl": v.row.ts_impl,
-                    "ts_us": v.row.ts,
-                    "py_impl": v.row.py_impl,
-                    "py_us": v.row.py,
-                    "ratio": v.row.ratio,
-                    "baseline": v.baseline,
-                    "limit": v.limit,
-                    "failed": v.failed,
-                }
-                for v in verdicts
-            ],
-            indent=1,
-        )
+def machine() -> str:
+    cpuinfo = Path("/proc/cpuinfo")
+    if cpuinfo.exists():
+        for line in cpuinfo.read_text().splitlines():
+            if line.startswith("model name"):
+                return f"{platform.node()}: {line.split(':', 1)[1].strip()} x{os.cpu_count()}"
+    return f"{platform.node()}: {platform.machine()} x{os.cpu_count()}"
+
+
+def save_shard(path: Path, rounds: Rounds) -> None:
+    rows = [{"case": case, "impl": impl, "us": us} for (case, impl), us in rounds.items()]
+    path.write_text(json.dumps({"machine": machine(), "rounds": rows}, indent=1) + "\n")
+
+
+def load_shards(paths: list[Path]) -> list[list[Row]]:
+    """Every `results.json` under `paths`, each one shard."""
+    files = sorted(f for p in paths for f in ([p] if p.is_file() else p.rglob("results.json")))
+    shards = []
+    for f in files:
+        data = json.loads(f.read_text())
+        shards.append(pair({(r["case"], r["impl"]): r["us"] for r in data["rounds"]}))
+        step(f"shard {f} ({data['machine']})")
+    return shards
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="python -m bench", description=__doc__)
+    parser.add_argument("--rounds", type=int, default=5)
+    parser.add_argument("--budget-ms", type=float, default=300, help="sampling time per case per round")
+    parser.add_argument("--spawns", type=int, default=5, help="process starts per startup case per round")
+    parser.add_argument("--filter", default=".", help="regex over case names")
+    parser.add_argument("--out", type=Path, default=HERE / "build")
+    parser.add_argument("--no-gate", action="store_true", help="measure and report, never fail")
+    parser.add_argument("--gate", nargs="+", type=Path, metavar="SHARD", help="gate on these shards' results")
+    parser.add_argument(
+        "--update-baseline", nargs="+", type=Path, metavar="SHARD", help="rebuild the baseline from these shards"
     )
-    # What --update-baseline would write: CI uploads it, so a runner's ratios can be committed.
-    (build / "baseline.json").write_text(json.dumps(ratchet(rows, baseline), indent=2) + "\n")
-    print(table)
+    parser.add_argument("--force", action="store_true", help="with --update-baseline, replace every ratio")
+    args = parser.parse_args()
+    build: Path = args.out.resolve()
+    build.mkdir(parents=True, exist_ok=True)
+    baseline = json.loads(BASELINE.read_text())
+
     if args.update_baseline:
-        BASELINE.write_text(json.dumps(ratchet(rows, baseline, force=args.force), indent=2) + "\n")
+        updated = update(baseline, load_shards(args.update_baseline), force=args.force)
+        for key in sorted(updated["ratios"]):
+            old, new = baseline["ratios"].get(key), updated["ratios"][key]
+            if old != new:
+                step(f"{key}: {old} -> {new}")
+        BASELINE.write_text(json.dumps(updated, indent=2) + "\n")
         step(f"wrote {BASELINE.relative_to(ROOT)}")
+        return
+
+    if args.gate:
+        shards = load_shards(args.gate)
+    else:
+        rounds = measure(args, args.filter, GROUPS, args.rounds)
+        save_shard(build / "results.json", rounds)
+        shards = [pair(rounds)]
+
+    cases = combine(shards)
+    verdicts = gate(cases, baseline)
+    failed = {v.case.key for v in verdicts if v.failed}
+    if failed and not args.no_gate:
+        # One retry of the failing cases alone, on this machine and with twice the rounds, so a burst
+        # of load on a shared runner does not fail the build.
+        names = sorted({key.split(" ")[0] for key in failed})
+        step(f"retrying {len(names)} case(s) over the gate: {', '.join(names)}")
+        filt = "^(" + "|".join(re.escape(n) for n in names) + ")$"
+        groups = [g for g in GROUPS if g in {n.split(".")[0] for n in names}]
+        rounds = measure(args, filt, groups, args.rounds * 2)
+        save_shard(build / "retry.json", rounds)
+        retried = {row.key: row for row in pair(rounds)}
+        verdicts = gate([Combined([retried[c.key]]) if c.key in failed else c for c in cases], baseline)
+
+    table = markdown(verdicts)
+    (build / "report.md").write_text(table)
+    print(table)
     failures = [v for v in verdicts if v.failed]
     if failures and not args.no_gate:
         for v in failures:
-            step(f"FAIL {v.row.key}: Py/TS {v.row.ratio:.2f} > {v.limit:.2f} (baseline {v.baseline:.2f})")
+            step(f"FAIL {v.case.key}: Py/TS {v.case.ratio:.2f} > {v.limit:.2f} (baseline {v.baseline:.2f})")
         raise SystemExit(1)
 
 

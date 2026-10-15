@@ -37,9 +37,12 @@ const filter = new RegExp(config.filter);
 const group = process.argv[3];
 const results: {case: string; impl: string; median_us: number; samples: number}[] = [];
 
+const WARMUP = 0.5; // of the budget
+const SAMPLE_MS = 1;
+
 /** The median time of one call of `fn`, by the same procedure as bench/cases.py. */
 async function bench(name: string, impl: string, fn: () => unknown) {
-  if (name.split('.')[0] !== group || !filter.test(name)) return;
+  if (!filter.test(name)) return;
   const first = fn();
   const isAsync = first instanceof Promise;
   if (isAsync) await first;
@@ -50,16 +53,19 @@ async function bench(name: string, impl: string, fn: () => unknown) {
     : (n: number) => {
         for (let i = 0; i < n; i++) fn();
       };
-  // Enough calls per sample that one sample takes at least 0.2 ms.
-  let t0 = performance.now();
-  await loop(1);
-  const inner = Math.max(1, Math.min(1000, Math.ceil(0.2 / Math.max(performance.now() - t0, 1e-4))));
-  const warmEnd = performance.now() + config.budgetMs * 0.3;
-  for (let w = 0; performance.now() < warmEnd || w < 5; w++) await loop(1);
+  // Warm up before calibrating, so the JIT has settled by the time samples are taken.
+  const warmStart = performance.now();
+  const warmEnd = warmStart + config.budgetMs * WARMUP;
+  let calls = 0;
+  for (; performance.now() < warmEnd || calls < 5; calls++) await loop(1);
+  // Enough calls per sample that one sample takes at least SAMPLE_MS, so timer resolution and a
+  // stray interrupt matter less.
+  const perCall = (performance.now() - warmStart) / calls;
+  const inner = Math.max(1, Math.min(10_000, Math.ceil(SAMPLE_MS / perCall)));
   const samples: number[] = [];
   const end = performance.now() + config.budgetMs;
   while ((performance.now() < end || samples.length < 7) && samples.length < 5000) {
-    t0 = performance.now();
+    const t0 = performance.now();
     await loop(inner);
     samples.push(((performance.now() - t0) * 1000) / inner);
   }
@@ -105,108 +111,150 @@ function checkPush(r: Any, n: number) {
   }
 }
 
-// ---- query endpoint ----
-for (const kind of ['simple', 'complex']) {
-  for (const n of W.batchSizes) {
-    const body = transformBody(W.programs[kind], n);
-    const text = JSON.stringify(body);
-    await bench(`query.${kind}.b${n}`, 'node', () => query({body, userID: 'u1'}));
-    await bench(`query_json.${kind}.b${n}`, 'node', async () =>
-      JSON.stringify(await query({body: JSON.parse(text), userID: 'u1'})),
-    );
+async function withQueryDB<R>(fn: (sql: postgres.Sql) => Promise<R>): Promise<R> {
+  const sql = postgres(config.queryURL, {onnotice: () => {}});
+  try {
+    return await fn(sql);
+  } finally {
+    await sql.end();
   }
 }
 
-// ---- request parsing ----
-for (const m of W.parseSizes) {
-  const push = pushBody('c1', 'crud', m);
-  const pushText = JSON.stringify(push);
-  await bench(`parse.push.m${m}`, 'node', () => v.parse(push, pushBodySchema, 'passthrough'));
-  await bench(`parse_json.push.m${m}`, 'node', () => v.parse(JSON.parse(pushText), pushBodySchema, 'passthrough'));
-  const transform = transformBody(W.programs.complex, m);
-  const transformText = JSON.stringify(transform);
-  await bench(`parse.transform.q${m}`, 'node', () => v.parse(transform, transformRequestMessageSchema));
-  await bench(`parse_json.transform.q${m}`, 'node', () =>
-    v.parse(JSON.parse(transformText), transformRequestMessageSchema),
-  );
-}
-
-// ---- mutate endpoint, CPU only: a fake database that answers from memory ----
-const serverSchemaRows = JSON.parse(readFileSync(config.serverSchemaRows, 'utf8'));
-const lastMutationIDs = new Map<string, number>();
-const fakeTx = {
-  wrappedTransaction: null,
-  query(sql: string, params: unknown[]) {
-    if (sql.includes('pg_catalog')) return Promise.resolve(serverSchemaRows);
-    if (sql.includes('lastMutationID')) {
-      const id = (lastMutationIDs.get(String(params[1])) ?? 0) + 1;
-      lastMutationIDs.set(String(params[1]), id);
-      return Promise.resolve([{lastMutationID: id}]);
+/** Each group's cases, with only the setup that group needs. */
+const groups: Record<string, () => Promise<void>> = {
+  async query() {
+    for (const kind of ['simple', 'complex']) {
+      for (const n of W.batchSizes) {
+        const body = transformBody(W.programs[kind], n);
+        await bench(`query.${kind}.b${n}`, 'node', () => query({body, userID: 'u1'}));
+      }
     }
-    return Promise.resolve([]);
+  },
+
+  // What an HTTP endpoint adds: parsing the request text and serializing the response.
+  async query_json() {
+    for (const kind of ['simple', 'complex']) {
+      for (const n of W.batchSizes) {
+        const text = JSON.stringify(transformBody(W.programs[kind], n));
+        await bench(`query_json.${kind}.b${n}`, 'node', async () =>
+          JSON.stringify(await query({body: JSON.parse(text), userID: 'u1'})),
+        );
+      }
+    }
+  },
+
+  async parse() {
+    for (const m of W.parseSizes) {
+      const push = pushBody('c1', 'crud', m);
+      await bench(`parse.push.m${m}`, 'node', () => v.parse(push, pushBodySchema, 'passthrough'));
+      const transform = transformBody(W.programs.complex, m);
+      await bench(`parse.transform.q${m}`, 'node', () => v.parse(transform, transformRequestMessageSchema));
+    }
+  },
+
+  async parse_json() {
+    for (const m of W.parseSizes) {
+      const pushText = JSON.stringify(pushBody('c1', 'crud', m));
+      await bench(`parse_json.push.m${m}`, 'node', () =>
+        v.parse(JSON.parse(pushText), pushBodySchema, 'passthrough'),
+      );
+      const transformText = JSON.stringify(transformBody(W.programs.complex, m));
+      await bench(`parse_json.transform.q${m}`, 'node', () =>
+        v.parse(JSON.parse(transformText), transformRequestMessageSchema),
+      );
+    }
+  },
+
+  // The mutate endpoint over a fake database that answers from memory: the SDK's time only.
+  async mutate_cpu() {
+    const serverSchemaRows = JSON.parse(readFileSync(config.serverSchemaRows, 'utf8'));
+    const lastMutationIDs = new Map<string, number>();
+    const fakeTx = {
+      wrappedTransaction: null,
+      query(sql: string, params: unknown[]) {
+        if (sql.includes('pg_catalog')) return Promise.resolve(serverSchemaRows);
+        if (sql.includes('lastMutationID')) {
+          const id = (lastMutationIDs.get(String(params[1])) ?? 0) + 1;
+          lastMutationIDs.set(String(params[1]), id);
+          return Promise.resolve([{lastMutationID: id}]);
+        }
+        return Promise.resolve([]);
+      },
+    };
+    const fakeDB = new ZQLDatabase({transaction: (fn: Any) => fn(fakeTx)} as Any, wireSchema);
+    for (const kind of ['put', 'crud']) {
+      for (const n of W.pushSizes) {
+        const run = async () =>
+          JSON.stringify(
+            await handleMutateRequest({
+              dbProvider: fakeDB as Any,
+              handler,
+              query: MUTATE_QUERY,
+              body: pushBody(freshClient(), kind, n) as never,
+              userID: 'u1',
+              logLevel: 'error',
+            }),
+          );
+        checkPush(JSON.parse(await run()), n);
+        await bench(`mutate_cpu.${kind}.n${n}`, 'node', run);
+      }
+    }
+  },
+
+  async z2s() {
+    const serverSchema = await withQueryDB(sql =>
+      sql.begin(tx => getServerSchema({query: (s: string, p: unknown[]) => tx.unsafe(s, p as never)} as Any, schema)),
+    );
+    const compileCases: Record<string, Program> = {
+      simple: W.programs.simple,
+      complex: W.programs.complex,
+      related: withLimit(W.run.related, W.compileRelatedLimit),
+    };
+    for (const [k, p] of Object.entries(compileCases)) {
+      const qi = asQueryInternals(build(p));
+      await bench(`z2s.${k}`, 'node', () => formatPgInternalConvert(compile(serverSchema, schema, qi.ast, qi.format)));
+    }
+  },
+
+  // tx.run end to end: compile, query, decode.
+  async run() {
+    await withQueryDB(async sql => {
+      const db = zeroPostgresJS(schema, sql);
+      for (const [k, p] of Object.entries(W.run as Record<string, Program>)) {
+        for (const n of W.rowCounts) {
+          const q = build(withLimit(p, n));
+          const rows = (await db.run(q)) as unknown[];
+          if (rows.length !== n) throw new Error(`run.${k}: expected ${n} rows, got ${rows.length}`);
+          await bench(`run.${k}.r${n}`, 'postgres.js', () => db.run(q));
+        }
+      }
+    });
+  },
+
+  async mutate() {
+    const sql = postgres(config.mutateURL, {onnotice: () => {}});
+    await sql.unsafe('TRUNCATE item, things, pair, zero_0."clients", zero_0."mutations"');
+    await sql.end();
+    for (const kind of ['put', 'crud']) {
+      for (const n of W.pushSizes) {
+        const run = () =>
+          mutate({url: config.mutateURL, query: MUTATE_QUERY, body: pushBody(freshClient(), kind, n), userID: 'u1'});
+        checkPush(await run(), n);
+        await bench(`mutate.${kind}.n${n}`, 'postgres.js', run);
+      }
+    }
+  },
+
+  async pushproc() {
+    await bench('pushproc.put.n10', 'postgres.js', () => {
+      const body = pushBody(freshClient(), 'put', 10);
+      for (const m of body.mutations) m.name = 'legacy.put';
+      return pushProcessor({url: config.mutateURL, query: MUTATE_QUERY, body});
+    });
   },
 };
-const fakeDB = new ZQLDatabase({transaction: (fn: Any) => fn(fakeTx)} as Any, wireSchema);
-for (const kind of ['put', 'crud']) {
-  for (const n of W.pushSizes) {
-    const run = async () =>
-      JSON.stringify(
-        await handleMutateRequest({
-          dbProvider: fakeDB as Any,
-          handler,
-          query: MUTATE_QUERY,
-          body: pushBody(freshClient(), kind, n) as never,
-          userID: 'u1',
-          logLevel: 'error',
-        }),
-      );
-    checkPush(JSON.parse(await run()), n);
-    await bench(`mutate_cpu.${kind}.n${n}`, 'node', run);
-  }
-}
 
-// ---- z2s compile, and tx.run end to end ----
-const querySQL = postgres(config.queryURL, {onnotice: () => {}});
-const serverSchema = await querySQL.begin(tx =>
-  getServerSchema({query: (s: string, p: unknown[]) => tx.unsafe(s, p as never)} as Any, schema),
-);
-const compileCases: Record<string, Program> = {
-  simple: W.programs.simple,
-  complex: W.programs.complex,
-  related: withLimit(W.run.related, W.compileRelatedLimit),
-};
-for (const [k, p] of Object.entries(compileCases)) {
-  const qi = asQueryInternals(build(p));
-  await bench(`z2s.${k}`, 'node', () => formatPgInternalConvert(compile(serverSchema, schema, qi.ast, qi.format)));
-}
-const queryDB = zeroPostgresJS(schema, querySQL);
-for (const [k, p] of Object.entries(W.run as Record<string, Program>)) {
-  for (const n of W.rowCounts) {
-    const q = build(withLimit(p, n));
-    const rows = (await queryDB.run(q)) as unknown[];
-    if (rows.length !== n) throw new Error(`run.${k}: expected ${n} rows, got ${rows.length}`);
-    await bench(`run.${k}.r${n}`, 'postgres.js', () => queryDB.run(q));
-  }
-}
-await querySQL.end();
-
-// ---- mutate endpoint against Postgres ----
-const mutateSQL = postgres(config.mutateURL, {onnotice: () => {}});
-await mutateSQL.unsafe('TRUNCATE item, things, pair, zero_0."clients", zero_0."mutations"');
-await mutateSQL.end();
-for (const kind of ['put', 'crud']) {
-  for (const n of W.pushSizes) {
-    const run = () => mutate({url: config.mutateURL, query: MUTATE_QUERY, body: pushBody(freshClient(), kind, n), userID: 'u1'});
-    checkPush(await run(), n);
-    await bench(`mutate.${kind}.n${n}`, 'postgres.js', run);
-  }
-}
-await bench('pushproc.put.n10', 'postgres.js', () => {
-  const body = pushBody(freshClient(), 'put', 10);
-  for (const m of body.mutations) m.name = 'legacy.put';
-  return pushProcessor({url: config.mutateURL, query: MUTATE_QUERY, body});
-});
-
+await groups[group]();
 process.stdout.write(JSON.stringify(results) + '\n');
 // The harness's pooled connections would otherwise keep the process alive.
 process.exit(0);
