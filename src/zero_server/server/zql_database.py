@@ -81,7 +81,11 @@ class _Hooks:
     def __init__(self, tx: DBTransaction[Any], transaction_input: TransactionProviderInput) -> None:
         self._tx = tx
         self._input = transaction_input
-        self._schema = ident(transaction_input.upstream_schema)
+
+    @property
+    def _schema(self) -> str:
+        # Escaped as each statement is written, inside the transaction, where upstream refuses a bad name.
+        return ident(self._input.upstream_schema)
 
     async def update_client_mutation_id(self) -> int:
         rows = await self._tx.query(
@@ -172,7 +176,7 @@ class ZQLDatabase[W]:
             if self.schema is not None and self._server_schema is None:
                 self._server_schema = await get_server_schema(tx, self.schema)
             server_tx = ServerTransaction(
-                tx, transaction_input.client_id, int(transaction_input.mutation_id), self.schema, self._server_schema
+                tx, transaction_input.client_id, transaction_input.mutation_id, self.schema, self._server_schema
             )
             return await callback(server_tx, _Hooks(tx, transaction_input))
 

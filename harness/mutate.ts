@@ -23,6 +23,7 @@ import {
 } from '@rocicorp/zero/server';
 import {zeroPostgresJS} from '@rocicorp/zero/server/adapters/postgresjs';
 import postgres from 'postgres';
+import {shapes} from './errors.ts';
 
 const item = table('item').columns({id: string(), value: string()}).primaryKey('id');
 // One column per kind of conversion tx.mutate does on the way to Postgres.
@@ -44,6 +45,8 @@ const thing = table('thing')
     ttz: number().optional(),
     amount: number().optional(),
     ip: string().optional(),
+    stamps: json().optional(),
+    clocks: json().optional(),
   })
   .primaryKey('id');
 const pair = table('pair').columns({a: string(), b: number(), note: string().optional()}).primaryKey('a', 'b');
@@ -51,22 +54,22 @@ export const wireSchema = createSchema({tables: [item, thing, pair]});
 
 const zql = createBuilder(wireSchema);
 
-type Tx = {
+export type Tx = {
   dbTransaction: {query(sql: string, params: unknown[]): Promise<unknown[]>};
   run(query: unknown): Promise<unknown>;
   // oxlint-disable-next-line no-explicit-any
   mutate: any;
 };
-type Args = {id?: string; value?: string; message?: string; details?: unknown; table?: string; row?: unknown};
+export type Args = {id?: string; value?: string; message?: string; details?: unknown; table?: string; row?: unknown};
 
 const PUT = `INSERT INTO item (id, value) VALUES ($1, $2)
   ON CONFLICT (id) DO UPDATE SET value = item.value || '+' || excluded.value`;
 
-async function put(tx: Tx, args: Args) {
+export async function put(tx: Tx, args: Args) {
   await tx.dbTransaction.query(PUT, [String(args.id ?? 'x'), String(args.value ?? '')]);
 }
 
-const mutators: Record<string, (tx: Tx, args: Args) => Promise<void>> = {
+export const mutators: Record<string, (tx: Tx, args: Args) => Promise<void>> = {
   'item.put': put,
   'item.appError': async (tx, args) => {
     await put(tx, args);
@@ -99,6 +102,15 @@ const mutators: Record<string, (tx: Tx, args: Args) => Promise<void>> = {
   'item.dbError': async tx => {
     await tx.dbTransaction.query('SELECT * FROM missing_table', []);
   },
+  ...Object.fromEntries(
+    Object.entries(shapes).map(([shape, make]) => [
+      `throw.${shape}`,
+      async (tx: Tx, args: Args) => {
+        await put(tx, args);
+        throw make();
+      },
+    ]),
+  ),
 };
 
 export const handler: MutateRequestHandler<Database<Tx>> = async (transact, mutation) => {
@@ -123,7 +135,7 @@ export const handler: MutateRequestHandler<Database<Tx>> = async (transact, muta
 const providers = new Map<string, Database<Tx>>();
 
 /** The database for `url`, failing to open any transaction for client `cfail`. */
-function provider(url: string): Database<Tx> {
+export function provider(url: string): Database<Tx> {
   let db = providers.get(url);
   if (!db) {
     const zql = zeroPostgresJS(wireSchema, postgres(url, {onnotice: () => {}}));
@@ -149,7 +161,8 @@ export function mutate({
   body: unknown;
   userID: string | null;
 }) {
-  return handleMutateRequest({dbProvider: provider(url), handler, query, body: body as never, userID, logLevel: 'error'});
+  // The default log level, where PushProcessor below logs at debug: between them every log line runs.
+  return handleMutateRequest({dbProvider: provider(url), handler, query, body: body as never, userID});
 }
 
 /** handleMutateRequest over a raw request, its body given as base64, answered as the text a server would send. */
@@ -184,10 +197,19 @@ const registry = defineMutators({
 const legacy = {legacy: {put: (tx: Tx, args: Args) => put(tx, args ?? {})}};
 
 export function pushProcessor({url, query, body}: {url: string; query: Record<string, string>; body: unknown}) {
-  return new PushProcessor(provider(url) as never, {tag: 'ctx'}, 'error').process(
+  return new PushProcessor(provider(url) as never, {tag: 'ctx'}, 'debug').process(
     {...(registry as object), ...legacy} as never,
     query,
     body as never,
+  );
+}
+
+/** `PushProcessor.process` given a Fetch `Request`, its body base64-encoded. */
+export function pushProcessorRequest({url, search, body}: {url: string; search: string; body: string}) {
+  const request = new Request(`http://localhost/mutate${search}`, {method: 'POST', body: Buffer.from(body, 'base64')});
+  return new PushProcessor(provider(url) as never, {tag: 'ctx'}).process(
+    {...(registry as object), ...legacy} as never,
+    request,
   );
 }
 

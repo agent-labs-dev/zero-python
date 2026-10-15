@@ -46,7 +46,7 @@ const audit = table('audit')
     mood: string().optional(),
   })
   .primaryKey('id');
-const counter = table('counter').columns({id: string(), n: number()}).primaryKey('id');
+const counter = table('counter').columns({id: string(), n: number(), history: json().optional()}).primaryKey('id');
 // One column per Postgres type a comparison casts its value to, in a schema other than `public`.
 const gadget = table('gadget')
   .from('extra.gadgets')

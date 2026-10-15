@@ -7,7 +7,7 @@ Ported from rocicorp/mono `packages/zero-server/src/queries/process-queries.ts` 
 import asyncio
 import inspect
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
@@ -22,18 +22,20 @@ from zero_server.protocol.custom_queries import (
 )
 from zero_server.protocol.error import ErrorReason, ServerTransformFailed
 from zero_server.protocol.query_server import QuerySuccess
+from zero_server.protocol.schemas import refusal, transform_request_message_schema
 from zero_server.protocol.wire import parse_wire
 from zero_server.query.builder import Query, as_query_internals
 from zero_server.query.registry import QueryParseError
 from zero_server.schema import Schema
-from zero_server.shared.error import get_error_details, get_error_message
+from zero_server.shared.error import error_name, get_error_details, get_error_message
 from zero_server.shared.js import js_check_in, js_truthy
 from zero_server.shared.json import JSONValue
+from zero_server.shared.json_parse import parse_body
 
 logger = logging.getLogger("zero_server.query")
 
-type QueryRequestHandler = Callable[[str, JSONValue | None], Query | Awaitable[Query]]
-"""Turns a query's name and its single argument into a `Query`."""
+type QueryRequestHandler = Callable[[str, JSONValue | None], Any]
+"""Turns a query's name and its single argument into a `Query`, or `{"query": query}`, maybe awaitable."""
 
 type QueryResponse = QuerySuccess | ServerTransformFailed
 type Transformed = TransformedQuery | AppErroredQuery | ParseErroredQuery
@@ -68,11 +70,15 @@ async def handle_query_request(
         query_ids = [r.id for r in parsed[1]]
     except (ValueError, ValidationError) as error:
         logger.error("Failed to parse query request", exc_info=error)
+        message = get_error_message(error)
+        if isinstance(error, ValidationError):
+            decoded = parse_body(body) if isinstance(body, bytes) else body
+            message = refusal(decoded, transform_request_message_schema, None, message)
         return ServerTransformFailed(
             reason=ErrorReason.PARSE,
-            message=f"Failed to parse query request: {get_error_message(error)}",
+            message=f"Failed to parse query request: {message}",
             queryIDs=query_ids,
-            details={"name": "TypeError" if isinstance(error, ValidationError) else "SyntaxError"},
+            details={"name": "TypeError" if isinstance(error, ValidationError) else error_name(error)},
         )
 
     def errored(request: TransformRequestQuery, error: Exception) -> AppErroredQuery | ParseErroredQuery:
@@ -89,6 +95,8 @@ async def handle_query_request(
         try:
             # Upstream unwraps a deprecated `{query}` result here, which needs an object.
             js_check_in("query", result)
+            if isinstance(result, Mapping) and "query" in result:
+                result = result["query"]
         except Exception as error:
             return errored(request, error)
         query = as_query_internals(result)

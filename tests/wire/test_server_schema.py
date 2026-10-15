@@ -24,10 +24,26 @@ BODY = {
 }
 
 
+def _column(type_: str) -> dict[str, Any]:
+    return {"type": type_, "optional": True, "customType": None}
+
+
+ODDITY = {
+    "name": "oddity",
+    "columns": {"id": _column("string"), "code": _column("string"), "name": _column("string"), "at": _column("string")},
+    "primaryKey": ["id"],
+}
+
+
 @st.composite
 def perturbed(draw: st.DrawFn, base: dict[str, Any]) -> dict[str, Any]:
-    """The wire schema with a few columns retyped or renamed, or a table renamed."""
+    """The wire schema with a few columns retyped or renamed, or a table renamed, or one of extension
+    types added, or every table gone."""
     schema = copy.deepcopy(base)
+    if draw(st.integers(0, 15)) == 0:
+        return {**schema, "tables": {}}
+    if draw(st.booleans()):
+        schema["tables"]["oddity"] = copy.deepcopy(ODDITY)
     for _ in range(draw(st.integers(0, 3))):
         table = draw(st.sampled_from(sorted(schema["tables"])))
         spec = schema["tables"][table]

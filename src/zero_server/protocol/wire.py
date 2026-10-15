@@ -33,7 +33,8 @@ from pydantic import (
 )
 from pydantic_core import CoreSchema, core_schema
 
-from zero_server.shared.json import JSONValue, parse_json_body
+from zero_server.shared.json import JSONValue
+from zero_server.shared.json_parse import parse_body
 
 WIRE: Any = {"source": "wire"}
 """Validation context marking a value as arriving off the wire rather than built in Python."""
@@ -43,9 +44,9 @@ _DECODED: Any = {"source": "wire", "decoded": True}
 
 
 def parse_wire[T](adapter: TypeAdapter[T], value: object) -> T:
-    """Validate `value` off the wire. Raw bytes are decoded first, and raise `ValueError` where `JSON.parse` throws."""
+    """Validate `value` off the wire. Raw bytes are decoded first, raising what `JSON.parse` would throw."""
     if isinstance(value, bytes):
-        return adapter.validate_python(parse_json_body(value), context=_DECODED, by_alias=True, by_name=False)
+        return adapter.validate_python(parse_body(value), context=_DECODED, by_alias=True, by_name=False)
     return adapter.validate_python(value, context=WIRE, by_alias=True, by_name=False)
 
 
@@ -61,13 +62,13 @@ def _is_plain_json(value: Any) -> bool:
     kind = type(value)
     if kind is list:
         for item in value:  # noqa: SIM110 - a loop runs faster than all() over a generator
-            if type(item) not in _JSON_SCALARS and not _is_plain_json(item):
+            if type(item) not in _JSON_SCALARS and not _is_plain_json(item):  # python-only: a tuple, enum, ...
                 return False
         return True
     if kind is dict:
         for key, item in value.items():
             if type(key) is not str or (type(item) not in _JSON_SCALARS and not _is_plain_json(item)):
-                return False
+                return False  # python-only: a key that is not a str, or a value no JSON decodes to
         return True
     return kind in _JSON_SCALARS
 
@@ -139,11 +140,11 @@ class WireModel(BaseModel):
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
         super().__pydantic_init_subclass__(**kwargs)
         _MODELS.add(cls)
-        if _optional_keys(cls) and not issubclass(cls, RefusesNullOffWire):
+        if _optional_keys(cls) and not issubclass(cls, RefusesNullOffWire):  # python-only: a guard on our models
             raise TypeError(f"{cls.__name__} has optional fields: declare them Omittable or extend RefusesNullOffWire")
 
     @model_serializer(mode="wrap")
-    def _omit_unset(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+    def _omit_unset(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:  # python-only: `model_dump`
         # `model_dump`, which honours `include` and `exclude`. `to_json` walks the fields itself.
         dumped: dict[str, Any] = handler(self)
         out: dict[str, Any] = {}
@@ -227,10 +228,10 @@ def dump_json(value: Any) -> Any:
     if isinstance(value, StrEnum):
         return value.value
     # Anything else came through the builder into an AST node: serialize it as Pydantic does.
-    return _jsonable(_ANY.dump_python(value))
+    return _jsonable(_ANY.dump_python(value))  # python-only: what only a Python caller hands a builder
 
 
-def _jsonable(value: Any) -> Any:
+def _jsonable(value: Any) -> Any:  # python-only: a Python object a builder was handed, such as a dataclass
     match value:
         case StrEnum():
             return value.value

@@ -71,7 +71,7 @@ def zero_routes(
     async def caller(request: Request) -> tuple[str | None, Any] | Response:
         try:
             user_id = await _maybe_await(authenticate(request))
-        except Unauthorized as error:
+        except Unauthorized as error:  # python-only: upstream leaves authentication to the app's route
             return _JSONResponse({"error": str(error) or "Unauthorized"}, status_code=401)
         return user_id, await _maybe_await(context(request, user_id))
 
@@ -79,7 +79,7 @@ def zero_routes(
 
         async def query(request: Request) -> Response:
             who = await caller(request)
-            if isinstance(who, Response):
+            if isinstance(who, Response):  # python-only: the 401 from `authenticate`
                 return who
             user_id, ctx = who
             response = await handle_query_request(
@@ -93,13 +93,13 @@ def zero_routes(
         routes.append(Route(query_path, query, methods=["POST"]))
 
     if mutators is not None:
-        if database is None:
+        if database is None:  # python-only: a configuration error in these routes' own arguments
             raise ValueError("the mutate endpoint needs a database")
         db = database
 
         async def mutate(request: Request) -> Response:
             who = await caller(request)
-            if isinstance(who, Response):
+            if isinstance(who, Response):  # python-only: the 401 from `authenticate`
                 return who
             user_id, ctx = who
 

@@ -68,7 +68,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
-addopts = "--cov=zero_server --cov-branch --cov-report=term-missing"
+addopts = "--cov=zero_server --cov-branch --cov-context=test --cov-report=term-missing"
 
 [tool.coverage.run]
 # SQLAlchemy's asyncio layer resumes coroutines inside greenlets.

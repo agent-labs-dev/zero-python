@@ -10,8 +10,11 @@ defaults:
   run:
     shell: bash
 jobs:
+  # The checks, the differential tests, and from what those tests ran, the compatibility proof
+  # (tests/compat.py). The proof must reproduce in CI within five minutes, which the timeout holds it to.
   check:
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
     services:
       postgres:
         image: postgres:17
@@ -40,6 +43,15 @@ jobs:
       - run: uv run ruff format --check
       - run: uv run ty check
       - run: uv run pytest
+      - run: uv run python -m tests.compat
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: compat-coverage
+          if-no-files-found: ignore
+          path: |
+            harness/build/c8/
+            harness/runner.log
 
   # The suite again with every direct dependency at the lowest version pyproject.toml allows, so a floor
   # is never lower than what has been tested.

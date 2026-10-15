@@ -85,6 +85,7 @@ Point `ZERO_QUERY_URL` and `ZERO_MUTATE_URL` at `/query` and `/mutate`. With Fas
 The published npm package is the definition of correct. Every test diffs Python against it:
 
 - **Wire.** `harness/` runs the real `handleMutateRequest`, `handleQueryRequest`, `PushProcessor` and the query builder under Node. Hypothesis generates pushes (with duplicates, gaps, refusals and cleanup mutations) and builder programs, sends each through both sides against identical Postgres databases, and diffs the responses and every row written.
+- **HTTP.** The raw bytes of a request go to upstream's handlers as a Fetch `Request` and to the Starlette routes, so query-string parsing, body decoding and `JSON.parse`'s error messages are compared too, along with the response as `JSON.stringify` writes it.
 - **SQL.** The same generated queries run through upstream's `ZQLDatabase.run` and through `tx.run` against one seeded database, and the result rows are compared, never the SQL text.
 
 The wire and SQL tiers run against every adapter.
@@ -92,14 +93,15 @@ The wire and SQL tiers run against every adapter.
 
 Run them with `uv run pytest` (needs Node 24 and Docker, or `ZERO_SERVER_PG` pointing at a Postgres) and `uv run --group e2e python e2e/run.py`.
 
+A diff that passes only covers the inputs tried, so `uv run python -m tests.compat` then checks the inputs were enough. Every line and branch of the upstream modules the port cites must have run inside the npm package during the tests, and every line and branch of `zero_server` must have run during a differential test. [`docs/compat.md`](docs/compat.md) explains the check, lists what it leaves out and why, and records the known differences.
+
 ## Performance
 
 `bench/` runs the same workloads through zero-server and the published package. The CPU-only cases (the query endpoint, request parsing, the mutate endpoint over an in-memory database, z2s) are [CodSpeed](https://codspeed.io) benchmarks on both sides, and CodSpeed flags a pull request that makes any of them slower. `uv run python -m bench` times every case on the wall clock, including those that wait on Postgres (`tx.run`, mutate, `PushProcessor`, per adapter), and prints each case's Python/TypeScript ratio. CI shows that table without gating on it. `bench/__init__.py` has the commands.
 
 ## Known differences
 
-- **Parse errors.** When a request is malformed, the message after `Failed to parse push body:` describes the bad field in Pydantic's words, not valita's. The rest of the response matches, and zero-cache only logs it.
-- **Non-string values against text columns.** Upstream passes such a value to the JavaScript driver as is, so the driver decides how it binds. zero-server binds `String(value)`, which is what postgres.js does except for an array whose first element is a boolean, which it binds as `false`.
+[`docs/compat.md`](docs/compat.md#known-differences) has the full list. The two most likely to matter: the deprecated upstream exports (`handleTransformRequest`, `getMutation`, the positional handler overloads, `tx.query` and the rest) are not ported, and where upstream's result depends on its JavaScript driver, zero-server does what the postgres.js adapter does.
 
 ## License
 

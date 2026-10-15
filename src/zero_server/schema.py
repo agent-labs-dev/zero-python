@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from zero_server.shared.js import js_string, js_stringify
+from zero_server.shared.js import js_string
 
 type ValueType = Literal["string", "number", "boolean", "null", "json"]
 type Cardinality = Literal["one", "many"]
@@ -65,12 +65,12 @@ class Schema(_SchemaModel):
 
 def load_schema(source: str | Path | Mapping[str, Any]) -> Schema:
     """A schema from `JSON.stringify(schema)`: the JSON text as a `str`, a `Path` to it, or the parsed object."""
-    if isinstance(source, Path):
+    if isinstance(source, Path):  # python-only: reading the emitted schema from a file
         source = json.loads(source.read_text())
     elif isinstance(source, str):
         try:
             source = json.loads(source)
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError as e:  # python-only: a hint for a path passed as a str
             raise json.JSONDecodeError(
                 f"{e.msg} (a str is JSON text; pass a pathlib.Path to read a file)", e.doc, e.pos
             ) from e
@@ -84,69 +84,40 @@ class DestNames:
     all_columns_same: bool
 
 
-def _in_context(context: Any) -> str:
-    return f"in {js_stringify(context)}" if context else ""
-
-
 class NameMapper:
     def __init__(self, tables: dict[str, DestNames]) -> None:
         self._tables = tables
         self.correlations: dict[tuple[Any, ...], Any] = {}
         """What `map_ast` has mapped through this mapper, which it reuses."""
 
-    def _table(self, src: str, context: Any = None) -> DestNames:
+    def _table(self, src: str) -> DestNames:
         table = self._tables.get(src)
         if table is None:
-            raise Exception(f'unknown table "{src}" {_in_context(context)}')
+            raise Exception(f'unknown table "{src}" ')
         return table
 
-    def table_name(self, src: str, context: Any = None) -> str:
+    def table_name(self, src: str) -> str:
         table = self._tables.get(src)
-        return table.table_name if table is not None else self._table(src, context).table_name
+        return table.table_name if table is not None else self._table(src).table_name
 
-    def table_name_if_known(self, src: str) -> str | None:
-        table = self._tables.get(src)
-        return table.table_name if table is not None else None
-
-    def column_name(self, table: str, src: str, context: Any = None) -> str:
+    def column_name(self, table: str, src: str) -> str:
         dest_names = self._tables.get(table)
         if dest_names is not None and type(src) is str:
             dest = dest_names.columns.get(src)
             if dest:
                 return dest
-        return self._column_name(table, src, context)
+        return self._column_name(table, src)
 
-    def _column_name(self, table: str, src: str, context: Any) -> str:
+    def _column_name(self, table: str, src: str) -> str:
         # Upstream looks the column up as an object key, which a builder handed a number turns into a string.
         src = src if isinstance(src, str) else js_string(src)
-        dest = self._table(table, context).columns.get(src)
+        dest = self._table(table).columns.get(src)
         if not dest:
-            raise Exception(f'unknown column "{src}" of "{table}" table {_in_context(context)}')
+            raise Exception(f'unknown column "{src}" of "{table}" table ')
         return dest
-
-    def row[V](self, table: str, row: Mapping[str, V]) -> dict[str, V]:
-        """Rename a row's columns. Columns the schema does not know pass through."""
-        dest = self._table(table)
-        if dest.all_columns_same:
-            return dict(row)
-        return {dest.columns.get(column, column): value for column, value in row.items()}
-
-    def columns(self, table: str, columns: tuple[str, ...]) -> tuple[str, ...]:
-        dest = self._table(table)
-        if dest.all_columns_same:
-            return columns
-        return tuple(dest.columns.get(column, column) for column in columns)
 
 
 def client_to_server(tables: Mapping[str, TableSchema]) -> NameMapper:
-    return _mapper("client", tables)
-
-
-def server_to_client(tables: Mapping[str, TableSchema]) -> NameMapper:
-    return _mapper("server", tables)
-
-
-def _mapper(src: Literal["client", "server"], tables: Mapping[str, TableSchema]) -> NameMapper:
     mapping: dict[str, DestNames] = {}
     for table_name, table in tables.items():
         all_same = True
@@ -154,13 +125,7 @@ def _mapper(src: Literal["client", "server"], tables: Mapping[str, TableSchema])
         for name, column in table.columns.items():
             if column.server_name and column.server_name != name:
                 all_same = False
-            server_column = column.server_name if column.server_name is not None else name
-            if src == "client":
-                names[name] = server_column
-            else:
-                names[server_column] = name
+            names[name] = column.server_name if column.server_name is not None else name
         server_table = table.server_name if table.server_name is not None else table_name
-        key = table_name if src == "client" else server_table
-        dest = server_table if src == "client" else table_name
-        mapping[key] = DestNames(table_name=dest, columns=names, all_columns_same=all_same)
+        mapping[table_name] = DestNames(table_name=server_table, columns=names, all_columns_same=all_same)
     return NameMapper(mapping)

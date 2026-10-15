@@ -22,7 +22,7 @@ DDL = [
     """CREATE TABLE audit (
         id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL, day DATE, tm TIME, ttz TIMETZ, plain TIMESTAMP,
         stamps TIMESTAMPTZ[], tags TEXT[], mood mood)""",
-    "CREATE TABLE counter (id TEXT PRIMARY KEY, n BIGINT NOT NULL)",
+    "CREATE TABLE counter (id TEXT PRIMARY KEY, n BIGINT NOT NULL, history BIGINT[])",
     "CREATE SCHEMA extra",
     """CREATE TABLE extra.gadgets (
         id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, serial UUID NOT NULL, ip INET NOT NULL, amount NUMERIC(10, 2),
@@ -111,7 +111,9 @@ def rows() -> dict[str, list[dict[str, Any]]]:
             for n in range(6)
         ],
         # The last value is past 2^53, which upstream refuses to return rather than round.
-        "counter": [{"id": f"k{n}", "n": n} for n in range(3)] + [{"id": "k9", "n": 2**60}],
+        # k8's unsafe integer is in an array, after rows whose arrays hold none.
+        "counter": [{"id": f"k{n}", "n": n, "history": [str(n)]} for n in range(3)]
+        + [{"id": "k8", "n": 8, "history": ["1", str(2**60)]}, {"id": "k9", "n": 2**60, "history": None}],
         "extra.gadgets": [
             {
                 "id": f"g{n}",
@@ -150,6 +152,7 @@ _CASTS = {
     ("audit", "plain"): "CAST(CAST(:plain AS text) AS timestamp)",
     ("audit", "stamps"): "CAST(CAST(:stamps AS text[]) AS timestamptz[])",
     ("audit", "mood"): "CAST(CAST(:mood AS text) AS mood)",
+    ("counter", "history"): "CAST(CAST(:history AS text[]) AS bigint[])",
     ("extra.gadgets", "serial"): "CAST(CAST(:serial AS text) AS uuid)",
     ("extra.gadgets", "ip"): "CAST(CAST(:ip AS text) AS inet)",
     ("extra.gadgets", "amount"): "CAST(CAST(:amount AS text) AS numeric)",

@@ -58,7 +58,7 @@ class SQLAlchemyTransaction:
 async def sqlalchemy_transaction(connection: AsyncConnection) -> SQLAlchemyTransaction:
     """Wrap a connection that is already in a transaction, such as one an `AsyncSession` holds."""
     driver = connection.dialect.driver
-    if driver not in ("asyncpg", "psycopg"):
+    if driver not in ("asyncpg", "psycopg"):  # python-only: the drivers this adapter supports
         raise ValueError(f"SQLAlchemy driver {driver!r} is not supported; use asyncpg or psycopg")
     driver_connection = (await connection.get_raw_connection()).driver_connection
     # `None` only once SQLAlchemy has invalidated the connection, which it never does mid-transaction.

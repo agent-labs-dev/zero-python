@@ -15,6 +15,7 @@
   },
   "devDependencies": {
     "@codspeed/tinybench-plugin": "6.0.1",
+    "c8": "12.0.0",
     "tinybench": "6.2.2"
   }
 }

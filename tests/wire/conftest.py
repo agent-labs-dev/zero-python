@@ -46,8 +46,14 @@ DDL = [
         tm TIME,
         ttz TIMETZ,
         amount NUMERIC(10, 2),
-        ip INET)""",
+        ip INET,
+        stamps TIMESTAMPTZ[],
+        clocks TIMETZ[])""",
     "CREATE TABLE pair (a TEXT, b INTEGER, note TEXT, PRIMARY KEY (a, b))",
+    # Extension types: `isbn` is user-defined and Zero takes it as a string; `citext` and `point` it does not.
+    "CREATE EXTENSION isn",
+    "CREATE EXTENSION citext",
+    "CREATE TABLE oddity (id TEXT PRIMARY KEY, code isbn, name citext, at point)",
 ]
 
 ADAPTERS = ["sqlalchemy", "sqlalchemy-psycopg", "asyncpg", "psycopg"]
@@ -118,7 +124,8 @@ class WireDB:
                     "item": "SELECT * FROM item ORDER BY id",
                     "things": "SELECT id, n, f, b, j::text AS j, happened_at::text AS t, d::text AS d, s, "
                     "tags::text AS tags, u::text AS u, mood::text AS mood, tm::text AS tm, ttz::text AS ttz, "
-                    "amount::text AS amount, ip::text AS ip FROM things ORDER BY id",
+                    "amount::text AS amount, ip::text AS ip, stamps::text AS stamps, clocks::text AS clocks "
+                    "FROM things ORDER BY id",
                     "pair": "SELECT * FROM pair ORDER BY a, b",
                 }
                 dumped = {

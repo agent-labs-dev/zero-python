@@ -45,11 +45,15 @@ def _q(table: str, *ops: list[Any]) -> dict[str, Any]:
 exists = ["exists", "comments", {"ops": [["where", "body", "a"]]}, None]
 # Paths a random draw can miss: each column conversion, each operator family, and each refusal.
 PINNED = [
+    # A static parameter, which only a query the server fills in has bound.
+    _q("issue", ["where", "title", {"$param": ["authData", "sub"]}]),
+    _q("issue", ["orderBy", "title", "sideways"], ["orderBy", "id", "\ufffdasc"]),
     _q("audit"),
     _q("audit", ["where", "at", ">", 0], ["orderBy", "day", "desc"], ["start", {"day": None, "id": "a2"}, True]),
     _q("audit", ["where", "mood", "IS NOT", None], ["where", "tags", "IS", None]),
     _q("audit", ["start", {"at": 1, "id": "a1"}, False], ["orderBy", "at", "asc"]),
     _q("counter", ["where", "n", "<", 10]),
+    _q("counter", ["where", "id", "!=", "k8"]),
     _q("counter"),
     _q("issue", ["whereFn", ["not", exists]], ["orderBy", "priority", "desc"], ["limit", 3]),
     _q("issue", ["whereFn", ["cmpLit", [1, 2], "IN", [1]]]),
@@ -110,6 +114,9 @@ PINNED = [
     # A relationship from a table to itself, and a `one` relationship through a junction table.
     _q("user", ["related", "manager", {"ops": [["related", "reports", None]]}], ["whereExists", "reports", None, None]),
     _q("issue", ["related", "label", None], ["whereExists", "label", {"ops": [["where", "name", "a"]]}, None]),
+    # Through the junction table, flipped and not.
+    _q("issue", ["whereExists", "labels", {"ops": [["where", "name", "a"]]}, {"flip": True}]),
+    _q("issue", ["whereExists", "labels", None, {"flip": False, "scalar": True}]),
     # A NUL is refused when the value is bound, after Postgres has planned the statement.
     _q("comment", ["whereFn", ["and", [["cmp", "authorID", ["\x00"]], ["cmpLit", "", "=", 0]]]]),
     _q("comment", ["where", "authorID", "a\x00"]),

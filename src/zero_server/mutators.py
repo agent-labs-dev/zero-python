@@ -37,7 +37,7 @@ def define_mutator(fn_or_validator: Any, fn: MutatorFn | None = None) -> Any:
     `@define_mutator(ArgsModel)`."""
     if fn is not None:
         return MutatorDefinition(fn=fn, validator=fn_or_validator)
-    if is_schema_validator(fn_or_validator):
+    if is_schema_validator(fn_or_validator):  # python-only: the decorator form, `@define_mutator(Model)`
         return lambda decorated: MutatorDefinition(fn=decorated, validator=fn_or_validator)
     return MutatorDefinition(fn=fn_or_validator)
 
@@ -75,12 +75,12 @@ def define_mutators(
     return merge(base, build(overrides, is_definition, Mutator))
 
 
-def get_mutator(mutators: Registry, name: str) -> Mutator | None:
-    found = value_at_path(mutators, name, ".")
-    return found if isinstance(found, Mutator) else None
+def get_mutator(mutators: Registry, name: str) -> Mutator | Registry | None:
+    """The mutator at a dot-separated `name`, or, as upstream has it, the namespace there."""
+    return value_at_path(mutators, name, ".")
 
 
-def must_get_mutator(mutators: Registry, name: str) -> Mutator:
+def must_get_mutator(mutators: Registry, name: str) -> Mutator | Registry:
     mutator = get_mutator(mutators, name)
     if mutator is None:
         raise Exception(f"Mutator not found: {name}")
