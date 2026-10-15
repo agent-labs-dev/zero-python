@@ -128,11 +128,11 @@ def main() -> int:
     step("starting postgres")
     # The Python server types itself with code generated from the schema; stale types fail the run.
     subprocess.run(
-        [sys.executable, "-m", "zero_python.codegen", "codegen", str(schema_json), "-o", str(BUILD / "zero_schema.py")],
+        [sys.executable, "-m", "zero_server.codegen", "codegen", str(schema_json), "-o", str(BUILD / "zero_schema.py")],
         check=True,
     )
     if (BUILD / "zero_schema.py").read_text() != (HERE / "zero_schema.py").read_text():
-        print("zero_schema.py is stale: run `zero-python codegen e2e/build/schema.json -o e2e/zero_schema.py`")
+        print("zero_schema.py is stale: run `zero-server codegen e2e/build/schema.json -o e2e/zero_schema.py`")
         return 1
 
     compose("down", "-v", "--remove-orphans")

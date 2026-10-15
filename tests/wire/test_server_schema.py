@@ -11,8 +11,8 @@ from tests.harness import Harness
 from tests.strategies import as_js
 from tests.wire.conftest import ADAPTERS, WireDB
 from tests.wire.mutators import handler
-from zero_python.schema import load_schema
-from zero_python.server.process_mutations import handle_mutate_request
+from zero_server.schema import load_schema
+from zero_server.server.process_mutations import handle_mutate_request
 
 QUERY = {"schema": "zero_0", "appID": "zero"}
 BODY = {

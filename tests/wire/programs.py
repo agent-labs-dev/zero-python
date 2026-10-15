@@ -4,11 +4,11 @@ from typing import Any
 
 from hypothesis import strategies as st
 
-from zero_python.protocol.ast import Parameter
-from zero_python.query.builder import Query, create_builder
-from zero_python.query.expression import ExpressionBuilder
-from zero_python.query.registry import QueryParseError, define_queries, define_query, must_get_query
-from zero_python.schema import Schema
+from zero_server.protocol.ast import Parameter
+from zero_server.query.builder import Query, create_builder
+from zero_server.query.expression import ExpressionBuilder
+from zero_server.query.registry import QueryParseError, define_queries, define_query, must_get_query
+from zero_server.schema import Schema
 
 
 def _sub(program: dict[str, Any] | None) -> Any:
@@ -107,7 +107,7 @@ params = st.builds(
 )
 # An array led by a boolean, compared with a text column, is left out: upstream hands the raw array to
 # postgres.js, which binds it as the boolean `false`. That is the JavaScript driver's choice, not Zero's;
-# zero-python binds `String(array)` as postgres.js does for every other array.
+# zero-server binds `String(array)` as postgres.js does for every other array.
 values = (
     scalars
     | st.lists(st.text(max_size=2) | st.integers(-3, 3) | st.booleans(), max_size=3).filter(

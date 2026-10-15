@@ -1,11 +1,11 @@
 import pytest
 
-from zero_python.protocol.application_error import (
+from zero_server.protocol.application_error import (
     ApplicationError,
     is_application_error,
     wrap_with_application_error,
 )
-from zero_python.protocol.ast import (
+from zero_server.protocol.ast import (
     AST,
     ColumnReference,
     Conjunction,
@@ -16,8 +16,8 @@ from zero_python.protocol.ast import (
     map_condition,
     normalize_ast,
 )
-from zero_python.protocol.query_server import QuerySuccess
-from zero_python.shared.asserts import AssertionFailedError
+from zero_server.protocol.query_server import QuerySuccess
+from zero_server.shared.asserts import AssertionFailedError
 
 
 def test_application_error() -> None:
@@ -128,7 +128,7 @@ def test_normalize_orders_and_before_or() -> None:
 
 
 def test_condition_comparator_edges() -> None:
-    from zero_python.protocol.ast import CorrelatedSubqueryCondition, Disjunction, _cmp_condition
+    from zero_server.protocol.ast import CorrelatedSubqueryCondition, Disjunction, _cmp_condition
 
     related = CorrelatedSubquery(
         correlation=Correlation(parent_field=("id",), child_field=("id",)), subquery=AST(table="u", alias="s")

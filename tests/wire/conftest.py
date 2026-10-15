@@ -9,11 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from tests.postgres import postgres_server
 from tests.wire import seed
-from zero_python.schema import Schema
-from zero_python.server.adapters.asyncpg import AsyncpgDatabase
-from zero_python.server.adapters.psycopg import PsycopgDatabase
-from zero_python.server.adapters.sqlalchemy import SQLAlchemyDatabase
-from zero_python.server.zql_database import ZQLDatabase
+from zero_server.schema import Schema
+from zero_server.server.adapters.asyncpg import AsyncpgDatabase
+from zero_server.server.adapters.psycopg import PsycopgDatabase
+from zero_server.server.adapters.sqlalchemy import SQLAlchemyDatabase
+from zero_server.server.zql_database import ZQLDatabase
 
 DDL = [
     "CREATE SCHEMA zero_0",

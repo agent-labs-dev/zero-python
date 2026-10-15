@@ -1,5 +1,5 @@
 name: Bug
-description: zero-python fails, or behaves differently from @rocicorp/zero/server.
+description: zero-server fails, or behaves differently from @rocicorp/zero/server.
 labels: [bug]
 body:
   - type: textarea
@@ -18,8 +18,8 @@ body:
     id: versions
     attributes:
       label: Versions
-      description: zero-python, @rocicorp/zero, Python.
-      placeholder: zero-python 0.0.1, @rocicorp/zero 1.10.0, Python 3.12.8
+      description: zero-server, @rocicorp/zero, Python.
+      placeholder: zero-server 0.0.1, @rocicorp/zero 1.10.0, Python 3.12.8
     validations:
       required: true
   - type: dropdown

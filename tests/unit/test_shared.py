@@ -1,9 +1,9 @@
 import pytest
 
-from zero_python.shared.asserts import AssertionFailedError, check
-from zero_python.shared.error import get_error_details, get_error_message
-from zero_python.shared.js import js_number, js_sort, js_string
-from zero_python.shared.json import is_json_value
+from zero_server.shared.asserts import AssertionFailedError, check
+from zero_server.shared.error import get_error_details, get_error_message
+from zero_server.shared.js import js_number, js_sort, js_string
+from zero_server.shared.json import is_json_value
 
 
 class Named(Exception):
@@ -127,7 +127,7 @@ def test_js_sort_long_arrays_use_timsort() -> None:
 
 
 def test_js_stringify() -> None:
-    from zero_python.shared.js import js_stringify
+    from zero_server.shared.js import js_stringify
 
     assert js_stringify({"a": [1.0, True, False, None, "é"], "b": 2.5}) == '{"a":[1,true,false,null,"é"],"b":2.5}'
     assert js_stringify({"b": 1, "10": 2, "2": 3, "01": 4, "": 5}) == '{"2":3,"10":2,"b":1,"01":4,"":5}'

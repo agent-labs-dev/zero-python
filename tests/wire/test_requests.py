@@ -10,11 +10,11 @@ from pydantic import TypeAdapter, ValidationError
 
 from tests.harness import Harness
 from tests.strategies import cleanup_args, corrupted, mutate_params, push_bodies, transform_requests
-from zero_python.protocol.custom_queries import TransformRequestMessage
-from zero_python.protocol.mutate_server import MutateParams
-from zero_python.protocol.mutation import CleanupResultsArg
-from zero_python.protocol.push import PushBody
-from zero_python.protocol.wire import parse_wire
+from zero_server.protocol.custom_queries import TransformRequestMessage
+from zero_server.protocol.mutate_server import MutateParams
+from zero_server.protocol.mutation import CleanupResultsArg
+from zero_server.protocol.push import PushBody
+from zero_server.protocol.wire import parse_wire
 
 transform_request: TypeAdapter[Any] = TypeAdapter(TransformRequestMessage)
 cleanup_results_arg: TypeAdapter[Any] = TypeAdapter(CleanupResultsArg)

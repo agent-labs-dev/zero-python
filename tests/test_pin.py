@@ -10,9 +10,9 @@ def test_zero_version_is_one_semver() -> None:
 
 
 def test_package_imports() -> None:
-    import zero_python
+    import zero_server
 
-    assert zero_python.__version__.count(".") == 2
+    assert zero_server.__version__.count(".") == 2
 
 
 def test_harnesses_run_the_pinned_zero() -> None:

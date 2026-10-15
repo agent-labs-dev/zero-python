@@ -886,7 +886,7 @@ wheels = [
 ]
 
 [[package]]
-name = "zero-python"
+name = "zero-server"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
@@ -920,7 +920,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
     { name = "ty" },
-    { name = "zero-python", extra = ["asyncpg", "psycopg", "sqlalchemy", "starlette"] },
+    { name = "zero-server", extra = ["asyncpg", "psycopg", "sqlalchemy", "starlette"] },
 ]
 e2e = [
     { name = "starlette" },
@@ -950,7 +950,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=7.1" },
     { name = "ruff", specifier = ">=0.17" },
     { name = "ty", specifier = ">=0.0.87" },
-    { name = "zero-python", extras = ["sqlalchemy", "asyncpg", "psycopg", "starlette"] },
+    { name = "zero-server", extras = ["sqlalchemy", "asyncpg", "psycopg", "starlette"] },
 ]
 e2e = [
     { name = "starlette", specifier = ">=1.8" },

@@ -5,19 +5,19 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from zero_python.mutators import define_mutator, define_mutators
-from zero_python.protocol.application_error import ApplicationError
-from zero_python.protocol.mutation import CustomMutation, MutationResponse
-from zero_python.query.builder import create_builder
-from zero_python.schema import Schema
-from zero_python.server.process_mutations import (
+from zero_server.mutators import define_mutator, define_mutators
+from zero_server.protocol.application_error import ApplicationError
+from zero_server.protocol.mutation import CustomMutation, MutationResponse
+from zero_server.query.builder import create_builder
+from zero_server.schema import Schema
+from zero_server.server.process_mutations import (
     Database,
     TransactFn,
     TransactionProviderHooks,
     TransactionProviderInput,
 )
-from zero_python.server.transaction import ServerTransaction
-from zero_python.server.zql_database import ZQLDatabase
+from zero_server.server.transaction import ServerTransaction
+from zero_server.server.zql_database import ZQLDatabase
 
 type Tx = ServerTransaction[AsyncConnection]
 
@@ -30,7 +30,7 @@ def _js_string(value: Any, default: str) -> str:
         return default
     if isinstance(value, bool):
         return "true" if value else "false"
-    from zero_python.shared.js import js_string
+    from zero_server.shared.js import js_string
 
     return js_string(value) if not isinstance(value, dict) else "[object Object]"
 
