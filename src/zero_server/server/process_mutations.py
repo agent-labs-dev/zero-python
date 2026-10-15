@@ -11,6 +11,7 @@ mutator: the second transaction takes the ID and records the error in the `mutat
 where the client's pending mutation learns it failed.
 """
 
+import functools
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, nullcontext
@@ -44,8 +45,13 @@ from zero_server.shared.json_parse import parse_body
 
 logger = logging.getLogger("zero_server.mutate")
 
-_cleanup_results_arg: TypeAdapter[CleanupResultsArg] = TypeAdapter(CleanupResultsArg)
-_OK = MutationOk()  # frozen, so every successful mutation can share it
+
+@functools.cache
+def _cleanup_results_arg() -> TypeAdapter[CleanupResultsArg]:
+    return TypeAdapter(CleanupResultsArg)
+
+
+_OK = MutationOk.trusted()  # shared by every successful mutation; unvalidated, so importing builds no validator
 
 
 class TransactionProviderHooks(Protocol):
@@ -213,10 +219,11 @@ async def handle_mutate[T](
     push_body = body if isinstance(body, PushBody) else _parse_push_body(body)
     if isinstance(push_body, ServerPushFailed):
         return push_body
-    mutation_ids = [MutationID(id=m.id, clientID=m.client_id) for m in push_body.mutations]
+    # Built unvalidated: the push body's own parse checked every ID.
+    mutation_ids = [MutationID.trusted(id=m.id, client_id=m.client_id) for m in push_body.mutations]
 
     try:
-        params = MutateParams.from_json(dict(query))
+        params = MutateParams.from_query(query)
     except ValidationError as error:
         logger.error("Failed to parse push query parameters", exc_info=error)
         message = refusal(dict(query), mutate_params_schema, "passthrough", get_error_message(error))
@@ -252,9 +259,11 @@ async def handle_mutate[T](
                 responses.append(response)
                 processed_count += 1
 
-            if report_user_id:
-                return MutateSuccess(mutations=responses, userID=user_id)
-            return MutateSuccess(mutations=responses)
+            if not report_user_id:
+                return MutateSuccess.trusted(mutations=responses)
+            if user_id is None or type(user_id) is str:
+                return MutateSuccess.trusted(mutations=responses, user_id=user_id)
+            return MutateSuccess(mutations=responses, userID=user_id)  # python-only: a user ID that is not a str
     except Exception as error:
         logger.error("Failed to process push request", exc_info=error)
         details = get_error_details(error)
@@ -388,7 +397,7 @@ class _Transactor[T]:
                 await callback(tx, mutation.name, mutation.args[0] if mutation.args else None)
             else:
                 await hooks.write_mutation_result(_app_error_response(mutation_id, app_error))
-            return MutationResponse(id=mutation_id, result=_OK)
+            return MutationResponse.trusted(id=mutation_id, result=_OK)
 
         try:
             return await self._db.transaction(
@@ -418,7 +427,7 @@ async def _process_cleanup_results_mutation[T](
 ) -> None:
     """Deletes acknowledged results. An internal mutation, so it never touches `lastMutationID`."""
     try:
-        args = parse_wire(_cleanup_results_arg, mutation.args[0] if mutation.args else None)
+        args = parse_wire(_cleanup_results_arg(), mutation.args[0] if mutation.args else None)
     except ValidationError as error:
         logger.warning("Cleanup mutation has invalid args", exc_info=error)
         return

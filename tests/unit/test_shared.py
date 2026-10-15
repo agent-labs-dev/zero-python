@@ -129,3 +129,20 @@ def test_js_stringify() -> None:
     assert js_stringify({"b": 1, "10": 2, "2": 3, "01": 4, "": 5}) == '{"2":3,"10":2,"b":1,"01":4,"":5}'
     with pytest.raises(AssertionError, match="not a JSON value"):
         js_stringify(object())
+
+
+def test_subclasses_of_json_types_are_their_base() -> None:
+    from enum import IntEnum, StrEnum
+
+    from zero_server.shared.js import js_stringify
+    from zero_server.z2s.sql import _same_value_key
+
+    class Name(StrEnum):
+        A = "a"
+
+    class Level(IntEnum):
+        ONE = 1
+
+    assert js_stringify(Name.A) == '"a"'
+    assert _same_value_key(Name.A) == _same_value_key("a")
+    assert _same_value_key(Level.ONE) == _same_value_key(1.0)

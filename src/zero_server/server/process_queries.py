@@ -5,6 +5,7 @@ Ported from rocicorp/mono `packages/zero-server/src/queries/process-queries.ts` 
 """
 
 import asyncio
+import functools
 import inspect
 import logging
 from collections.abc import Awaitable, Callable, Mapping
@@ -40,7 +41,10 @@ type QueryRequestHandler = Callable[[str, JSONValue | None], Any]
 type QueryResponse = QuerySuccess | ServerTransformFailed
 type Transformed = TransformedQuery | AppErroredQuery | ParseErroredQuery
 
-_transform_request: TypeAdapter[Any] = TypeAdapter(TransformRequestMessage)
+
+@functools.cache
+def _transform_request() -> TypeAdapter[Any]:
+    return TypeAdapter(TransformRequestMessage)
 
 
 def server_ast(query: Query, schema: Schema) -> AST:
@@ -66,7 +70,7 @@ async def handle_query_request(
     """
     query_ids: list[str] = []
     try:
-        parsed = parse_wire(_transform_request, body)
+        parsed = parse_wire(_transform_request(), body)
         query_ids = [r.id for r in parsed[1]]
     except (ValueError, ValidationError) as error:
         logger.error("Failed to parse query request", exc_info=error)

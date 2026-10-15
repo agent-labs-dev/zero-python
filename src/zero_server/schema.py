@@ -24,7 +24,7 @@ type Cardinality = Literal["one", "many"]
 
 
 class _SchemaModel(BaseModel):
-    model_config = ConfigDict(frozen=True, populate_by_name=True, extra="ignore")
+    model_config = ConfigDict(frozen=True, populate_by_name=True, extra="ignore", defer_build=True)
 
 
 class ColumnSchema(_SchemaModel):

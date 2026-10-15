@@ -99,3 +99,15 @@ async def test_parsed_body_is_not_validated_again(monkeypatch: pytest.MonkeyPatc
         db_provider=NoDatabase(), handler=handler, query=QUERY, body=push_body, user_id="u"
     )
     assert response.to_json() == {"kind": "MutateResponse", "userID": "u", "mutations": []}
+
+
+async def test_user_id_that_is_not_a_string_fails_the_push() -> None:
+    body = b'{"clientGroupID": "g", "mutations": [], "pushVersion": 1, "timestamp": 1, "requestID": "r"}'
+    response = await handle_mutate_request(
+        db_provider=NoDatabase(),
+        handler=handler,
+        query=QUERY,
+        body=body,
+        user_id=5,  # ty: ignore[invalid-argument-type]
+    )
+    assert response.to_json()["kind"] == "PushFailed"

@@ -142,7 +142,8 @@ def define_queries(definitions: "QueryDefinitions | Registry", overrides: "Query
 
 def get_query(queries: Registry, name: str) -> CustomQuery | Registry | None:
     """The query at a dot- or bar-separated `name`, or, as upstream has it, the namespace there."""
-    return value_at_path(queries, name, _SEPARATOR)
+    # A plain dotted name, the usual kind, splits without the regex.
+    return value_at_path(queries, name, _SEPARATOR if "|" in name else ".")
 
 
 def must_get_query(queries: Registry, name: str) -> CustomQuery | Registry:

@@ -4,6 +4,7 @@ Ported from rocicorp/mono `packages/zero-protocol/src/mutate-server.ts` at zero/
 (905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
 """
 
+from collections.abc import Mapping
 from typing import Literal
 
 from pydantic import Field, StrictStr
@@ -32,3 +33,12 @@ class MutateParams(WireModel):
 
     schema_: StrictStr = Field(alias="schema")
     app_id: StrictStr = Field(alias="appID")
+
+    @classmethod
+    def from_query(cls, query: Mapping[str, str]) -> "MutateParams":
+        """Parse the query string. Raises `ValidationError` on a malformed one."""
+        schema, app_id = query.get("schema"), query.get("appID")
+        # Field names pydantic would also read are left to it.
+        if type(schema) is str and type(app_id) is str and "schema_" not in query and "app_id" not in query:
+            return cls.trusted(schema_=schema, app_id=app_id)
+        return cls.from_json(dict(query))

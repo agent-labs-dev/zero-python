@@ -132,6 +132,8 @@ class WireModel(BaseModel):
         validate_by_name=True,
         serialize_by_alias=True,
         extra="ignore",
+        # Validators are built on first use rather than at import, which keeps process startup short.
+        defer_build=True,
     )
 
     nullable: ClassVar[frozenset[str]] = frozenset()
@@ -169,6 +171,22 @@ class WireModel(BaseModel):
         return _dump_model(self)
 
     @classmethod
+    def trusted(cls, **fields: Any) -> Self:
+        """A model of `fields`, by field name, without validating them: for values already checked.
+
+        What `model_construct` builds, without its per-field bookkeeping. Absent fields take their
+        defaults, which must not be factories.
+        """
+        model = cls.__new__(cls)
+        defaults = _defaults(cls)
+        # `fields` is this call's own dict, so it can become the model's.
+        _set(model, "__dict__", {**defaults, **fields} if defaults else fields)
+        _set(model, "__pydantic_fields_set__", set(fields))
+        _set(model, "__pydantic_extra__", None)
+        _set(model, "__pydantic_private__", None)
+        return model
+
+    @classmethod
     def from_json(cls, value: object) -> Self:
         """Validate `value` off the wire, as `parse_wire` does."""
         return parse_wire(_adapter(cls), value)
@@ -185,6 +203,19 @@ class RefusesNullOffWire(WireModel):
                 if key in data and data[key] is None:
                     raise ValueError(f"{key} may be absent but not null")
         return data
+
+
+_set = object.__setattr__
+
+
+@functools.cache
+def _defaults(cls: type[WireModel]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for name, field in cls.model_fields.items():
+        if not field.is_required():
+            assert field.default_factory is None
+            out[name] = field.default
+    return out
 
 
 @functools.cache
@@ -211,7 +242,9 @@ def _dump_model(model: WireModel) -> dict[str, Any]:
     return model._ordered(out)
 
 
-_ANY: TypeAdapter[Any] = TypeAdapter(Any)
+@functools.cache
+def _any() -> TypeAdapter[Any]:  # python-only: for what only a Python caller hands a builder
+    return TypeAdapter(Any)
 
 
 def dump_json(value: Any) -> Any:
@@ -228,7 +261,7 @@ def dump_json(value: Any) -> Any:
     if isinstance(value, StrEnum):
         return value.value
     # Anything else came through the builder into an AST node: serialize it as Pydantic does.
-    return _jsonable(_ANY.dump_python(value))  # python-only: what only a Python caller hands a builder
+    return _jsonable(_any().dump_python(value))  # python-only: what only a Python caller hands a builder
 
 
 def _jsonable(value: Any) -> Any:  # python-only: a Python object a builder was handed, such as a dataclass

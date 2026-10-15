@@ -54,7 +54,7 @@ STARTUP: dict[str, dict[str, list[str]]] = {
         },
     },
 }
-CPU_GROUPS = ["query", "query_json", "parse", "parse_json", "mutate_cpu", "z2s"]
+CPU_GROUPS = ["query", "query_json", "build", "map", "parse", "parse_json", "mutate_cpu", "z2s"]
 POSTGRES_GROUPS = ["run", "mutate", "pushproc"]
 GROUPS = [*CPU_GROUPS, *POSTGRES_GROUPS, "startup"]
 """A case's group is its name's first part."""

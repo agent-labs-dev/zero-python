@@ -7,6 +7,8 @@ import {query} from '../query.ts';
 import {schema} from '../schema.ts';
 import {pushBodySchema, transformRequestMessageSchema, v} from '../zero.ts';
 import {compile} from '../node_modules/@rocicorp/zero/out/z2s/src/compiler.js';
+import {mapAST} from '../node_modules/@rocicorp/zero/out/zero-protocol/src/ast.js';
+import {clientToServer} from '../node_modules/@rocicorp/zero/out/zero-schema/src/name-mapper.js';
 import {formatPgInternalConvert} from '../node_modules/@rocicorp/zero/out/z2s/src/sql.js';
 import {asQueryInternals} from '../node_modules/@rocicorp/zero/out/zql/src/query/query-internals.js';
 import {getServerSchema} from '../node_modules/@rocicorp/zero/out/zero-server/src/schema.js';
@@ -80,6 +82,15 @@ export async function cpuCases(): Promise<Map<string, () => unknown>> {
   for (const [name, p] of Object.entries(compileCases)) {
     const qi = asQueryInternals(build(p));
     out.set(`z2s.${name}`, () => formatPgInternalConvert(compile(serverSchema, schema, qi.ast, qi.format)));
+  }
+  // The query endpoint's two stages on their own: building a program's query, and mapping its AST to
+  // server names.
+  const mapper = clientToServer(schema.tables);
+  for (const kind of ['simple', 'complex']) {
+    const program = W.programs[kind];
+    const ast = asQueryInternals(build(program)).ast;
+    out.set(`build.${kind}`, () => build(program));
+    out.set(`map.${kind}`, () => mapAST(ast, mapper));
   }
   return out;
 }
