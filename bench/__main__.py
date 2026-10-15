@@ -163,7 +163,9 @@ def startup(filt: re.Pattern[str], spawns: int, flip: bool) -> list[dict[str, An
     return out
 
 
-GROUPS = ["query", "query_json", "parse", "parse_json", "mutate_cpu", "z2s", "run", "mutate", "pushproc"]
+GROUPS = ["query", "query_json", "parse", "parse_json", "mutate_cpu", "z2s", "run", "mutate", "pushproc", "startup"]
+"""A case's group is its name's first part. CI runs disjoint sets of groups on separate runners."""
+NEEDS_POSTGRES = {"mutate_cpu", "z2s", "run", "mutate", "pushproc"}
 
 
 def run_rounds(config_path: Path, args: argparse.Namespace, filt: str, groups: list[str], rounds: int) -> Rounds:
@@ -173,55 +175,62 @@ def run_rounds(config_path: Path, args: argparse.Namespace, filt: str, groups: l
     neighbour on a shared runner lands on both, and the round's ratio cancels it.
     """
     build: Path = args.out.resolve()
-    ts = Worker(["node", str(HARNESS / "bench" / "cases.ts"), str(config_path)], HARNESS, build / "ts.log")
-    py = Worker([sys.executable, "-m", "bench.cases", str(config_path)], ROOT, build / "py.log")
     out: Rounds = {}
-    try:
-        for group in groups:
-            ts_cases = ts.call(op="setup", group=group)["cases"]
-            py_impls: dict[str, list[str]] = {}
-            for case, impl in py.call(op="setup", group=group)["cases"]:
-                py_impls.setdefault(case, []).append(impl)
-            for case, ts_impl in ts_cases:
-                sides = [(ts, ts_impl)] + [(py, impl) for impl in py_impls.get(case, [])]
-                for worker, impl in sides:
-                    worker.call(op="warm", case=case, impl=impl, ms=args.warm_ms)
-                for r in range(rounds):
-                    for worker, impl in sides if r % 2 == 0 else reversed(sides):
-                        us = worker.call(op="time", case=case, impl=impl, ms=args.burst_ms)["us"]
-                        out.setdefault((case, impl), []).append(us)
-            step(f"{group} done")
-    finally:
-        ts.close()
-        py.close()
-    compiled = re.compile(filt)
-    for r in range(rounds if any(compiled.search(c) for c in STARTUP) else 0):
-        for result in startup(compiled, args.spawns, flip=r % 2 == 1):
-            out.setdefault((result["case"], result["impl"]), []).append(result["median_us"])
-    step("startup done")
+    workers = [g for g in groups if g != "startup"]
+    if workers:
+        ts = Worker(["node", str(HARNESS / "bench" / "cases.ts"), str(config_path)], HARNESS, build / "ts.log")
+        py = Worker([sys.executable, "-m", "bench.cases", str(config_path)], ROOT, build / "py.log")
+        try:
+            for group in workers:
+                ts_cases = ts.call(op="setup", group=group)["cases"]
+                py_impls: dict[str, list[str]] = {}
+                for case, impl in py.call(op="setup", group=group)["cases"]:
+                    py_impls.setdefault(case, []).append(impl)
+                for case, ts_impl in ts_cases:
+                    sides = [(ts, ts_impl)] + [(py, impl) for impl in py_impls.get(case, [])]
+                    for worker, impl in sides:
+                        worker.call(op="warm", case=case, impl=impl, ms=args.warm_ms)
+                    for r in range(rounds):
+                        for worker, impl in sides if r % 2 == 0 else reversed(sides):
+                            us = worker.call(op="time", case=case, impl=impl, ms=args.burst_ms)["us"]
+                            out.setdefault((case, impl), []).append(us)
+                step(f"{group} done")
+        finally:
+            ts.close()
+            py.close()
+    if "startup" in groups:
+        # Process starts are slow and steady, so they get fewer rounds.
+        compiled = re.compile(filt)
+        for r in range(args.startup_rounds):
+            for result in startup(compiled, args.spawns, flip=r % 2 == 1):
+                out.setdefault((result["case"], result["impl"]), []).append(result["median_us"])
+        step("startup done")
     return out
 
 
 def measure(args: argparse.Namespace, filt: str, groups: list[str], rounds: int) -> Rounds:
-    """Seed a Postgres and time `rounds` rounds of `groups` on both sides."""
+    """Time `rounds` rounds of `groups` on both sides, against a freshly seeded Postgres if they need one."""
     build: Path = args.out.resolve()
     harness = Harness()
     (build / "schema.json").write_text(json.dumps(harness.call("schema")))
     (build / "wire_schema.json").write_text(json.dumps(harness.call("wireSchema")))
     harness.close()
+    config = {
+        "filter": filt,
+        "workloads": str(HERE / "workloads.json"),
+        "schema": str(build / "schema.json"),
+        "wireSchema": str(build / "wire_schema.json"),
+        "serverSchemaRows": str(build / "server_schema_rows.json"),
+        "queryURL": "",
+        "mutateURL": "",
+    }
+    config_path = build / "config.json"
+    if not NEEDS_POSTGRES & set(groups):
+        config_path.write_text(json.dumps(config))
+        return run_rounds(config_path, args, filt, groups, rounds)
     with postgres_server() as base:
         step("seeding Postgres")
-        mutate_url, query_url = asyncio.run(create_databases(base, build))
-        config = {
-            "filter": filt,
-            "workloads": str(HERE / "workloads.json"),
-            "schema": str(build / "schema.json"),
-            "wireSchema": str(build / "wire_schema.json"),
-            "serverSchemaRows": str(build / "server_schema_rows.json"),
-            "queryURL": query_url,
-            "mutateURL": mutate_url,
-        }
-        config_path = build / "config.json"
+        config["mutateURL"], config["queryURL"] = asyncio.run(create_databases(base, build))
         config_path.write_text(json.dumps(config))
         return run_rounds(config_path, args, filt, groups, rounds)
 
@@ -253,16 +262,17 @@ def load_shards(paths: list[Path]) -> list[list[Row]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m bench", description=__doc__)
+    parser.add_argument("--groups", default=",".join(GROUPS), help="comma-separated case groups to time")
+    parser.add_argument("--filter", default=".", help="regex over case names")
     parser.add_argument("--rounds", type=int, default=15, help="bursts per case per side")
     parser.add_argument("--burst-ms", type=float, default=100, help="sampling time of one burst")
     parser.add_argument("--warm-ms", type=float, default=300, help="warmup per case per side")
+    parser.add_argument("--startup-rounds", type=int, default=5, help="rounds of the startup group")
     parser.add_argument("--spawns", type=int, default=2, help="process starts per startup case per round")
-    parser.add_argument("--filter", default=".", help="regex over case names")
     parser.add_argument("--out", type=Path, default=HERE / "build")
     parser.add_argument("--no-gate", action="store_true", help="measure and report, never fail")
-    parser.add_argument("--gate", nargs="+", type=Path, metavar="SHARD", help="gate on these shards' results")
     parser.add_argument(
-        "--update-baseline", nargs="+", type=Path, metavar="SHARD", help="rebuild the baseline from these shards"
+        "--update-baseline", nargs="+", type=Path, metavar="SHARD", help="rebuild the baseline from these results"
     )
     parser.add_argument("--force", action="store_true", help="with --update-baseline, replace every ratio")
     args = parser.parse_args()
@@ -280,27 +290,21 @@ def main() -> None:
         step(f"wrote {BASELINE.relative_to(ROOT)}")
         return
 
-    if args.gate:
-        shards = load_shards(args.gate)
-    else:
-        rounds = measure(args, args.filter, GROUPS, args.rounds)
-        save_shard(build / "results.json", rounds)
-        shards = [pair(rounds)]
-
-    cases = combine(shards)
+    groups = [g for g in GROUPS if g in args.groups.split(",")]
+    rounds = measure(args, args.filter, groups, args.rounds)
+    save_shard(build / "results.json", rounds)
+    cases = combine([pair(rounds)])
     verdicts = gate(cases, baseline)
     failed = {v.case.key for v in verdicts if v.failed}
     if failed and not args.no_gate:
-        # Time the failing cases again, alone, on this machine and with twice the rounds, and count the
-        # result as one more shard: two shards that landed on a loaded host do not fail the build alone.
+        # Time the failing cases again, alone and with twice the rounds. A case fails only if it fails
+        # both times, so one stretch of load on a shared runner does not fail the build.
         names = sorted({key.split(" ")[0] for key in failed})
         step(f"retrying {len(names)} case(s) over the gate: {', '.join(names)}")
         filt = "^(" + "|".join(re.escape(n) for n in names) + ")$"
-        groups = [g for g in GROUPS if g in {n.split(".")[0] for n in names}]
-        rounds = measure(args, filt, groups, args.rounds * 2)
-        save_shard(build / "retry.json", rounds)
-        retried = {row.key: row for row in pair(rounds)}
-        verdicts = gate([Combined([*c.shards, retried[c.key]]) if c.key in failed else c for c in cases], baseline)
+        retry_groups = [g for g in groups if g in {n.split(".")[0] for n in names}]
+        retried = {row.key: row for row in pair(measure(args, filt, retry_groups, args.rounds * 2))}
+        verdicts = gate([Combined([retried[c.key]]) if c.key in failed else c for c in cases], baseline)
 
     table = markdown(verdicts)
     (build / "report.md").write_text(table)

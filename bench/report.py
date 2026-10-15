@@ -1,7 +1,7 @@
 """Ratios from rounds, the gate against `baseline.json`, the baseline update, and the markdown table.
 
-A shard is one full run on one machine: several rounds, each timing every case on both sides. CI runs
-shards on separate runners and gates on their combination.
+A shard is one measurement on one machine: several rounds of some cases, each timing both sides. CI
+times each group of cases on its own runner; a baseline update combines shards from several CI runs.
 """
 
 import statistics
@@ -95,18 +95,20 @@ def gate(cases: list[Combined], baseline: dict[str, Any]) -> list[Verdict]:
 
 
 MIN_SHARDS = 3
+"""Measurements of a case, each from a separate CI run, that a baseline update needs."""
 
 
 def update(baseline: dict[str, Any], shards: list[list[Row]], force: bool = False) -> dict[str, Any]:
-    """The baseline from at least `MIN_SHARDS` shards, taking each case's worst shard ratio.
+    """The baseline from at least `MIN_SHARDS` measurements of every case, taking each case's worst.
 
     A case's ratio only goes down, and only when every shard beat it: one lucky run cannot lower it. A
     case the baseline lacks is added. `force` replaces every ratio, for a deliberate regression.
     """
-    if len(shards) < MIN_SHARDS:
-        raise ValueError(f"a baseline needs at least {MIN_SHARDS} shards, got {len(shards)}")
+    cases = combine(shards)
+    if short := sorted(c.key for c in cases if len(c.shards) < MIN_SHARDS):
+        raise ValueError(f"a baseline needs at least {MIN_SHARDS} measurements of each case: {', '.join(short)}")
     ratios = dict(baseline["ratios"])
-    for case in combine(shards):
+    for case in cases:
         worst = round(max(r.ratio for r in case.shards), 4)
         old = ratios.get(case.key)
         if force or old is None or worst < old:

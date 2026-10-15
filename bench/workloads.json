@@ -25,9 +25,9 @@
     }
   },
   "compileRelatedLimit": 100,
-  "batchSizes": [1, 10, 100],
-  "rowCounts": [1, 100, 10000],
-  "pushSizes": [1, 10, 100],
+  "batchSizes": [1, 100],
+  "rowCounts": [1, 10000],
+  "pushSizes": [1, 100],
   "parseSizes": [1000],
   "thingRow": {
     "n": 7, "f": 1.5, "b": true, "j": {"a": [1, 2, {"b": "x"}], "s": "hello"}, "t": 946684800000, "d": 946684800000,

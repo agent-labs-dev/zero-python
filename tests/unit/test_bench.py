@@ -48,5 +48,5 @@ def test_update_lowers_a_ratio_only_when_every_shard_beat_it() -> None:
 
 
 def test_update_needs_three_shards() -> None:
-    with pytest.raises(ValueError, match="at least 3"):
+    with pytest.raises(ValueError, match="at least 3 measurements of each case: q python, run psycopg"):
         update(BASELINE, [shard(1.0, 1.0)])
