@@ -7,6 +7,7 @@ Every value is bound as text and cast in SQL, so the driver never coerces it: a 
 text, a timestamp epoch milliseconds, a JSON value its `JSON.stringify` output.
 """
 
+import functools
 from collections.abc import Sequence
 from typing import Any, Literal
 
@@ -19,6 +20,7 @@ type LiteralType = Literal["boolean", "number", "string", "object"]
 _LITERAL_PG_TYPE: dict[str, str] = {"boolean": "boolean", "number": "double precision", "string": "text"}
 
 
+@functools.lru_cache(maxsize=4096)
 def ident(*names: str) -> str:
     """Quote an identifier as upstream's `sql.ident` does. A single dotted name is split into its parts."""
     parts = names[0].split(".") if len(names) == 1 else list(names)
@@ -36,6 +38,22 @@ def literal_type(value: object) -> LiteralType:
             return "string"
         case _:
             return "object"
+
+
+_PLACEHOLDER = "\x00"  # never in a type name
+
+
+@functools.cache
+def _cast_around(column: ServerColumnSchema, comparison: bool) -> tuple[str, str]:
+    """The SQL before and after a value's placeholder that casts it to `column`'s type."""
+    before, after = _cast(_PLACEHOLDER, column, comparison).split(_PLACEHOLDER)
+    return before, after
+
+
+@functools.cache
+def _binds_text(column: ServerColumnSchema) -> bool:
+    """Whether a scalar for `column` is bound as the text postgres.js sends, rather than as JSON."""
+    return column.is_enum or is_string(column.type)
 
 
 def _cast(placeholder: str, column: ServerColumnSchema, comparison: bool) -> str:
@@ -120,12 +138,12 @@ class Params:
 
     def _bind(self, value: object, type_key: str, bound: str | None) -> int:
         key = (_same_value_key(value), type_key)
-        if key in self._seen:
-            return self._seen[key]
-        self._held.append(value)
-        self.values.append(bound)
-        self._seen[key] = len(self.values)
-        return len(self.values)
+        index = self._seen.get(key)
+        if index is None:
+            self._held.append(value)
+            self.values.append(bound)
+            index = self._seen[key] = len(self.values)
+        return index
 
     def column(self, column: ServerColumnSchema, value: Any, *, plural: bool = False, comparison: bool) -> str:
         """A value compared with or written to `column`, cast to the column's type."""
@@ -134,15 +152,17 @@ class Params:
             bound = None
         elif plural:
             bound = js_stringify(value)
-        elif column.is_enum or is_string(column.type):
+        elif _binds_text(column):
             bound = value if isinstance(value, str) else _driver_text(value)
         else:
             bound = js_stringify(value)
         index = self._bind(value, column.type, bound)
         if value is None and plural:
             return f"${index}"
-        common = _cast("value" if plural else f"${index}", column, comparison)
-        return _plural(index, common) if plural else common
+        before, after = _cast_around(column, comparison)
+        if plural:
+            return _plural(index, f"{before}value{after}")
+        return f"{before}${index}{after}"
 
     def fail(self, error: Exception) -> str:
         """Record an error upstream raises while formatting, and stand in for the text it never wrote."""

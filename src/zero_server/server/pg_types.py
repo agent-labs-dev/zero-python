@@ -4,6 +4,7 @@ Ported from rocicorp/mono `packages/zero-cache/src/types/pg-data-type.ts` at zer
 (905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
 """
 
+import functools
 from typing import Final
 
 from zero_server.schema import ValueType
@@ -30,6 +31,7 @@ DATE_TIME: Final = frozenset(
 )  # fmt: skip
 
 
+@functools.cache
 def _lookup(pg_type: str) -> str:
     """Lowercased, with any arguments (the `(32)` of `char(32)`) removed."""
     lowered = pg_type.lower()
