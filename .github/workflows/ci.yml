@@ -98,8 +98,10 @@ jobs:
   # on its own runner; bench-gate fails when a case's median Python/TS ratio across the shards rises
   # past bench/baseline.json by more than its tolerance.
   bench:
+    # After check, so the shards do not share a host with this workflow's own test jobs.
+    needs: check
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 30
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

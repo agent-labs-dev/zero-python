@@ -291,8 +291,8 @@ def main() -> None:
     verdicts = gate(cases, baseline)
     failed = {v.case.key for v in verdicts if v.failed}
     if failed and not args.no_gate:
-        # One retry of the failing cases alone, on this machine and with twice the rounds, so a burst
-        # of load on a shared runner does not fail the build.
+        # Time the failing cases again, alone, on this machine and with twice the rounds, and count the
+        # result as one more shard: two shards that landed on a loaded host do not fail the build alone.
         names = sorted({key.split(" ")[0] for key in failed})
         step(f"retrying {len(names)} case(s) over the gate: {', '.join(names)}")
         filt = "^(" + "|".join(re.escape(n) for n in names) + ")$"
@@ -300,7 +300,7 @@ def main() -> None:
         rounds = measure(args, filt, groups, args.rounds * 2)
         save_shard(build / "retry.json", rounds)
         retried = {row.key: row for row in pair(rounds)}
-        verdicts = gate([Combined([retried[c.key]]) if c.key in failed else c for c in cases], baseline)
+        verdicts = gate([Combined([*c.shards, retried[c.key]]) if c.key in failed else c for c in cases], baseline)
 
     table = markdown(verdicts)
     (build / "report.md").write_text(table)
