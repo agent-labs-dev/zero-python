@@ -74,7 +74,7 @@ app = Starlette(
 )
 ```
 
-Point `ZERO_QUERY_URL` and `ZERO_MUTATE_URL` at `/query` and `/mutate`. With FastAPI, `app.router.routes.extend(zero_routes(...))`. With another framework, call `handle_query_request` and `handle_mutate_request` yourself; `zero_server/integrations/starlette.py` is short enough to copy.
+Point `ZERO_QUERY_URL` and `ZERO_MUTATE_URL` at `/query` and `/mutate`. With FastAPI, `app.router.routes.extend(zero_routes(...))`. With another framework, call `handle_query_request` and `handle_mutate_request` yourself; `zero_server/integrations/starlette.py` is short enough to copy. The types to annotate those handlers (`QueryRequestHandler`, `TransactFn`, `MutateResponse`, `MutationResponse`, `ServerPushFailed` and the rest) import from `zero_server`, and `server_ast(query, schema)` returns the AST zero-cache receives for a query.
 
 - **Databases.** `SQLAlchemyDatabase` (SQLAlchemy's asyncio engine on asyncpg or psycopg; the `sqlalchemy` extra installs neither driver), `AsyncpgDatabase` (an asyncpg pool) and `PsycopgDatabase` (a psycopg 3 async pool), under `zero_server.server.adapters`. Another driver plugs into `ZQLDatabase` as a `DBConnection` whose `query` takes `$1` placeholders.
 - **Validation.** `@define_query(Model)` and `@define_mutator(Model)` parse args with a Pydantic model or `TypeAdapter` first; a failure reaches the client as upstream's validation error.

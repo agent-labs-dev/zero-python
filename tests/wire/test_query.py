@@ -1,6 +1,7 @@
 """The wire tier for `/query`: the same named queries through upstream's handler and Python's."""
 
 import asyncio
+import re
 from typing import Any
 
 import pytest
@@ -9,7 +10,8 @@ from hypothesis import strategies as st
 
 from tests.harness import Harness
 from tests.strategies import as_js
-from tests.wire.programs import make_handler, programs
+from tests.wire.programs import apply, make_handler, programs
+from zero_server import Query, create_builder, server_ast
 from zero_server.schema import Schema, load_schema
 from zero_server.server.process_queries import handle_query_request
 
@@ -89,3 +91,24 @@ def test_pinned_queries_match_upstream(harness: Harness, schema: Schema, program
     expected = harness.call("query", body=body, userID="u")
     actual = asyncio.run(handle_query_request(handler=make_handler(schema), schema=schema, body=body, user_id="u"))
     assert _comparable(actual.to_json()) == _comparable(expected)
+
+
+@given(st.data())
+def test_server_ast_is_what_upstream_sends(harness: Harness, schema: Schema, data: st.DataObject) -> None:
+    program = data.draw(programs(schema))
+    body = ["transform", [{"id": "1", "name": "prog", "args": [program]}]]
+    expected: Any = harness.call("query", body=body, userID=None)
+
+    def build() -> Query:
+        return apply(create_builder(schema).table(program["table"]), program["ops"])
+
+    if expected.get("kind") == "TransformFailed":
+        # Upstream fails the whole batch when the AST does not map.
+        with pytest.raises(Exception, match="unknown"):
+            server_ast(build(), schema)
+    elif "ast" in expected["queries"][0]:
+        assert as_js(server_ast(build(), schema).to_json()) == as_js(expected["queries"][0]["ast"])
+    else:
+        # A builder refusal, reported for that query alone.
+        with pytest.raises(Exception, match=re.escape(expected["queries"][0]["message"])):
+            build()

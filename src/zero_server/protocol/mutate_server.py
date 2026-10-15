@@ -23,6 +23,7 @@ class MutateSuccess(WireModel):
     mutations: list[MutationResponse]
 
 
+# The wire body. Handlers see `zero_server.MutateResponse`, what `handle_mutate_request` returns.
 type MutateResponse = MutateSuccess | PushFailedBody
 
 

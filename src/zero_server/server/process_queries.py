@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 
-from zero_server.protocol.ast import map_ast
+from zero_server.protocol.ast import AST, map_ast
 from zero_server.protocol.custom_queries import (
     AppErroredQuery,
     ParseErroredQuery,
@@ -38,6 +38,15 @@ type QueryRequestHandler = Callable[[str, JSONValue | None], Query | Awaitable[Q
 type QueryResponse = QuerySuccess | ServerTransformFailed
 
 _transform_request: TypeAdapter[Any] = TypeAdapter(TransformRequestMessage)
+
+
+def server_ast(query: Query, schema: Schema) -> AST:
+    """`query`'s AST in server names: what the query endpoint sends zero-cache.
+
+    Python only; upstream inlines `mapAST(ast, clientToServer(schema.tables))` in its query handler.
+    Raises on a table or column `schema` does not have.
+    """
+    return map_ast(query.ast, client_to_server(schema.tables))
 
 
 async def handle_query_request(
@@ -67,7 +76,6 @@ async def handle_query_request(
         )
 
     try:
-        mapper = client_to_server(schema.tables)
         responses: list[Any] = []
         for request in parsed[1]:
             try:
@@ -93,7 +101,7 @@ async def handle_query_request(
             )
             assert isinstance(result, Query)
             try:
-                ast = map_ast(result.ast, mapper)
+                ast = server_ast(result, schema)
             except Exception as error:
                 logger.error("Failed to map AST", exc_info=error)
                 raise
