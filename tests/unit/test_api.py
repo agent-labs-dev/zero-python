@@ -238,3 +238,18 @@ def test_server_ast_maps_to_server_names() -> None:
     ast: Any = server_ast(create_builder(schema).issue.where("ownerID", "u"), schema).to_json()
     assert ast["table"] == "issues"
     assert ast["where"]["left"]["name"] == "owner_id"
+
+
+def test_zql_result_names_the_first_unsafe_integer() -> None:
+    from zero_server.server.pg_query_executor import extract_zql_result
+
+    text = '[{"n": [1], "m": [2, -9007199254740993]}, {"n": 9007199254740993}]'
+    with pytest.raises(Exception, match=r"^Value exceeds safe Number range\. \[0\]\['m'\]\[1\] = -9007199254740993$"):
+        extract_zql_result([{"zql_result": text}])
+
+
+def test_zql_result_ignores_an_unsafe_integer_a_duplicate_key_replaced() -> None:
+    from zero_server.server.pg_query_executor import extract_zql_result
+
+    text = '{"n": 9007199254740993, "n": 9007199254740991}'
+    assert extract_zql_result([{"zql_result": text}]) == {"n": 9007199254740991}
