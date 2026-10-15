@@ -222,6 +222,32 @@
  },
  {
   "schema": "public",
+  "table": "things",
+  "column": "stamps",
+  "dataType": "ARRAY",
+  "length": null,
+  "precision": null,
+  "scale": null,
+  "typtype": "b",
+  "typename": "_timestamptz",
+  "elemTyptype": "b",
+  "elemTypname": "timestamptz"
+ },
+ {
+  "schema": "public",
+  "table": "things",
+  "column": "clocks",
+  "dataType": "ARRAY",
+  "length": null,
+  "precision": null,
+  "scale": null,
+  "typtype": "b",
+  "typename": "_timetz",
+  "elemTyptype": "b",
+  "elemTypname": "timetz"
+ },
+ {
+  "schema": "public",
   "table": "pair",
   "column": "a",
   "dataType": "text",

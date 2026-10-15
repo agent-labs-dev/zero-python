@@ -24,7 +24,8 @@ SUBQ_PREFIX = "zsubq_"
 
 type System = Literal["permissions", "client", "test"]
 type Direction = Literal["asc", "desc"]
-type OrderPart = tuple[StrictStr, Direction]
+# Upstream's builder takes any direction, and only its wire schema checks it.
+type OrderPart = tuple[StrictStr, WireChecked[Direction]]
 type Ordering = tuple[OrderPart, ...]
 
 type EqualityOp = Literal["=", "!=", "IS", "IS NOT"]
@@ -340,9 +341,7 @@ def _cmp_condition(a: Condition, b: Condition) -> int:
     if isinstance(b, CorrelatedSubqueryCondition):
         # Upstream returns -1 here too, so a subquery and a compound condition each sort first.
         return -1
-    by_type = _cmp_utf8(a.type, b.type)
-    if by_type:
-        return by_type
+    # Upstream compares the two types first, but flattening leaves every compound sibling of the other type.
     for left, right in zip(a.conditions, b.conditions, strict=False):
         by_condition = _cmp_condition(left, right)
         if by_condition:

@@ -148,5 +148,5 @@ class Mutate:
     def __getattr__(self, table: str) -> TableCRUD[Any, Any, Any]:
         try:
             return self[table]
-        except KeyError:
+        except KeyError:  # python-only: an unknown table is an AttributeError, where upstream has `undefined`
             raise AttributeError(table) from None

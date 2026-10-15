@@ -18,7 +18,6 @@ from zero_server.protocol.ast import (
     Correlation,
     LiteralReference,
     SimpleCondition,
-    map_condition,
     normalize_ast,
 )
 from zero_server.protocol.mutate_server import MutateSuccess
@@ -43,7 +42,6 @@ def test_wrapping_keeps_message_details_and_cause() -> None:
     cause = TypeError("bad")
     wrapped = wrap_with_application_error(cause)
     assert (wrapped.message, wrapped.details, wrapped.__cause__) == ("bad", {"name": "TypeError"}, cause)
-    assert wrap_with_application_error("text").__cause__ is None
 
 
 def test_user_id_is_reported_only_when_set() -> None:
@@ -114,10 +112,6 @@ class Upper:
         return column.upper()
 
 
-def test_map_condition() -> None:
-    assert map_condition(_eq("a", 1), "t", Upper()) == _eq("A", 1)
-
-
 def test_normalize_refuses_unresolved_parameters() -> None:
     param = {"type": "simple", "op": "=", "left": {"type": "static", "anchor": "authData", "field": "sub"}}
     ast = {
@@ -153,7 +147,7 @@ def test_normalize_orders_and_before_or() -> None:
 
 
 def test_condition_comparator_edges() -> None:
-    from zero_server.protocol.ast import CorrelatedSubqueryCondition, Disjunction, _cmp_condition
+    from zero_server.protocol.ast import CorrelatedSubqueryCondition, _cmp_condition
 
     related = CorrelatedSubquery(
         correlation=Correlation(parent_field=("id",), child_field=("id",)), subquery=AST(table="u", alias="s")
@@ -162,8 +156,6 @@ def test_condition_comparator_edges() -> None:
     flipped = CorrelatedSubqueryCondition(related=related, op="EXISTS", flip=True, scalar=False)
     assert _cmp_condition(plain, flipped) < 0
     assert _cmp_condition(flipped, flipped.model_copy(update={"scalar": True})) < 0
-    pair = (_eq("a", 1), _eq("b", 1))
-    assert _cmp_condition(Conjunction(conditions=pair), Disjunction(conditions=pair)) < 0
 
 
 class Mood(StrEnum):

@@ -38,7 +38,10 @@ port. Three tiers of differential tests, each comparing Python against the real 
 3. **End to end.** Docker compose: Postgres, the `rocicorp/zero:<pin>` image, a TS reference app server and
    the Python one, one scripted client. Diff the rows the client ends up with.
 
-Python's own tests hold 100% branch coverage as a hygiene floor, on top of the differential tiers.
+Python's own tests hold 100% branch coverage as a hygiene floor, on top of the differential tiers. The
+compatibility proof (`tests/compat.py`, described in [`compat.md`](compat.md)) goes further: the differential
+tests alone must reach every line and branch of the cited upstream modules inside the npm package, and of
+`zero_server`.
 
 ## Phases
 

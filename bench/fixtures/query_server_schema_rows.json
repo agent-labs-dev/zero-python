@@ -390,6 +390,19 @@
   "elemTypname": null
  },
  {
+  "schema": "public",
+  "table": "counter",
+  "column": "history",
+  "dataType": "ARRAY",
+  "length": null,
+  "precision": null,
+  "scale": null,
+  "typtype": "b",
+  "typename": "_int8",
+  "elemTyptype": "b",
+  "elemTypname": "int8"
+ },
+ {
   "schema": "extra",
   "table": "gadgets",
   "column": "id",

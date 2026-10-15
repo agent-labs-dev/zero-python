@@ -8,6 +8,7 @@ plain callable that returns the parsed value and raises `ValueError` on bad inpu
 Standard Schema validator; the error it raises has the same shape.
 """
 
+import inspect
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from typing import Any, overload
 from pydantic import ValidationError
 
 from zero_server.query.builder import Query, as_query_internals
+from zero_server.shared.error import exception_message
 from zero_server.shared.json import JSONValue
 from zero_server.shared.registry import Registry, build, merge, value_at_path
 
@@ -28,10 +30,12 @@ _SEPARATOR = re.compile(r"[.|]")
 class QueryParseError(Exception):
     """The query endpoint reports this as a `parse` error rather than an `app` error."""
 
+    error_name = "QueryParseError"
+
     def __init__(self, cause: BaseException | None = None) -> None:
         message = (
-            f"Failed to parse arguments for query: {cause}"
-            if isinstance(cause, Exception) and str(cause)
+            f"Failed to parse arguments for query: {exception_message(cause)}"
+            if isinstance(cause, Exception)
             else "Failed to parse arguments for query"
         )
         super().__init__(message)
@@ -46,7 +50,7 @@ class InputValidationError(Exception):
 
 
 def _issues(error: Exception) -> list[dict[str, Any]]:
-    if isinstance(error, ValidationError):
+    if isinstance(error, ValidationError):  # python-only: Pydantic stands in for a Standard Schema validator
         return [{"message": e["msg"], "path": list(e["loc"])} for e in error.errors()]
     return [{"message": str(error)}]
 
@@ -55,15 +59,20 @@ def validate_input(name: str, value: Any, validator: Any, kind: str) -> Any:
     if validator is None:
         return value
     try:
-        if hasattr(validator, "validate_python"):
-            return validator.validate_python(value)
-        if hasattr(validator, "model_validate"):
-            return validator.model_validate(value)
-        return validator(value)
+        if hasattr(validator, "validate_python"):  # python-only: a Pydantic `TypeAdapter`
+            result = validator.validate_python(value)
+        elif hasattr(validator, "model_validate"):  # python-only: a Pydantic model
+            result = validator.model_validate(value)
+        else:
+            result = validator(value)
     except (ValidationError, ValueError, TypeError) as error:
         issues = _issues(error)
         joined = ", ".join(issue["message"] for issue in issues)
         raise InputValidationError(f"Validation failed for {kind} {name}: {joined}", issues) from error
+    if inspect.iscoroutine(result):
+        result.close()
+        raise Exception(f"Async validators are not supported. {kind.title()} name {name}")
+    return result
 
 
 @dataclass(frozen=True)
@@ -93,7 +102,7 @@ def define_query(fn_or_validator: Any, fn: QueryFn | None = None) -> Any:
     """
     if fn is not None:
         return QueryDefinition(fn=fn, validator=fn_or_validator)
-    if is_schema_validator(fn_or_validator):
+    if is_schema_validator(fn_or_validator):  # python-only: the decorator form, `@define_query(Model)`
         return lambda decorated: QueryDefinition(fn=decorated, validator=fn_or_validator)
     return QueryDefinition(fn=fn_or_validator)
 
@@ -131,12 +140,12 @@ def define_queries(definitions: "QueryDefinitions | Registry", overrides: "Query
     return merge(base, build(overrides, is_definition, CustomQuery))
 
 
-def get_query(queries: Registry, name: str) -> CustomQuery | None:
-    found = value_at_path(queries, name, _SEPARATOR)
-    return found if isinstance(found, CustomQuery) else None
+def get_query(queries: Registry, name: str) -> CustomQuery | Registry | None:
+    """The query at a dot- or bar-separated `name`, or, as upstream has it, the namespace there."""
+    return value_at_path(queries, name, _SEPARATOR)
 
 
-def must_get_query(queries: Registry, name: str) -> CustomQuery:
+def must_get_query(queries: Registry, name: str) -> CustomQuery | Registry:
     query = get_query(queries, name)
     if query is None:
         raise Exception(f"Query not found: {name}")

@@ -23,12 +23,14 @@ uv run ruff check
 uv run ruff format --check
 uv run ty check
 uv run pytest
+uv run python -m tests.compat
 uv run --group e2e python e2e/run.py
 ```
 
 ## Rules
 
 - A behaviour change needs a differential test that runs the same input through the npm package and through Python. A test that asserts what the TypeScript source appears to do proves nothing.
+- `tests.compat` fails when a line of a cited upstream module, or of `zero_server`, ran in no differential test. Add a test that reaches it. If none can, add the region to `tests/compat_scope.py`, or mark the Python line `# python-only: <reason>`, saying why.
 - Code ported from [rocicorp/mono](https://github.com/rocicorp/mono) keeps its Apache-2.0 notice, and its docstring names the upstream path and commit.
 - Commits must be signed. `main` rejects unsigned ones.
 - PRs are squash-merged, so the PR title becomes the commit message. Use a [Conventional Commits](https://www.conventionalcommits.org/) title, like `feat: ...` or `fix: ...`.

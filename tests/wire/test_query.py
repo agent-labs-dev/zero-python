@@ -10,6 +10,7 @@ from hypothesis import strategies as st
 
 from tests.harness import Harness
 from tests.strategies import as_js, json_values
+from tests.wire.errors import SHAPES
 from tests.wire.programs import RETURNS, apply, make_handler, programs
 from zero_server import Query, create_builder, server_ast
 from zero_server.schema import Schema, load_schema
@@ -23,15 +24,14 @@ def schema(harness: Harness) -> Schema:
 
 
 def _comparable(response: dict[str, Any]) -> str:
-    """A response as JSON text, key order included, with a parse failure's message cut to its prefix."""
-    if response.get("reason") == "parse":
-        response = {**response, "message": response["message"].split(":", 1)[0]}
+    """A response as JSON text, key order included."""
     return js_stringify(response)
 
 
 NAMES = [
     "prog", "prog", "prog", "nested.prog", "nested|prog", "validated", "parseError", "appError", "missing",
     "returns", "raw", "appDetails",
+    "returnsNothing", "returnsString", "returnsNumber", "returnsObject", "wrapped",
 ]  # fmt: skip
 RETURNED = st.sampled_from(["undefined", *RETURNS]).map(lambda r: [r])
 
@@ -101,8 +101,28 @@ def _q(table: str, *ops: list[Any]) -> dict[str, Any]:
 
 eq = ["cmp", "title", "x"]
 exists = ["exists", "comments", None, {"flip": True, "scalar": False}]
+# A condition the app builds itself keeps the app's key order upstream, so this one has the order the
+# Python model writes.
+_raw_eq = {
+    "type": "simple",
+    "left": {"type": "column", "name": "title"},
+    "right": {"type": "literal", "value": "x"},
+    "op": "=",
+}
+_deep: Any = []
+for _ in range(299):
+    _deep = [_deep]
 # Builder paths a random draw can miss: condition simplification, negation, and each refusal.
 PINNED = [
+    _q("issue", ["orderBy", "title", "sideways"], ["orderBy", "id", "\ufffdasc"]),
+    # A literal nested deeper than Pydantic's serializer goes.
+    _q("issue", ["where", "meta", _deep]),
+    _q("issue", ["whereRaw", {"type": "and", "conditions": [_raw_eq]}]),
+    _q("issue", ["whereRaw", {"type": "and", "conditions": [_raw_eq, {"type": "or", "conditions": []}]}]),
+    _q("issue", ["whereRaw", {"type": "or", "conditions": [_raw_eq, {"type": "and", "conditions": []}]}]),
+    _q(
+        "issue", ["whereRaw", {"type": "or", "conditions": [_raw_eq, {"type": "or", "conditions": [_raw_eq, _raw_eq]}]}]
+    ),
     _q("issue", ["whereFn", ["and", [eq]]], ["whereFn", ["or", [eq]]]),
     _q("issue", ["whereFn", ["or", [eq, ["and", []]]]]),
     _q("issue", ["whereFn", ["and", [eq, ["or", []]]]]),
@@ -150,6 +170,19 @@ PINNED = [
 ]
 
 
+def test_each_thrown_shape_matches_upstream(harness: Harness, schema: Schema) -> None:
+    names = [
+        *(f"throw.{shape}" for shape in SHAPES),
+        *("parseError", "parseErrorEmptyCause", "parseErrorNoCause"),
+        # Called with no arguments at all.
+        "constant",
+    ]
+    body = ["transform", [{"id": str(n), "name": name, "args": []} for n, name in enumerate(names)]]
+    expected = harness.call("query", body=body, userID="u")
+    actual = asyncio.run(handle_query_request(handler=make_handler(schema), schema=schema, body=body, user_id="u"))
+    assert _comparable(actual.to_json()) == _comparable(expected)
+
+
 @pytest.mark.parametrize("program", PINNED)
 def test_pinned_queries_match_upstream(harness: Harness, schema: Schema, program: dict[str, Any]) -> None:
     body = ["transform", [{"id": "1", "name": "prog", "args": [program]}]]
@@ -177,3 +210,24 @@ def test_server_ast_is_what_upstream_sends(harness: Harness, schema: Schema, dat
         # A builder refusal, reported for that query alone.
         with pytest.raises(Exception, match=re.escape(expected["queries"][0]["message"])):
             build()
+
+
+def test_raw_handlers_match_upstream(harness: Harness, schema: Schema) -> None:
+    """Handlers that return what they like, rather than a defined query's result."""
+    zql = create_builder(schema)
+    program = {"table": "issue", "ops": [["where", "title", "x"]]}
+    raw: dict[str, Any] = {
+        "query": lambda args: apply(zql.table(args["table"]), args["ops"]),
+        "wrapped": lambda args: {"query": apply(zql.table(args["table"]), args["ops"])},
+        "nothing": lambda args: None,
+        "string": lambda args: "abc",
+        "number": lambda args: 5,
+        "object": lambda args: {},
+    }
+    for name in raw:
+        body = ["transform", [{"id": "1", "name": name, "args": [program]}]]
+        expected = harness.call("rawQuery", body=body)
+        actual = asyncio.run(
+            handle_query_request(handler=lambda n, args: raw[n](args), schema=schema, body=body, user_id="u")
+        )
+        assert _comparable(actual.to_json()) == _comparable(expected), name

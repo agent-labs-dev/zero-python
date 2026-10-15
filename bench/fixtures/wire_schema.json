@@ -96,6 +96,16 @@
      "type": "string",
      "optional": true,
      "customType": null
+    },
+    "stamps": {
+     "type": "json",
+     "optional": true,
+     "customType": null
+    },
+    "clocks": {
+     "type": "json",
+     "optional": true,
+     "customType": null
     }
    },
    "primaryKey": [

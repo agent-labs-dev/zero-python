@@ -5,9 +5,14 @@ conversions) at zero/v1.10.0 (905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-
 
 Every value is bound as text and cast in SQL, so the driver never coerces it: a number is its JSON
 text, a timestamp epoch milliseconds, a JSON value its `JSON.stringify` output.
+
+An identifier is checked as `escapePostgresIdentifier` checks it, ported from `@databases/escape-identifier`
+1.0.3 (`lib/index.js`) and `@databases/validate-unicode` 1.0.0 (`lib/index.js`), the versions
+`@rocicorp/zero` 1.10.0 installs. MIT, Copyright (c) Forbes Lindesay.
 """
 
 import functools
+import re
 from collections.abc import Sequence
 from typing import Any, Literal
 
@@ -24,7 +29,27 @@ _LITERAL_PG_TYPE: dict[str, str] = {"boolean": "boolean", "number": "double prec
 def ident(*names: str) -> str:
     """Quote an identifier as upstream's `sql.ident` does. A single dotted name is split into its parts."""
     parts = names[0].split(".") if len(names) == 1 else list(names)
-    return ".".join('"' + part.replace('"', '""') + '"' for part in parts)
+    return ".".join(_escape_identifier(part) for part in parts)
+
+
+_LONE_SURROGATE = re.compile("[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]")
+_NON_ASCII = re.compile("[^\u0001-\u007f]")
+
+
+def _escape_identifier(name: str) -> str:
+    """`escapePostgresIdentifier`, which refuses what Postgres would take quoted, in its own words."""
+    if _LONE_SURROGATE.search(name):
+        raise Exception(f"This string contains unmatched surrogate pairs: {js_stringify(name)}")
+    if not name:
+        raise Exception("Postgres identifiers must be at least 1 character long.")
+    if len(name.encode("utf-16-le", "surrogatepass")) // 2 > 60:
+        raise Exception(f"Postgres identifiers must not be longer than 60 characters. {name}")
+    if _NON_ASCII.search(name):
+        raise Exception(
+            "Postgres identifiers must only contain ASCII characters (to use unicode, pass {extended: true} "
+            "when escaping the identifier)"
+        )
+    return '"' + name.replace('"', '""') + '"'
 
 
 def literal_type(value: object) -> LiteralType:

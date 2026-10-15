@@ -34,7 +34,8 @@ class ServerTransaction[W]:
         self,
         db_transaction: DBTransaction[W],
         client_id: str,
-        mutation_id: int,
+        # As the client sent it: a JavaScript number, so not necessarily an integer.
+        mutation_id: int | float,
         schema: "Schema | None" = None,
         server_schema: "ServerSchema | None" = None,
     ) -> None:
@@ -45,7 +46,7 @@ class ServerTransaction[W]:
         self._server_schema = server_schema
 
     def _schemas(self, what: str) -> "tuple[Schema, ServerSchema]":
-        if self._schema is None or self._server_schema is None:
+        if self._schema is None or self._server_schema is None:  # python-only: a database built without one
             raise RuntimeError(f"{what} needs a schema: pass one to the database")
         return self._schema, self._server_schema
 
