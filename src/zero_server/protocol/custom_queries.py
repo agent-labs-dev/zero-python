@@ -9,7 +9,7 @@ from typing import Literal
 from pydantic import StrictStr
 
 from zero_server.protocol.ast import AST
-from zero_server.protocol.wire import StrictWireModel, WireModel
+from zero_server.protocol.wire import PlainJSON, RefusesNullOffWire, StrictWireModel, WireModel
 from zero_server.shared.json import JSONValue
 
 
@@ -18,7 +18,7 @@ class TransformRequestQuery(StrictWireModel):
 
     id: StrictStr
     name: StrictStr
-    args: list[JSONValue]
+    args: PlainJSON[list[JSONValue]]
 
 
 type TransformRequestBody = list[TransformRequestQuery]
@@ -31,20 +31,20 @@ class TransformedQuery(WireModel):
     ast: AST
 
 
-class AppErroredQuery(WireModel):
+class AppErroredQuery(RefusesNullOffWire):
     error: Literal["app"] = "app"
     id: StrictStr
     name: StrictStr
     message: StrictStr | None = None
-    details: JSONValue | None = None
+    details: PlainJSON[JSONValue | None] = None
 
 
-class ParseErroredQuery(WireModel):
+class ParseErroredQuery(RefusesNullOffWire):
     error: Literal["parse"] = "parse"
     id: StrictStr
     name: StrictStr
     message: StrictStr
-    details: JSONValue | None = None
+    details: PlainJSON[JSONValue | None] = None
 
 
 type ErroredQuery = AppErroredQuery | ParseErroredQuery

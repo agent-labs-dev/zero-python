@@ -38,7 +38,7 @@ from zero_server.protocol.wire import parse_wire
 from zero_server.shared.asserts import check
 from zero_server.shared.error import get_error_details, get_error_message
 from zero_server.shared.js import js_number, js_truthy
-from zero_server.shared.json import JSONValue, parse_json_body
+from zero_server.shared.json import JSONValue
 
 logger = logging.getLogger("zero_server.mutate")
 
@@ -159,12 +159,15 @@ def _parse_failure(
     )
 
 
-def _parse_push_body(json_body: object) -> PushBody | ServerPushFailed:
+def _parse_push_body(body: object) -> PushBody | ServerPushFailed:
     try:
-        return PushBody.from_json(json_body)
+        return PushBody.from_json(body)
     except ValidationError as error:
         logger.error("Failed to parse push body", exc_info=error)
         return _parse_failure("push body", error, [])
+    except ValueError as error:
+        logger.error("Failed to parse push body", exc_info=error)
+        return _parse_failure("push body", error, [], syntax=True)
 
 
 async def handle_mutate_request[T](
@@ -202,18 +205,7 @@ async def handle_mutate[T](
     report_user_id: bool,
 ) -> MutateResponse:
     """`handle_mutate_request`, and the legacy form that reports no user ID at all."""
-    match body:
-        case PushBody():
-            push_body = body
-        case bytes():
-            try:
-                json_body = parse_json_body(body)
-            except ValueError as error:
-                logger.error("Failed to parse push body", exc_info=error)
-                return _parse_failure("push body", error, [], syntax=True)
-            push_body = _parse_push_body(json_body)
-        case _:
-            push_body = _parse_push_body(body)
+    push_body = body if isinstance(body, PushBody) else _parse_push_body(body)
     if isinstance(push_body, ServerPushFailed):
         return push_body
     mutation_ids = [MutationID(id=m.id, clientID=m.client_id) for m in push_body.mutations]

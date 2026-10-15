@@ -28,7 +28,7 @@ from zero_server.query.registry import QueryParseError
 from zero_server.schema import Schema, client_to_server
 from zero_server.shared.error import get_error_details, get_error_message
 from zero_server.shared.js import js_check_in, js_truthy
-from zero_server.shared.json import JSONValue, parse_json_body
+from zero_server.shared.json import JSONValue
 
 logger = logging.getLogger("zero_server.query")
 
@@ -63,8 +63,7 @@ async def handle_query_request(
     """
     query_ids: list[str] = []
     try:
-        json_body: Any = parse_json_body(body) if isinstance(body, bytes) else body
-        parsed = parse_wire(_transform_request, json_body)
+        parsed = parse_wire(_transform_request, body)
         query_ids = [r.id for r in parsed[1]]
     except (ValueError, ValidationError) as error:
         logger.error("Failed to parse query request", exc_info=error)

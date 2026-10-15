@@ -7,7 +7,7 @@ Ported from rocicorp/mono `packages/zero-protocol/src/push.ts` at zero/v1.10.0
 from pydantic import Field, StrictStr
 
 from zero_server.protocol.mutation import Mutation
-from zero_server.protocol.wire import Number, WireModel
+from zero_server.protocol.wire import Number, Omittable, WireModel
 
 
 class PushBody(WireModel):
@@ -17,9 +17,9 @@ class PushBody(WireModel):
     mutations: list[Mutation]
     push_version: Number = Field(alias="pushVersion")
     # Only CRUD mutations are tied to a schema version.
-    schema_version: Number | None = Field(default=None, alias="schemaVersion")
+    schema_version: Omittable[Number] = Field(default=None, alias="schemaVersion")
     timestamp: Number
     request_id: StrictStr = Field(alias="requestID")
     # Deprecated upstream: auth is per client group now, through connect and updateAuth.
-    auth: StrictStr | None = None
-    traceparent: StrictStr | None = None
+    auth: Omittable[StrictStr] = None
+    traceparent: Omittable[StrictStr] = None

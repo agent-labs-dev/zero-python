@@ -11,7 +11,7 @@ from typing import Any, Literal
 from pydantic import Field, StrictStr
 
 from zero_server.protocol.mutation_id import MutationID
-from zero_server.protocol.wire import Number, WireModel
+from zero_server.protocol.wire import Number, PlainJSON, RefusesNullOffWire
 from zero_server.shared.json import JSONValue
 
 
@@ -64,7 +64,7 @@ type ServerTransformFailedReason = Literal[ErrorReason.DATABASE, ErrorReason.PAR
 type ZeroCacheFailedReason = Literal[ErrorReason.TIMEOUT, ErrorReason.PARSE, ErrorReason.INTERNAL]
 
 
-class _PushFailedBase(WireModel):
+class _PushFailedBase(RefusesNullOffWire):
     """Fields in the order upstream writes them; each subclass narrows `origin` and `reason` in place."""
 
     kind: Literal[ErrorKind.PUSH_FAILED] = ErrorKind.PUSH_FAILED
@@ -73,7 +73,7 @@ class _PushFailedBase(WireModel):
     message: StrictStr
     # The mutations that went unprocessed, which can be a tail of the request's.
     mutation_ids: list[MutationID] = Field(alias="mutationIDs")
-    details: JSONValue | None = None
+    details: PlainJSON[JSONValue | None] = None
 
 
 class ServerPushFailed(_PushFailedBase):
@@ -102,7 +102,7 @@ class ZeroCachePushFailed(_PushFailedBase):
 type PushFailedBody = ServerPushFailed | ZeroCachePushHTTPFailed | ZeroCachePushFailed
 
 
-class _TransformFailedBase(WireModel):
+class _TransformFailedBase(RefusesNullOffWire):
     """Fields in the order upstream writes them; each subclass narrows `origin` and `reason` in place."""
 
     kind: Literal[ErrorKind.TRANSFORM_FAILED] = ErrorKind.TRANSFORM_FAILED
@@ -110,7 +110,7 @@ class _TransformFailedBase(WireModel):
     reason: ErrorReason
     message: StrictStr
     query_ids: list[StrictStr] = Field(alias="queryIDs")
-    details: JSONValue | None = None
+    details: PlainJSON[JSONValue | None] = None
 
 
 class ServerTransformFailed(_TransformFailedBase):

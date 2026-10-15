@@ -1,5 +1,6 @@
 """Python accepts exactly the requests upstream's parsers accept, in the mode each parses in."""
 
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -35,12 +36,15 @@ def accepts(parse: Callable[[Any], object], value: Any) -> bool:
     return True
 
 
+@pytest.mark.parametrize("encoded", [False, True], ids=["json", "bytes"])
 @pytest.mark.parametrize("schema", sorted(CASES))
-def test_accepts_what_upstream_accepts(harness: Harness, schema: str) -> None:
+def test_accepts_what_upstream_accepts(harness: Harness, schema: str, encoded: bool) -> None:
+    """As decoded JSON, and as the raw body the handlers parse from bytes without checking its JSON values."""
     strategy, parse = CASES[schema]
 
     @given(corrupted(strategy))
     def check(value: Any) -> None:
-        assert accepts(parse, value) == harness.call("accepts", schema=schema, value=value), value
+        given_value = json.dumps(value).encode() if encoded else value
+        assert accepts(parse, given_value) == harness.call("accepts", schema=schema, value=value), value
 
     check()
