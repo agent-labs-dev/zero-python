@@ -1,6 +1,7 @@
 """The Python twin of `harness/mutate.ts`: the same mutators, handler and failing provider."""
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -120,7 +121,7 @@ async def handler(transact: TransactFn[Tx], mutation: CustomMutation) -> Mutatio
 class FailingForCfail:
     """Fails to open any transaction for client `cfail`, as the TypeScript twin does."""
 
-    def __init__(self, db: ZQLDatabase[Any]) -> None:
+    def __init__(self, db: Database[Tx]) -> None:
         self.db = db
 
     async def transaction(
@@ -131,6 +132,13 @@ class FailingForCfail:
         if transaction_input is not None and transaction_input.client_id == "cfail":
             raise Exception("cannot open")
         return await self.db.transaction(callback, transaction_input)
+
+    @asynccontextmanager
+    async def session(self) -> AsyncGenerator["FailingForCfail"]:
+        # The Python database runs a push in a session; this forwards it, failing as before.
+        assert isinstance(self.db, ZQLDatabase)
+        async with self.db.session() as db:
+            yield FailingForCfail(db)
 
 
 def provider(db: ZQLDatabase[Any]) -> Database[Tx]:

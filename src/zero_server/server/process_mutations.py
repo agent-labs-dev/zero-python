@@ -14,6 +14,7 @@ where the client's pending mutation learns it failed.
 import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -69,6 +70,9 @@ class Database[T](Protocol):
 
     `transaction` opens one transaction, calls `callback` inside it with the app's transaction object and
     the bookkeeping hooks, and commits when `callback` returns.
+
+    A database may also have a `session()`: an async context manager yielding a `Database` whose
+    transactions all run on one connection. A push's mutations run in one session, `ZQLDatabase`'s.
     """
 
     async def transaction[R](
@@ -76,6 +80,19 @@ class Database[T](Protocol):
         callback: Callable[[T, TransactionProviderHooks], Awaitable[R]],
         transaction_input: TransactionProviderInput | None = None,
     ) -> R: ...
+
+
+class _SessionOpener[T](Protocol):
+    def session(self) -> AbstractAsyncContextManager[Database[T]]: ...
+
+
+def _session[T](db_provider: Database[T]) -> AbstractAsyncContextManager[Database[T]]:
+    """The database a push's mutations run on: a session of `db_provider` if it opens them, so the push
+    takes one connection from the pool for all its transactions, or else `db_provider` itself."""
+    if hasattr(db_provider, "session"):
+        opener: _SessionOpener[T] = db_provider  # ty: ignore[invalid-assignment]
+        return opener.session()
+    return nullcontext(db_provider)
 
 
 type TransactFnCallback[T] = Callable[[T, str, JSONValue | None], Awaitable[None]]
@@ -219,27 +236,28 @@ async def handle_mutate[T](
     processed_count = 0
 
     try:
-        transactor = _Transactor(db_provider, push_body, params)
+        async with _session(db_provider) as db:
+            transactor = _Transactor(db, push_body, params)
 
-        for m, mutation_id in zip(push_body.mutations, mutation_ids, strict=True):
-            if m.type == "custom" and m.name == CLEANUP_RESULTS_MUTATION_NAME:
-                try:
-                    await _process_cleanup_results_mutation(db_provider, m, params)
-                except Exception as error:
-                    # A failed cleanup costs disk, not correctness, so it does not fail the push.
-                    logger.warning("Failed to process cleanup mutation for client %s", m.client_id, exc_info=error)
+            for m, mutation_id in zip(push_body.mutations, mutation_ids, strict=True):
+                if m.type == "custom" and m.name == CLEANUP_RESULTS_MUTATION_NAME:
+                    try:
+                        await _process_cleanup_results_mutation(db, m, params)
+                    except Exception as error:
+                        # A failed cleanup costs disk, not correctness, so it does not fail the push.
+                        logger.warning("Failed to process cleanup mutation for client %s", m.client_id, exc_info=error)
+                    processed_count += 1
+                    continue
+
+                check(m.type == "custom", "Expected custom mutation")
+                assert isinstance(m, CustomMutation)
+                response = await _process_one(transactor, handler, m, mutation_id)
+                responses.append(response)
                 processed_count += 1
-                continue
 
-            check(m.type == "custom", "Expected custom mutation")
-            assert isinstance(m, CustomMutation)
-            response = await _process_one(transactor, handler, m, mutation_id)
-            responses.append(response)
-            processed_count += 1
-
-        if report_user_id:
-            return MutateSuccess(mutations=responses, userID=user_id)
-        return MutateSuccess(mutations=responses)
+            if report_user_id:
+                return MutateSuccess(mutations=responses, userID=user_id)
+            return MutateSuccess(mutations=responses)
     except Exception as error:
         logger.error("Failed to process push request", exc_info=error)
         details = get_error_details(error)

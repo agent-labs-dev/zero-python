@@ -4,12 +4,14 @@ Needs the `zero-server[sqlalchemy]` extra, and the driver the engine's URL names
 """
 
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import AbstractAsyncContextManager
 from typing import Any
 
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from zero_server.schema import Schema
+from zero_server.server.adapters._session import SessionConnection, session
 from zero_server.server.transaction import DBTransaction, Row
 from zero_server.server.zql_database import PostgresError, ZQLDatabase
 
@@ -77,6 +79,21 @@ class SQLAlchemyConnection:
     async def transaction[R](self, fn: Callable[[DBTransaction[AsyncConnection]], Awaitable[R]]) -> R:
         async with self.engine.begin() as connection:
             return await fn(await sqlalchemy_transaction(connection))
+
+    def session(self) -> AbstractAsyncContextManager[SessionConnection[AsyncConnection, AsyncConnection]]:
+        """One connection for a push's transactions, checked back into the pool once, at the end."""
+        return session(self.engine.connect, _close, _transaction)
+
+
+async def _close(connection: AsyncConnection) -> None:
+    await connection.close()
+
+
+async def _transaction[R](
+    connection: AsyncConnection, fn: Callable[[DBTransaction[AsyncConnection]], Awaitable[R]]
+) -> R:
+    async with connection.begin():
+        return await fn(await sqlalchemy_transaction(connection))
 
 
 class SQLAlchemyDatabase(ZQLDatabase[AsyncConnection]):

@@ -1,11 +1,13 @@
 """asyncpg, directly. Needs the `zero-server[asyncpg]` extra."""
 
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import AbstractAsyncContextManager
 from typing import Any
 
 import asyncpg
 
 from zero_server.schema import Schema
+from zero_server.server.adapters._session import SessionConnection, session
 from zero_server.server.transaction import DBTransaction, Row
 from zero_server.server.zql_database import PostgresError, ZQLDatabase
 
@@ -33,8 +35,19 @@ class AsyncpgConnection:
         self.pool = pool
 
     async def transaction[R](self, fn: Callable[[DBTransaction[asyncpg.Connection]], Awaitable[R]]) -> R:
-        async with self.pool.acquire() as connection, connection.transaction():
-            return await fn(AsyncpgTransaction(connection))
+        async with self.pool.acquire() as connection:
+            return await _transaction(connection, fn)
+
+    def session(self) -> AbstractAsyncContextManager[SessionConnection[asyncpg.Connection, asyncpg.Connection]]:
+        """One connection for a push's transactions, released (and so reset by the pool) once, at the end."""
+        return session(self.pool.acquire, self.pool.release, _transaction)
+
+
+async def _transaction[R](
+    connection: asyncpg.Connection, fn: Callable[[DBTransaction[asyncpg.Connection]], Awaitable[R]]
+) -> R:
+    async with connection.transaction():
+        return await fn(AsyncpgTransaction(connection))
 
 
 class AsyncpgDatabase(ZQLDatabase[asyncpg.Connection]):
