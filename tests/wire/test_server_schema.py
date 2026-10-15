@@ -37,9 +37,9 @@ def perturbed(draw: st.DrawFn, base: dict[str, Any]) -> dict[str, Any]:
                 spec["columns"][column]["type"] = draw(st.sampled_from(["string", "number", "boolean", "json"]))
             case "column":
                 column = draw(st.sampled_from(sorted(spec["columns"])))
-                spec["columns"][column]["serverName"] = "missing_column"
+                spec["columns"][column]["serverName"] = draw(st.sampled_from(["missing_column", ""]))
             case _:
-                spec["serverName"] = draw(st.sampled_from(["missing_table", "other.things"]))
+                spec["serverName"] = draw(st.sampled_from(["missing_table", "other.things", ""]))
     return schema
 
 

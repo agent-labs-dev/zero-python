@@ -33,6 +33,22 @@ def _as_row(value: object) -> dict[str, Any]:
             return {}
 
 
+class UndefinedValueError(Exception):
+    """A primary-key column missing from the row. Upstream binds `undefined` for it, which postgres.js
+    refuses with this message, so the mutation fails with the same application error."""
+
+    error_name = "Error"
+
+    def __init__(self) -> None:
+        super().__init__("UNDEFINED_VALUE: Undefined values are not allowed")
+
+
+def _key_value(row: Mapping[str, Any], name: str) -> Any:
+    if name not in row:
+        raise UndefinedValueError
+    return row[name]
+
+
 def _server_name(table: TableSchema) -> str:
     return table.server_name if table.server_name is not None else table.name
 
@@ -60,7 +76,7 @@ class TableCRUD(Generic[I, U, K]):
 
     def _pk_clause(self, params: Params, row: Mapping[str, Any]) -> str:
         return " AND ".join(
-            f"{ident(server)} = {params.column(self._server_table[server], row.get(name), comparison=True)}"
+            f"{ident(server)} = {params.column(self._server_table[server], _key_value(row, name), comparison=True)}"
             for name, server in ((n, _server_column(self._table, n)) for n in self._table.primary_key)
         )
 

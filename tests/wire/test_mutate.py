@@ -14,6 +14,7 @@ from tests.wire.mutators import REGISTRY, handler, provider, use_schema
 from zero_server.schema import load_schema
 from zero_server.server.process_mutations import handle_mutate_request
 from zero_server.server.push_processor import PushProcessor
+from zero_server.server.zql_database import PostgresError
 from zero_server.shared.asserts import AssertionFailedError
 
 NAMES = [
@@ -36,7 +37,8 @@ THING_COLUMNS: dict[str, st.SearchStrategy[Any]] = {
     "j": json_values,
     "t": _rarely(st.integers(MS_2000, MS_2000 + 10**12), st.just(-1.5)),
     "d": st.integers(0, 3000).map(lambda days: MS_2000 + days * 86_400_000),
-    "s": _rarely(st.text(max_size=8), st.just("too long for eight")),
+    # postgres.js types an array by its first leaf, so a boolean-led one is bound as the boolean `false`.
+    "s": _rarely(st.text(max_size=8), st.sampled_from(["too long for eight", [True, "y"], [[False]], ["y", True]])),
     "tags": _rarely(st.lists(st.text(max_size=3), max_size=3), st.just([1, None])),
     "u": _rarely(st.uuids().map(str), st.just("not-a-uuid")),
     "mood": _rarely(st.sampled_from(["happy", "sad"]), st.just("meh")),
@@ -47,9 +49,20 @@ THING_COLUMNS: dict[str, st.SearchStrategy[Any]] = {
 }
 
 
+MISSING = object()
+
+
+def _key(value: st.SearchStrategy[Any]) -> st.SearchStrategy[Any]:
+    """A primary-key value, or rarely one of the wrong type, null, or `MISSING` from the row."""
+    return _rarely(value, st.sampled_from([MISSING, None, 1, 1.5, True, "1", [1]]), 8)
+
+
 def _row(columns: dict[str, st.SearchStrategy[Any]], pk: dict[str, st.SearchStrategy[Any]]) -> st.SearchStrategy[Any]:
     optional = {name: st.none() | strategy for name, strategy in columns.items()}
-    return st.fixed_dictionaries(pk, optional=optional)
+    keys = {name: _key(strategy) for name, strategy in pk.items()}
+    return st.fixed_dictionaries(keys, optional=optional).map(
+        lambda row: {k: v for k, v in row.items() if v is not MISSING}
+    )
 
 
 crud_args = st.one_of(
@@ -115,7 +128,8 @@ def scenarios(draw: st.DrawFn, names: list[str] | None = None) -> list[tuple[Any
             mutation_id = _weighted(
                 draw, [(93, expected), (4, max(expected - 1, 0)), (2, expected + 1), (1, draw(mutation_ids))]
             )
-            next_id[client] = max(expected, mutation_id + 1)
+            if isinstance(mutation_id, int) and mutation_id <= expected + 1:
+                next_id[client] = max(expected, mutation_id + 1)
             if kind == "crud":
                 mutations.append(
                     {
@@ -175,7 +189,7 @@ def comparable(response: dict[str, Any]) -> dict[str, Any]:
     return as_js(response)
 
 
-def _m(mid: int, name: str = "item.put", /, *, client: str = "c1", **args: Any) -> dict[str, Any]:
+def _m(mid: float, name: str = "item.put", /, *, client: str = "c1", **args: Any) -> dict[str, Any]:
     return {"type": "custom", "id": mid, "clientID": client, "name": name, "args": [args], "timestamp": 1}
 
 
@@ -232,6 +246,38 @@ BRANCHES = {
             )
         )
     ),
+    "crud with keys missing": _scenario(
+        _push(
+            *(
+                {**_m(n + 1, f"crud.{kind}"), "args": [{"table": table, "row": row}]}
+                for n, (kind, table, row) in enumerate(
+                    [
+                        ("insert", "thing", {"id": "a"}),
+                        ("delete", "thing", {}),
+                        ("update", "thing", {"n": 1}),
+                        ("update", "thing", {}),
+                        ("delete", "pair", {"a": "a"}),
+                        ("update", "pair", {"note": "x", "b": 1}),
+                        ("delete", "thing", {"id": None}),
+                        ("upsert", "thing", {"n": 1}),
+                        ("insert", "thing", {"id": "b", "s": [True, "y"], "u": None}),
+                        ("update", "thing", {"id": "b", "s": [[False]]}),
+                    ]
+                )
+            )
+        )
+    ),
+    "odd mutation IDs": _scenario(
+        _push(_m(1), _m(1.5), _m(2.0), _m(-1)),
+        *(_push(_m(mid, client=client)) for mid, client in [(2**53 + 1, "c1"), (2**63, "c2"), (1e21, "c2")]),
+    ),
+    "cleanup odd IDs": _scenario(
+        _push(_m(1, "item.appError"), _m(2, "item.appError"), _m(3, "item.appError")),
+        *(
+            _push(_cleanup({"clientGroupID": "cg1", "clientID": "c1", "upToMutationID": up_to}))
+            for up_to in [1.5, 1e20, 2**63, 1e21, -1, 2**53 + 1]
+        ),
+    ),
     "cleanup invalid and failing": _scenario(
         _push(_cleanup({"type": "bulk", "clientGroupID": "cg1", "clientIDs": []}), _m(1)),
         _push(_cleanup({"clientGroupID": "cg1", "clientID": "cfail", "upToMutationID": 2}), _m(2)),
@@ -275,6 +321,20 @@ def test_transaction_exposes_the_driver_connection(wire_db: WireDB, adapter: str
         assert type(connection).__name__ == wrapped
 
     wire_db.run(check())
+
+
+def test_asyncpg_reports_a_refused_argument_as_sqlalchemy_does(wire_db: WireDB) -> None:
+    # A lone surrogate cannot be encoded, so asyncpg refuses it before Postgres sees the statement.
+    async def message(adapter: str) -> str:
+        async def callback(tx: Any, _hooks: Any) -> Any:
+            await tx.db_transaction.query("SELECT $1::text", ["a\ud800"])
+
+        with pytest.raises(PostgresError) as error:
+            await wire_db.py[adapter](None).transaction(callback)
+        return error.value.message
+
+    assert wire_db.run(message("asyncpg")) == wire_db.run(message("sqlalchemy"))
+    assert wire_db.run(message("asyncpg")).startswith("invalid input for query argument $1")
 
 
 PROCESSOR_NAMES = ["item.put", "item|put", "item.appError", "legacy.put", "legacy|put", "item", "nope"]

@@ -67,6 +67,20 @@ def _plural(index: int, select: str) -> str:
     return f"ARRAY(SELECT {select} FROM jsonb_array_elements_text(${index}::text::jsonb))"
 
 
+def _first_leaf(value: object) -> object:
+    while isinstance(value, list | tuple) and value:
+        value = value[0]
+    return value
+
+
+def _driver_text(value: object) -> str:
+    """The text postgres.js sends for a raw value: `String(value)`, but an array typed by its first leaf,
+    so one led by a boolean is the boolean `false` (it is not `true`)."""
+    if isinstance(value, list | tuple) and isinstance(_first_leaf(value), bool):
+        return "false"
+    return js_string(value)
+
+
 def _same_value_key(value: object) -> object:
     """A key equal for values a JavaScript `Map` treats as one key: equal primitives, the same object.
 
@@ -121,7 +135,7 @@ class Params:
         elif plural:
             bound = js_stringify(value)
         elif column.is_enum or is_string(column.type):
-            bound = value if isinstance(value, str) else js_string(value)
+            bound = value if isinstance(value, str) else _driver_text(value)
         else:
             bound = js_stringify(value)
         index = self._bind(value, column.type, bound)

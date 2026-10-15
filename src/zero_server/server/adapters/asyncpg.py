@@ -22,8 +22,9 @@ class AsyncpgTransaction:
         try:
             records = await self._connection.fetch(sql, *params)
         except asyncpg.PostgresError as error:
-            # asyncpg sets `message` on its error classes at runtime: the primary message alone.
-            raise PostgresError(getattr(error, "message", str(error))) from error
+            # asyncpg sets `message` to the primary message alone, or to None for an argument it refused to send.
+            message = getattr(error, "message", None)
+            raise PostgresError(message if isinstance(message, str) else str(error)) from error
         return [dict(record) for record in records]
 
 

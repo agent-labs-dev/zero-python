@@ -116,16 +116,7 @@ _json = st.recursive(
 containers = st.lists(_json, max_size=3) | st.dictionaries(st.sampled_from(["a", "b"]), _json, max_size=2)
 
 
-def _led_by_boolean(value: Any) -> bool:
-    while isinstance(value, list) and value:
-        value = value[0]
-    return isinstance(value, bool)
-
-
-# An array led by a boolean, compared with a text column, is left out: upstream hands the raw array to
-# postgres.js, which binds it as the boolean `false`. That is the JavaScript driver's choice, not Zero's;
-# zero-server binds `String(array)` as postgres.js does for every other array.
-values = scalars | containers.filter(lambda v: not _led_by_boolean(v)) | params
+values = scalars | containers | params
 
 
 def _values(table: str, column: Any) -> st.SearchStrategy[Any]:
