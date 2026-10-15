@@ -1,5 +1,5 @@
 [project]
-name = "zero-python"
+name = "zero-server"
 version = "0.0.1"
 description = "Community Python server SDK for Rocicorp Zero. Not affiliated with Rocicorp."
 readme = "README.md"
@@ -24,7 +24,7 @@ Issues = "https://github.com/agent-labs-dev/zero-python/issues"
 Changelog = "https://github.com/agent-labs-dev/zero-python/releases"
 
 [project.scripts]
-zero-python = "zero_python.codegen:main"
+zero-server = "zero_server.codegen:main"
 
 [project.optional-dependencies]
 sqlalchemy = ["sqlalchemy[asyncio]>=2.1", "asyncpg>=0.32"]
@@ -34,7 +34,7 @@ starlette = ["starlette>=1.8"]
 
 [dependency-groups]
 dev = [
-    "zero-python[sqlalchemy,asyncpg,psycopg,starlette]",
+    "zero-server[sqlalchemy,asyncpg,psycopg,starlette]",
     "httpx2>=2.13",
     # psycopg's prebuilt libpq, so the tests need no system libpq.
     "psycopg[binary]>=3.3",
@@ -65,7 +65,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
-addopts = "--cov=zero_python --cov-branch --cov-report=term-missing"
+addopts = "--cov=zero_server --cov-branch --cov-report=term-missing"
 
 [tool.coverage.run]
 # SQLAlchemy's asyncio layer resumes coroutines inside greenlets.

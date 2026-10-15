@@ -1,5 +1,5 @@
 {
-  "name": "zero-python-e2e",
+  "name": "zero-server-e2e",
   "private": true,
   "type": "module",
   "dependencies": {

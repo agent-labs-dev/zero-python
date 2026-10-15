@@ -1,5 +1,5 @@
 name: Missing feature
-description: Something @rocicorp/zero/server does that zero-python doesn't.
+description: Something @rocicorp/zero/server does that zero-server doesn't.
 labels: [enhancement]
 body:
   - type: textarea

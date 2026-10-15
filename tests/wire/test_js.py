@@ -7,7 +7,7 @@ from hypothesis import strategies as st
 
 from tests.harness import Harness
 from tests.strategies import scalars
-from zero_python.shared.js import js_sort, js_string
+from zero_server.shared.js import js_sort, js_string
 
 
 @given(

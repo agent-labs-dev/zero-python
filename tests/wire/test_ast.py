@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from tests.harness import Harness, HarnessError
 from tests.strategies import as_js, asts, corrupted
-from zero_python.protocol.ast import AST, map_ast, normalize_ast
+from zero_server.protocol.ast import AST, map_ast, normalize_ast
 
 
 def python_accepts(value: Any) -> bool:

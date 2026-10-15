@@ -1,7 +1,7 @@
-"""The Python app server: the same queries and mutators as `app/*.ts`, served by zero-python.
+"""The Python app server: the same queries and mutators as `app/*.ts`, served by zero-server.
 
 It is written the way an app would use the library: types generated from the schema
-(`zero_schema.py`, by `zero-python codegen`), the decorator forms, and the Starlette routes.
+(`zero_schema.py`, by `zero-server codegen`), the decorator forms, and the Starlette routes.
 """
 
 import os
@@ -14,10 +14,10 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from zero_schema import Project, TaskInsert, create_builder, mutate
 
-from zero_python import ApplicationError, define_mutator, define_mutators, define_queries, define_query, load_schema
-from zero_python.integrations.starlette import zero_routes
-from zero_python.server.adapters.sqlalchemy import SQLAlchemyDatabase
-from zero_python.server.transaction import ServerTransaction
+from zero_server import ApplicationError, define_mutator, define_mutators, define_queries, define_query, load_schema
+from zero_server.integrations.starlette import zero_routes
+from zero_server.server.adapters.sqlalchemy import SQLAlchemyDatabase
+from zero_server.server.transaction import ServerTransaction
 
 schema = load_schema(Path(os.environ["SCHEMA_JSON"]))
 zql = create_builder(schema)

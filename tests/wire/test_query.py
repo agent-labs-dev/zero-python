@@ -10,8 +10,8 @@ from hypothesis import strategies as st
 from tests.harness import Harness
 from tests.strategies import as_js
 from tests.wire.programs import make_handler, programs
-from zero_python.schema import Schema, load_schema
-from zero_python.server.process_queries import handle_query_request
+from zero_server.schema import Schema, load_schema
+from zero_server.server.process_queries import handle_query_request
 
 
 @pytest.fixture(scope="session")

@@ -1,4 +1,4 @@
-"""A Postgres for the tests: `ZERO_PYTHON_PG` if set (as in CI), otherwise a throwaway Docker container."""
+"""A Postgres for the tests: `ZERO_SERVER_PG` if set (as in CI), otherwise a throwaway Docker container."""
 
 import os
 import subprocess
@@ -13,10 +13,10 @@ IMAGE = "postgres:17"
 @contextmanager
 def postgres_server() -> Generator[str]:
     """Yields a base URL, `postgresql://user:password@host:port`, with no database on the end."""
-    if url := os.environ.get("ZERO_PYTHON_PG"):
+    if url := os.environ.get("ZERO_SERVER_PG"):
         yield url.rstrip("/")
         return
-    name = f"zero-python-test-{uuid.uuid4().hex[:8]}"
+    name = f"zero-server-test-{uuid.uuid4().hex[:8]}"
     subprocess.run(
         [
             "docker",

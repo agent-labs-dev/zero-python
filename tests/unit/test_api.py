@@ -7,9 +7,9 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, TypeAdapter
 
-from zero_python.mutators import define_mutator, define_mutators, get_mutator, must_get_mutator
-from zero_python.query.builder import create_builder
-from zero_python.query.registry import (
+from zero_server.mutators import define_mutator, define_mutators, get_mutator, must_get_mutator
+from zero_server.query.builder import create_builder
+from zero_server.query.registry import (
     InputValidationError,
     QueryParseError,
     define_queries,
@@ -17,10 +17,10 @@ from zero_python.query.registry import (
     get_query,
     must_get_query,
 )
-from zero_python.schema import load_schema, server_to_client
-from zero_python.server.process_queries import handle_query_request
-from zero_python.server.server_schema import get_server_schema
-from zero_python.server.transaction import ServerTransaction
+from zero_server.schema import load_schema, server_to_client
+from zero_server.server.process_queries import handle_query_request
+from zero_server.server.server_schema import get_server_schema
+from zero_server.server.transaction import ServerTransaction
 
 SCHEMA = {
     "tables": {
@@ -154,8 +154,8 @@ async def test_query_endpoint_takes_raw_bytes_and_async_handlers() -> None:
 
 
 def test_simplify_unwraps_single_conditions() -> None:
-    from zero_python.protocol.ast import Conjunction, Disjunction
-    from zero_python.query.expression import FALSE, TRUE, cmp, simplify_condition
+    from zero_server.protocol.ast import Conjunction, Disjunction
+    from zero_server.query.expression import FALSE, TRUE, cmp, simplify_condition
 
     eq = cmp("id", 1)
     assert simplify_condition(Conjunction(conditions=(eq,))) == eq
@@ -164,8 +164,8 @@ def test_simplify_unwraps_single_conditions() -> None:
 
 
 def test_mutate_by_attribute() -> None:
-    from zero_python.server.crud import Mutate, TableCRUD
-    from zero_python.server.server_schema import ServerColumnSchema
+    from zero_server.server.crud import Mutate, TableCRUD
+    from zero_server.server.server_schema import ServerColumnSchema
 
     column = ServerColumnSchema(type="text", is_enum=False, is_array=False)
     mutate = Mutate(load_schema(SCHEMA), None, {"issues": {"id": column, "owner_id": column}})  # ty: ignore[invalid-argument-type]

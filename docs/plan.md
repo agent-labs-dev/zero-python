@@ -87,8 +87,9 @@ Read it at the tag matching `ZERO_VERSION`.
 
 ## Decisions already made
 
-- Name `zero-python` everywhere (repo, PyPI, import `zero_python`). `zero-py` is blocked on PyPI as too
-  similar to the abandoned `zeropy`.
+- Name `zero-server` on PyPI and in code (import `zero_server`, CLI `zero-server`). PyPI refuses `zero-python` as
+  too similar to `zeropython` and `zero-py` as too similar to the abandoned `zeropy`. The repo stays `zero-python`
+  until it goes public.
 - Repo private until phase 5 passes; then public, then contact Rocicorp about a community listing and early
   notice of protocol changes.
 - PyPI publishing by trusted publishing from `.github/workflows/release.yml`, environment `pypi`. The pending

@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 
-from zero_python.protocol.mutation import CustomMutation, MutationResponse
-from zero_python.server.process_mutations import TransactFn, handle_mutate_request
+from zero_server.protocol.mutation import CustomMutation, MutationResponse
+from zero_server.server.process_mutations import TransactFn, handle_mutate_request
 
 QUERY = {"schema": "zero_0", "appID": "zero"}
 

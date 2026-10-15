@@ -10,8 +10,8 @@ from tests.harness import Harness
 from tests.strategies import as_js
 from tests.wire.conftest import ADAPTERS, SqlDB
 from tests.wire.programs import apply, programs
-from zero_python.query.builder import create_builder
-from zero_python.schema import Schema, load_schema
+from zero_server.query.builder import create_builder
+from zero_server.schema import Schema, load_schema
 
 
 @pytest.fixture(scope="session")

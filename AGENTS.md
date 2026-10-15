@@ -1,6 +1,6 @@
 # AGENTS.md
 
-zero-python is a community Python port of Rocicorp Zero's **server SDK**: what `@rocicorp/zero/server` gives a
+zero-server is a community Python port of Rocicorp Zero's **server SDK**: what `@rocicorp/zero/server` gives a
 TypeScript backend. It is not affiliated with Rocicorp; say so wherever the project describes itself.
 
 Before any porting work, read [`docs/plan.md`](docs/plan.md): scope, the oracle that defines "compatible", the

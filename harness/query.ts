@@ -88,7 +88,7 @@ const run = ({args}: {args: Program}) => apply(zql[args.table], args.ops);
 const program = {
   '~standard': {
     version: 1,
-    vendor: 'zero-python',
+    vendor: 'zero-server',
     validate: (v: unknown) =>
       typeof v === 'object' && v !== null && typeof (v as Program).table === 'string'
         ? {value: v}

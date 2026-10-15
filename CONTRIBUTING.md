@@ -1,6 +1,6 @@
 # Contributing
 
-zero-python is a port, so a change is right when it behaves like `@rocicorp/zero` at the version in `ZERO_VERSION`. Read [`docs/plan.md`](docs/plan.md) before porting anything.
+zero-server is a port, so a change is right when it behaves like `@rocicorp/zero` at the version in `ZERO_VERSION`. Read [`docs/plan.md`](docs/plan.md) before porting anything.
 
 ## Setup
 
@@ -12,7 +12,7 @@ uv sync --group e2e
 (cd e2e && npm ci)
 ```
 
-The tests start Postgres in Docker. To use your own instead, set `ZERO_PYTHON_PG` to a connection string such as `postgresql://postgres:postgres@localhost:5432`.
+The tests start Postgres in Docker. To use your own instead, set `ZERO_SERVER_PG` to a connection string such as `postgresql://postgres:postgres@localhost:5432`.
 
 ## Checks
 

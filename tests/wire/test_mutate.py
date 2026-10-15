@@ -11,10 +11,10 @@ from tests.harness import Harness, HarnessError
 from tests.strategies import as_js, cleanup_args, corrupted, json_values, mutation_ids
 from tests.wire.conftest import ADAPTERS, WireDB
 from tests.wire.mutators import REGISTRY, handler, provider, use_schema
-from zero_python.schema import load_schema
-from zero_python.server.process_mutations import handle_mutate_request
-from zero_python.server.push_processor import PushProcessor
-from zero_python.shared.asserts import AssertionFailedError
+from zero_server.schema import load_schema
+from zero_server.server.process_mutations import handle_mutate_request
+from zero_server.server.push_processor import PushProcessor
+from zero_server.shared.asserts import AssertionFailedError
 
 NAMES = [
     "item.put", "item.put", "item.put", "item.count", "item.appError", "item.error", "item.typeError", "item.dbError",
