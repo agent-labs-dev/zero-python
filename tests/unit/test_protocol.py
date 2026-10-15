@@ -20,6 +20,7 @@ from zero_server.protocol.ast import (
     SimpleCondition,
     normalize_ast,
 )
+from zero_server.protocol.custom_queries import AppErroredQuery
 from zero_server.protocol.mutate_server import MutateSuccess
 from zero_server.protocol.mutation import CustomMutation, MutationAppError, MutationOk, MutationResponse
 from zero_server.protocol.mutation_id import MutationID
@@ -47,6 +48,8 @@ def test_wrapping_keeps_message_details_and_cause() -> None:
 def test_user_id_is_reported_only_when_set() -> None:
     assert QuerySuccess(queries=[]).to_json() == {"kind": "QueryResponse", "queries": []}
     assert QuerySuccess(queries=[], user_id=None).to_json() == {"kind": "QueryResponse", "queries": [], "userID": None}
+    assert QuerySuccess(queries=[]).user_id is None
+    assert QuerySuccess(queries=[], user_id="u").user_id == "u"
 
 
 @pytest.mark.parametrize("user", [{}, {"userID": None}, {"userID": "u1"}])
@@ -155,7 +158,7 @@ def test_condition_comparator_edges() -> None:
     plain = CorrelatedSubqueryCondition(related=related, op="EXISTS")
     flipped = CorrelatedSubqueryCondition(related=related, op="EXISTS", flip=True, scalar=False)
     assert _cmp_condition(plain, flipped) < 0
-    assert _cmp_condition(flipped, flipped.model_copy(update={"scalar": True})) < 0
+    assert _cmp_condition(flipped, dataclasses.replace(flipped, scalar=True)) < 0
 
 
 class Mood(StrEnum):
@@ -192,9 +195,16 @@ def test_json_args_other_than_plain_json_get_pydantics_check() -> None:
 
 @pytest.mark.parametrize("body", [{"table": "t", "limit": None}, b'{"table": "t", "limit": null}'])
 def test_an_ast_off_the_wire_refuses_null_for_an_optional_field(body: object) -> None:
-    with pytest.raises(ValidationError, match="limit may be absent but not null"):
+    with pytest.raises(ValidationError, match=r"limit.int\n.*input_value=None"):
         AST.from_json(body)
     assert AST(table="t", limit=None).to_json() == {"table": "t"}
+
+
+def test_a_model_built_in_python_refuses_null_off_the_wire() -> None:
+    with pytest.raises(ValidationError, match="message may be absent but not null"):
+        AppErroredQuery.from_json({"error": "app", "id": "1", "name": "q", "message": None})
+    assert AppErroredQuery.from_json({"error": "app", "id": "1", "name": "q", "details": 1}).details == 1
+    assert AppErroredQuery(id="1", name="q", message=None).to_json() == {"error": "app", "id": "1", "name": "q"}
 
 
 def test_an_optional_field_must_say_how_it_refuses_null() -> None:

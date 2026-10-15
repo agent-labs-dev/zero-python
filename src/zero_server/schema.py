@@ -11,6 +11,7 @@ Apache-2.0, Copyright Rocicorp.
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Literal
 
@@ -56,6 +57,11 @@ class Schema(_SchemaModel):
     enable_legacy_queries: bool | None = Field(default=None, alias="enableLegacyQueries")
     enable_legacy_mutators: bool | None = Field(default=None, alias="enableLegacyMutators")
 
+    @cached_property
+    def client_to_server_mapper(self) -> "NameMapper":
+        """`client_to_server(self.tables)`, built once: the query endpoint and z2s map names on every call."""
+        return client_to_server(self.tables)
+
 
 def load_schema(source: str | Path | Mapping[str, Any]) -> Schema:
     """A schema from `JSON.stringify(schema)`: the JSON text as a `str`, a `Path` to it, or the parsed object."""
@@ -81,6 +87,8 @@ class DestNames:
 class NameMapper:
     def __init__(self, tables: dict[str, DestNames]) -> None:
         self._tables = tables
+        self.correlations: dict[tuple[Any, ...], Any] = {}
+        """What `map_ast` has mapped through this mapper, which it reuses."""
 
     def _table(self, src: str) -> DestNames:
         table = self._tables.get(src)
@@ -89,9 +97,18 @@ class NameMapper:
         return table
 
     def table_name(self, src: str) -> str:
-        return self._table(src).table_name
+        table = self._tables.get(src)
+        return table.table_name if table is not None else self._table(src).table_name
 
     def column_name(self, table: str, src: str) -> str:
+        dest_names = self._tables.get(table)
+        if dest_names is not None and type(src) is str:
+            dest = dest_names.columns.get(src)
+            if dest:
+                return dest
+        return self._column_name(table, src)
+
+    def _column_name(self, table: str, src: str) -> str:
         # Upstream looks the column up as an object key, which a builder handed a number turns into a string.
         src = src if isinstance(src, str) else js_string(src)
         dest = self._table(table).columns.get(src)

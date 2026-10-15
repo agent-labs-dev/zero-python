@@ -4,7 +4,7 @@ Ported from rocicorp/mono `packages/zql/src/query/expression.ts` at zero/v1.10.0
 (905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Final
 
 from zero_server.protocol.ast import (
@@ -50,7 +50,7 @@ _NEGATED: Final[dict[str, str]] = {
 
 
 def _position(value: Any) -> LiteralReference | Parameter:
-    if isinstance(value, Parameter):
+    if type(value) is Parameter:
         return value
     # Each literal gets its own array, as each JavaScript array literal is its own object: the SQL
     # compiler shares a placeholder between two literals only when they are the same object.
@@ -60,10 +60,8 @@ def _position(value: Any) -> LiteralReference | Parameter:
 def cmp(field: str, op_or_value: Any, value: Any = MISSING) -> Condition:
     """`cmp(field, value)` compares with `=`; `cmp(field, op, value)` with `op`."""
     if value is MISSING:
-        op, actual = "=", op_or_value
-    else:
-        op, actual = op_or_value, value
-    return SimpleCondition(op=op, left=ColumnReference(name=field), right=_position(actual))
+        return SimpleCondition(op="=", left=ColumnReference(name=field), right=_position(op_or_value))
+    return SimpleCondition(op=op_or_value, left=ColumnReference(name=field), right=_position(value))
 
 
 def _is_always_true(condition: Condition) -> bool:
@@ -78,8 +76,9 @@ def and_(*conditions: Condition | None) -> Condition:
     expressions = [c for c in conditions if c is not None and not _is_always_true(c)]
     if len(expressions) == 1:
         return expressions[0]
-    if any(_is_always_false(c) for c in expressions):
-        return FALSE
+    for c in expressions:
+        if _is_always_false(c):
+            return FALSE
     return Conjunction(conditions=tuple(expressions))
 
 
@@ -87,8 +86,9 @@ def or_(*conditions: Condition | None) -> Condition:
     expressions = [c for c in conditions if c is not None and not _is_always_false(c)]
     if len(expressions) == 1:
         return expressions[0]
-    if any(_is_always_true(c) for c in expressions):
-        return TRUE
+    for c in expressions:
+        if _is_always_true(c):
+            return TRUE
     return Disjunction(conditions=tuple(expressions))
 
 
@@ -115,27 +115,25 @@ def _negate(op: str) -> str:
     return negated  # ty: ignore[invalid-return-type]
 
 
-def _flatten(kind: str, conditions: Sequence[Condition]) -> list[Condition]:
-    out: list[Condition] = []
-    for c in conditions:
-        if isinstance(c, Conjunction | Disjunction) and c.type == kind:
-            out.extend(c.conditions)
-        else:
-            out.append(c)
-    return out
-
-
 def simplify_condition(c: Condition) -> Condition:
-    if isinstance(c, SimpleCondition | CorrelatedSubqueryCondition):
+    if not isinstance(c, Conjunction | Disjunction):
         return c
-    if len(c.conditions) == 1:
-        return simplify_condition(c.conditions[0])
-    conditions = _flatten(c.type, [simplify_condition(x) for x in c.conditions])
-    if c.type == "and" and any(_is_always_false(x) for x in conditions):
-        return FALSE
-    if c.type == "or" and any(_is_always_true(x) for x in conditions):
-        return TRUE
-    return type(c)(conditions=tuple(conditions))
+    conditions = c.conditions
+    if len(conditions) == 1:
+        return simplify_condition(conditions[0])
+    kind = type(c)
+    # The other kind's empty condition, `false` in an `and` and `true` in an `or`, decides it.
+    absorbing = Disjunction if kind is Conjunction else Conjunction
+    flat: list[Condition] = []
+    for x in conditions:
+        x = simplify_condition(x)
+        if type(x) is kind:
+            flat.extend(x.conditions)  # ty: ignore[unresolved-attribute]
+        elif isinstance(x, absorbing) and not x.conditions:
+            return FALSE if kind is Conjunction else TRUE
+        else:
+            flat.append(x)
+    return kind(conditions=tuple(flat))
 
 
 type ExistsFn = Callable[..., Condition]
@@ -146,14 +144,15 @@ class ExpressionBuilder:
 
     def __init__(self, exists: ExistsFn, check_column: Callable[[str], None] | None = None) -> None:
         self._exists = exists
-        self._check_column = check_column or (lambda _column: None)
+        self._check_column = check_column
 
     @property
     def eb(self) -> "ExpressionBuilder":
         return self
 
     def cmp(self, field: str, op_or_value: Any, value: Any = MISSING) -> Condition:
-        self._check_column(field)
+        if self._check_column is not None:  # python-only: strict mode
+            self._check_column(field)
         return cmp(field, op_or_value, value)
 
     def cmp_lit(self, left: Any, op: SimpleOperator, right: Any) -> Condition:

@@ -8,6 +8,8 @@ import pytest
 from pydantic import BaseModel, TypeAdapter
 
 from zero_server.mutators import define_mutator, define_mutators, get_mutator, must_get_mutator
+from zero_server.protocol import ast as ast_module
+from zero_server.protocol.ast import AST, CorrelatedSubquery, Correlation, map_ast
 from zero_server.query.builder import create_builder
 from zero_server.query.registry import (
     InputValidationError,
@@ -22,6 +24,7 @@ from zero_server.server.adapters.sqlalchemy import sqlalchemy_transaction
 from zero_server.server.process_queries import handle_query_request
 from zero_server.server.server_schema import get_server_schema
 from zero_server.server.transaction import ServerTransaction
+from zero_server.shared.asserts import AssertionFailedError
 
 SCHEMA = {
     "tables": {
@@ -171,6 +174,51 @@ async def test_query_endpoint_takes_raw_bytes_and_async_handlers() -> None:
 
     internal = await handle_query_request(handler=not_a_query, schema=schema, body=json.loads(body), user_id="u")
     assert internal.to_json()["reason"] == "internal"
+
+
+async def test_an_awaited_handler_that_raises_fails_only_its_query() -> None:
+    async def handler(name: str, args: Any) -> Any:
+        raise ValueError("nope")
+
+    body = ["transform", [{"id": "1", "name": "q", "args": []}]]
+    response: Any = (
+        await handle_query_request(handler=handler, schema=load_schema(SCHEMA), body=body, user_id="u")
+    ).to_json()
+    assert response["queries"] == [
+        {"error": "app", "id": "1", "name": "q", "message": "nope", "details": {"name": "ValueError"}}
+    ]
+
+
+def test_a_condition_needs_a_value() -> None:
+    with pytest.raises(AssertionFailedError, match=r"Invalid condition\. Too few arguments\."):
+        create_builder(load_schema(SCHEMA)).issue.where("id")
+
+
+def test_map_ast_reuses_what_it_mapped_and_takes_keys_of_any_sequence(monkeypatch: pytest.MonkeyPatch) -> None:
+    schema = load_schema(SCHEMA)
+    mapper = schema.client_to_server_mapper
+
+    def related(parent: Any, child: Any) -> AST:
+        return AST(
+            table="issue",
+            related=(
+                CorrelatedSubquery(
+                    correlation=Correlation(parent_field=parent, child_field=child), subquery=AST(table="plain")
+                ),
+            ),
+        )
+
+    expected = {"parentField": ["owner_id"], "childField": ["id"]}
+    listed = map_ast(related(["ownerID"], ["id"]), mapper)
+    assert listed.to_json()["related"][0]["correlation"] == expected
+    assert mapper.correlations == {}
+
+    monkeypatch.setattr(ast_module, "_MAX_CORRELATIONS", 1)
+    first = map_ast(related(("ownerID",), ("id",)), mapper).related
+    assert first is not None
+    assert map_ast(related(("ownerID",), ("id",)), mapper).related[0].correlation is first[0].correlation  # ty: ignore[not-subscriptable]
+    map_ast(related(("id",), ("id",)), mapper)
+    assert list(mapper.correlations) == [("issue", "plain", ("id",), ("id",))]
 
 
 def test_simplify_unwraps_single_conditions() -> None:

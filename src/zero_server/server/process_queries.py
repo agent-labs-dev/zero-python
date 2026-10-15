@@ -7,7 +7,7 @@ Ported from rocicorp/mono `packages/zero-server/src/queries/process-queries.ts` 
 import asyncio
 import inspect
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
@@ -26,7 +26,7 @@ from zero_server.protocol.schemas import refusal, transform_request_message_sche
 from zero_server.protocol.wire import parse_wire
 from zero_server.query.builder import Query, as_query_internals
 from zero_server.query.registry import QueryParseError
-from zero_server.schema import Schema, client_to_server
+from zero_server.schema import Schema
 from zero_server.shared.error import error_name, get_error_details, get_error_message
 from zero_server.shared.js import js_check_in, js_truthy
 from zero_server.shared.json import JSONValue
@@ -38,6 +38,7 @@ type QueryRequestHandler = Callable[[str, JSONValue | None], Any]
 """Turns a query's name and its single argument into a `Query`, or `{"query": query}`, maybe awaitable."""
 
 type QueryResponse = QuerySuccess | ServerTransformFailed
+type Transformed = TransformedQuery | AppErroredQuery | ParseErroredQuery
 
 _transform_request: TypeAdapter[Any] = TypeAdapter(TransformRequestMessage)
 
@@ -48,7 +49,7 @@ def server_ast(query: Query, schema: Schema) -> AST:
     Python only; upstream inlines `mapAST(ast, clientToServer(schema.tables))` in its query handler.
     Raises on a table or column `schema` does not have.
     """
-    return map_ast(query.ast, client_to_server(schema.tables))
+    return map_ast(query.ast, schema.client_to_server_mapper)
 
 
 async def handle_query_request(
@@ -80,24 +81,24 @@ async def handle_query_request(
             details={"name": "TypeError" if isinstance(error, ValidationError) else error_name(error)},
         )
 
-    async def transform_one(request: TransformRequestQuery) -> TransformedQuery | AppErroredQuery | ParseErroredQuery:
+    def errored(request: TransformRequestQuery, error: Exception) -> AppErroredQuery | ParseErroredQuery:
+        details = get_error_details(error)
+        kind = ParseErroredQuery if isinstance(error, QueryParseError) else AppErroredQuery
+        return kind(
+            id=request.id,
+            name=request.name,
+            message=get_error_message(error),
+            details=details if js_truthy(details) else None,
+        )
+
+    def transformed(request: TransformRequestQuery, result: object) -> Transformed:
         try:
-            result = handler(request.name, request.args[0] if request.args else None)
-            if inspect.isawaitable(result):
-                result = await result
             # Upstream unwraps a deprecated `{query}` result here, which needs an object.
             js_check_in("query", result)
             if isinstance(result, Mapping) and "query" in result:
                 result = result["query"]
         except Exception as error:
-            details = get_error_details(error)
-            errored = ParseErroredQuery if isinstance(error, QueryParseError) else AppErroredQuery
-            return errored(
-                id=request.id,
-                name=request.name,
-                message=get_error_message(error),
-                details=details if js_truthy(details) else None,
-            )
+            return errored(request, error)
         query = as_query_internals(result)
         try:
             ast = map_ast(query.ast, mapper)
@@ -106,20 +107,46 @@ async def handle_query_request(
             raise
         return TransformedQuery(id=request.id, name=request.name, ast=ast)
 
+    async def settle(request: TransformRequestQuery, result: Awaitable[object]) -> Transformed:
+        try:
+            resolved = await result
+        except Exception as error:
+            return errored(request, error)
+        return transformed(request, resolved)
+
     try:
-        mapper = client_to_server(schema.tables)
+        mapper = schema.client_to_server_mapper
         # All at once, as upstream's `Promise.all`: the first failure fails the batch, the rest run on.
-        # Each starts eagerly, as each of upstream's handlers is called before the first is awaited, and
-        # one that never suspends is done without a trip through the event loop.
-        if len(parsed[1]) == 1:
-            return QuerySuccess(queries=[await transform_one(parsed[1][0])], userID=user_id)
-        loop = asyncio.get_running_loop()
-        tasks = [asyncio.eager_task_factory(loop, transform_one(request)) for request in parsed[1]]
-        if all(task.done() for task in tasks):
-            responses = [task.result() for task in tasks]
-        else:
-            responses = await asyncio.gather(*tasks)
-        return QuerySuccess(queries=list(responses), userID=user_id)
+        # Each handler is called before the first is awaited, as upstream's are. One that returns a
+        # query, or an awaitable that never suspends, is done without a task or a trip through the loop.
+        responses: list[Transformed | None] = []
+        pending: list[tuple[int, asyncio.Task[Transformed]]] = []
+        failure: Exception | None = None
+        for request in parsed[1]:
+            try:
+                result = handler(request.name, request.args[0] if request.args else None)
+            except Exception as error:
+                responses.append(errored(request, error))
+                continue
+            try:
+                if not inspect.isawaitable(result):
+                    responses.append(transformed(request, result))
+                    continue
+                task = asyncio.eager_task_factory(asyncio.get_running_loop(), settle(request, result))
+                if task.done():
+                    responses.append(task.result())
+                else:
+                    pending.append((len(responses), task))
+                    responses.append(None)
+            except Exception as error:
+                failure = failure or error
+                responses.append(None)
+        if failure is not None:
+            raise failure
+        if pending:
+            for (i, _), response in zip(pending, await asyncio.gather(*(task for _, task in pending)), strict=True):
+                responses[i] = response
+        return QuerySuccess(queries=responses, user_id=user_id)  # ty: ignore[invalid-argument-type]
     except Exception as error:
         details = get_error_details(error)
         return ServerTransformFailed(

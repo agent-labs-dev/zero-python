@@ -4,20 +4,22 @@ import asyncio
 from typing import Any
 
 from hypothesis import strategies as st
-from pydantic import TypeAdapter
 
 from tests.strategies import strings
 from tests.wire import seed
 from tests.wire.errors import SHAPES
 from zero_server.protocol.application_error import ApplicationError
-from zero_server.protocol.ast import Condition, Parameter
+from zero_server.protocol.ast import AST, Parameter
 from zero_server.query.builder import Query, create_builder
 from zero_server.query.expression import ExpressionBuilder
 from zero_server.query.registry import QueryFn, QueryParseError, define_queries, define_query, must_get_query
 from zero_server.schema import Schema
 from zero_server.shared.js import js_string
 
-_CONDITION: TypeAdapter[Condition] = TypeAdapter(Condition)
+
+def _raw_condition(condition: Any) -> Any:
+    """A condition parsed off the wire, as upstream's `astSchema` parses one."""
+    return AST.from_json({"table": "_", "where": condition}).where
 
 
 def _sub(program: dict[str, Any] | None) -> Any:
@@ -64,7 +66,7 @@ def apply(q: Query, ops: list[list[Any]]) -> Query:
             case "whereFn":
                 q = q.where(lambda eb, e=op[1]: expr(eb, e))
             case "whereRaw":
-                q = q.where(lambda _eb, c=op[1]: _CONDITION.validate_python(c))
+                q = q.where(lambda _eb, c=op[1]: _raw_condition(c))
             case "whereExists":
                 q = q.where_exists(op[1], _sub(op[2]), **_opts(op[3]))
             case "related":
@@ -163,7 +165,8 @@ def _returns(args: Any) -> Any:
 
 def make_handler(schema: Schema) -> Any:
     """Queries by name through the registry, except `raw`, which returns `RETURNS[args]` itself, and
-    `gate.wait`, which finishes only once `gate.open` has run in the same request. One per request."""
+    `gate.wait`, which finishes only once `gate.open` has run in the same request, and the coroutines
+    `async.now`, which never suspends, and `async.throw`. One per request."""
     queries = make_queries(schema)
     zql = create_builder(schema)
     gate = asyncio.Event()
@@ -171,6 +174,12 @@ def make_handler(schema: Schema) -> Any:
     async def wait() -> Any:
         await gate.wait()
         return zql.issue
+
+    async def now() -> Any:
+        return zql.issue
+
+    async def throw() -> Any:
+        raise Exception("nope")
 
     # Synchronous except for `gate.wait`, as a Python handler may be.
     def handler(name: str, args: Any) -> Any:
@@ -181,6 +190,10 @@ def make_handler(schema: Schema) -> Any:
         if name == "gate.open":
             gate.set()
             return zql.user
+        if name == "async.now":
+            return now()
+        if name == "async.throw":
+            return throw()
         return must_get_query(queries, name).fn(args=args, ctx=None)
 
     return handler
@@ -312,8 +325,12 @@ def _ops(schema: Schema, table: str, depth: int) -> st.SearchStrategy[list[list[
             )
         ),
         rel.flatmap(lambda r: st.builds(lambda sub: ["related", r, sub], _sub_program(schema, table, r, depth))),
-        # Upstream's builder takes any direction; z2s sorts ascending only for "asc".
-        st.builds(lambda c, d: ["orderBy", c, d], col, _rarely(st.sampled_from(["asc", "desc"]), st.just("up"), 30)),
+        # Upstream's builder takes any direction, and z2s orders by anything but "asc" descending.
+        st.builds(
+            lambda c, d: ["orderBy", c, d],
+            col,
+            _rarely(st.sampled_from(["asc", "desc"]), st.sampled_from(["ASC", "\ufffdasc", None, "up"]), 30),
+        ),
         st.builds(
             lambda n: ["limit", n],
             _rarely(st.integers(0, 50), st.sampled_from([-1, 1.5, 2**31, None, True, "3", "-1"]), 20),
