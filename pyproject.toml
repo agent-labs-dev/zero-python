@@ -16,7 +16,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 # Floors are the lowest versions the suite passes on, and CI's `floors` job runs it at exactly these.
-dependencies = ["pydantic>=2.12", "typing-extensions>=4.12"]
+dependencies = ["orjson>=3.10.10", "pydantic>=2.12", "typing-extensions>=4.12"]
 
 [project.urls]
 Homepage = "https://github.com/agent-labs-dev/zero-python"

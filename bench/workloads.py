@@ -84,7 +84,9 @@ def check_push(response: dict[str, Any], n: int) -> None:
 
 def json_response(value: Any) -> bytes:
     """What Starlette's `JSONResponse` does with a handler's result."""
-    return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
+    from zero_server.shared.js import js_stringify_bytes
+
+    return js_stringify_bytes(value)
 
 
 class FakeTransaction:

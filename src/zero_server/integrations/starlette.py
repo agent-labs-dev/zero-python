@@ -21,7 +21,7 @@ from zero_server.query.registry import must_get_query
 from zero_server.schema import Schema
 from zero_server.server.process_mutations import Database, TransactFn, handle_mutate_request
 from zero_server.server.process_queries import handle_query_request
-from zero_server.shared.js import js_stringify
+from zero_server.shared.js import js_stringify_bytes
 from zero_server.shared.json import JSONValue
 from zero_server.shared.registry import Registry
 
@@ -35,7 +35,7 @@ class _JSONResponse(JSONResponse):
     """The bytes a TypeScript server sends: `JSON.stringify`'s text, which escapes any lone surrogate."""
 
     def render(self, content: Any) -> bytes:
-        return js_stringify(content).encode()
+        return js_stringify_bytes(content)
 
 
 class Unauthorized(Exception):

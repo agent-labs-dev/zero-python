@@ -7,6 +7,8 @@ from collections.abc import Callable, Mapping
 from decimal import Decimal
 from functools import cmp_to_key
 
+import orjson
+
 
 def js_string(value: object) -> str:
     match value:
@@ -144,6 +146,36 @@ def js_stringify(value: object) -> str:
                 f"{_encode_string(k) if k.isascii() else _quote(k)}:{js_stringify(value[k])}" for k in js_keys(value)
             ]
             return "{" + ",".join(members) + "}"
+
+
+def js_stringify_bytes(value: object) -> bytes:
+    """`js_stringify(value)` as UTF-8, from orjson whenever orjson writes the same text as V8.
+
+    orjson refuses lone surrogates and, with `OPT_STRICT_INTEGER`, integers past 2**53. It writes floats
+    in its own notation (`1.0`, `-0.0`, `1e+20`) and keeps an object's insertion order where V8 puts
+    array-index keys first. Output that might hold either goes through `js_stringify` instead.
+    """
+    try:
+        text = orjson.dumps(value, option=orjson.OPT_STRICT_INTEGER)
+    except TypeError:
+        return js_stringify(value).encode()
+    return js_stringify(value).encode() if _may_differ(text) else text
+
+
+def _may_differ(text: bytes) -> bool:
+    """Whether orjson's `text` might hold a float or an array-index key. False positives only cost time."""
+    if b'\\"' in text:  # an escaped quote, so splitting on quotes no longer finds the strings
+        return True
+    parts = text.split(b'"')
+    outside = b"".join(parts[0::2])
+    if b"." in outside or outside.count(b"e") != outside.count(b"true") + outside.count(b"false"):
+        return True
+    if not any(digit + b'":' in text for digit in _DIGITS):
+        return False
+    return any(parts[i].isdigit() and parts[i + 1][:1] == b":" for i in range(1, len(parts) - 1, 2))
+
+
+_DIGITS = [str(d).encode() for d in range(10)]
 
 
 _SURROGATE = re.compile("[\ud800-\udfff]")
