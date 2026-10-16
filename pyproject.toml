@@ -1,6 +1,6 @@
 [project]
 name = "zero-server"
-version = "0.0.2"
+version = "0.0.3"
 description = "Community Python server SDK for Rocicorp Zero. Not affiliated with Rocicorp."
 readme = "README.md"
 license = "Apache-2.0"
