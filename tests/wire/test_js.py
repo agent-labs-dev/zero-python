@@ -10,7 +10,7 @@ from tests.harness import Harness
 from tests.strategies import json_values, numbers, scalars
 from zero_server.protocol.application_error import ApplicationError, is_application_error
 from zero_server.shared.error import error_name
-from zero_server.shared.js import js_number, js_sort, js_string, js_stringify
+from zero_server.shared.js import js_number, js_sort, js_string, js_stringify, js_stringify_bytes
 
 
 @given(
@@ -37,9 +37,17 @@ json_with_any_text = st.recursive(
 )
 
 
+# The cases where orjson's text could differ from V8's: array-index keys, keys that only end in a digit,
+# floats, integers past 2**53 and escaped quotes.
+@example({"b": 1, "1": [2], "0": {"10": 3}})
+@example({"id1": 1, "s": "1.5e3"})
+@example([1.0, -0.0, 1e20, 1e-6, 2**53])
+@example({"x\\": '"'})
 @given(json_with_any_text | json_values)
 def test_matches_json_stringify(harness: Harness, value: Any) -> None:
-    assert js_stringify(value) == harness.call("jsonStringify", value=value)
+    expected = harness.call("jsonStringify", value=value)
+    assert js_stringify(value) == expected
+    assert js_stringify_bytes(value) == expected.encode()
 
 
 @example(list(range(70, 0, -1)))

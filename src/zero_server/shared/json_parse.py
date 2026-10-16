@@ -12,6 +12,8 @@ Upstream's oracle runs on Node 24. Other JavaScript runtimes word these messages
 import json
 from typing import NoReturn
 
+import orjson
+
 from zero_server.shared.json import JSONValue
 
 _BOM = b"\xef\xbb\xbf"
@@ -54,8 +56,23 @@ def parse_json(text: str) -> JSONValue:
 
 
 def parse_body(body: bytes) -> JSONValue:
-    """`await request.json()` for a request whose body is `body`."""
+    """`await request.json()` for a request whose body is `body`.
+
+    orjson parses what it can. It refuses invalid UTF-8, lone surrogates, numbers past the double range
+    and deep nesting, all of which take the `json` path to keep upstream's results and messages. It also
+    reads an integer past 64 bits as a float, where `json` keeps the int, so a run of 19 digits anywhere
+    takes that path too.
+    """
+    if _LONG_INTEGER not in body.translate(_DIGIT_RUNS):
+        try:
+            return orjson.loads(body.removeprefix(_BOM).removeprefix(_BOM))
+        except orjson.JSONDecodeError:
+            pass
     return parse_json(decode_body(body))
+
+
+_DIGIT_RUNS = bytes(ord("0") if chr(b).isdigit() and b < 128 else ord(" ") for b in range(256))
+_LONG_INTEGER = b"0" * 19
 
 
 _EOS = -1
