@@ -31,7 +31,7 @@ from zero_server.server.process_queries import QueryRequestHandler, handle_query
 from zero_server.server.push_processor import PushProcessor
 from zero_server.shared.json import JSONValue
 
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 
 __all__ = [
     "AST",
