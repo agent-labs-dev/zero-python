@@ -67,6 +67,11 @@ These are the cases where the proof holds Python to something narrower than "ide
 - **Two failures in one query batch.** Upstream runs a batch's handlers together under `Promise.all`, and
   so does Python. When two of them fail the whole batch, which failure is reported depends on how each
   runtime orders its promise callbacks, and the two runtimes can disagree.
+- **Interned queries.** Upstream's builder hands back the query it built before when a step repeats one,
+  keyed so that some values JavaScript's types rule out share a key: a `flip` of `'yes'` with `true`, any
+  `orderBy` direction but `'asc'` with `'desc'`. In one process, such a value can come back as whichever
+  was built first. Python builds what it is given. The harness gives each program a fresh schema, which
+  upstream interns by, so that no comparison depends on the programs before it.
 - **The JavaScript object model.** Upstream's registries also resolve `~`, their marker key, and names every
   object inherits such as `toString`. A Python registry has neither.
 - **The runtime.** The oracle runs on Node 24, and JSON parse messages are V8's. Bun or Deno word them

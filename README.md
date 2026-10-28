@@ -4,7 +4,7 @@ A community Python server SDK for [Zero](https://zero.rocicorp.dev/). It is not 
 
 It ports what `@rocicorp/zero/server` gives a TypeScript backend: the query endpoint (`ZERO_QUERY_URL`), the mutate endpoint (`ZERO_MUTATE_URL`), the ZQL query builder, `defineQueries` and `defineMutators`, and `tx.mutate` and `tx.run` on Postgres. The client and `zero-cache` stay in TypeScript, and a Python backend serves the same TypeScript client a TypeScript backend would.
 
-Compatibility is pinned to one Zero release at a time. This version is tested against `@rocicorp/zero` **1.10.0** (see `ZERO_VERSION`).
+Compatibility is pinned to one Zero release at a time. This version is tested against `@rocicorp/zero` **1.11.3** (see `ZERO_VERSION`).
 
 ## Usage
 
