@@ -4,7 +4,8 @@ Every case is written once per side, from `workloads.json`:
 
 - CPU-only cases: `bench/cpu.py` and `harness/bench/cpu_cases.ts`, with the same case names. The
   query endpoint at batches of 1 and 100 (`query`, and `query_json` with the JSON parse and
-  serialization an HTTP endpoint adds), parsing 1000-item push and transform bodies (`parse`,
+  serialization an HTTP endpoint adds), its two stages on their own (building a query, `build`, and
+  mapping its AST to server names, `map`), parsing 1000-item push and transform bodies (`parse`,
   `parse_json`), the mutate endpoint over an in-memory database (`mutate_cpu`), and compiling ZQL to
   SQL (`z2s`).
 - Cases that wait on Postgres: `tx.run` (`run`), the mutate endpoint (`mutate`) and `PushProcessor`
