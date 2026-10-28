@@ -33,7 +33,7 @@ from zero_server.server.transaction import RetryPredicate
 from zero_server.server.transaction_options import IsolationLevel
 from zero_server.shared.json import JSONValue
 
-__version__ = "0.0.3"
+__version__ = "0.0.4"
 
 __all__ = [
     "AST",
