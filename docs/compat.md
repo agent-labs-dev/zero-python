@@ -70,7 +70,7 @@ These are the cases where the proof holds Python to something narrower than "ide
 - **Interned queries.** Upstream's builder hands back the query it built before when a step repeats one,
   keyed so that some values JavaScript's types rule out share a key: a `flip` of `'yes'` with `true`, any
   `orderBy` direction but `'asc'` with `'desc'`. In one process, such a value can come back as whichever
-  was built first. Python builds what it is given. The harness gives each program a fresh schema, which
+  was built first. Python interns as well, but by exact keys, so it builds what it is given. The harness gives each program a fresh schema, which
   upstream interns by, so that no comparison depends on the programs before it.
 - **A mutator returning `null`.** Upstream records a mutator's return value as result data unless it is
   `undefined`, so a TypeScript mutator can return `null` as data. Python has only `None`, which the port

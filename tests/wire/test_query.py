@@ -203,6 +203,38 @@ def test_async_handlers_match_upstream(harness: Harness, schema: Schema) -> None
     assert _comparable(actual.to_json()) == _comparable(expected)
 
 
+# Every kind of step, for the builder to hand back what it built before when a batch builds it again.
+REBUILT = [
+    _q(
+        "issue",
+        ["where", "open", True],
+        ["where", "priority", ">", 2.5],
+        ["whereFn", ["or", [eq, ["cmpLit", "a", "=", {"$param": ["authData", "sub"]}], exists]]],
+        ["whereExists", "labels", {"ops": [["where", "name", "!=", "zzz"]]}, {"flip": True}],
+        ["whereRaw", {"type": "and", "conditions": [_raw_eq]}],
+        ["related", "owner", None],
+        ["related", "labels", {"ops": [["where", "name", "bug"]]}],
+        ["related", "comments", {"ops": [["orderBy", "id", "desc"], ["limit", 5]]}],
+        ["orderBy", "priority", "desc"],
+        ["start", {"priority": 1.5, "id": "i1", "meta": [1, {"a": None}]}, True],
+        ["limit", 20],
+    ),
+    _q("issue", ["where", "open", True], ["where", "priority", ">", 2.5], ["one"]),
+    _q("issue", ["where", "meta", [1, "x"]], ["where", "title", "IN", ["a", "b"]]),
+]
+
+
+def test_rebuilt_queries_match_upstream(harness: Harness, schema: Schema) -> None:
+    """The same programs, three times over in one batch, built by one builder."""
+    body = [
+        "transform",
+        [{"id": str(n), "name": "prog", "args": [program]} for n, program in enumerate(REBUILT * 3)],
+    ]
+    expected = harness.call("query", body=body, userID="u")
+    actual = asyncio.run(handle_query_request(handler=make_handler(schema), schema=schema, body=body, user_id="u"))
+    assert _comparable(actual.to_json()) == _comparable(expected)
+
+
 def test_each_thrown_shape_matches_upstream(harness: Harness, schema: Schema) -> None:
     names = [
         *(f"throw.{shape}" for shape in SHAPES),

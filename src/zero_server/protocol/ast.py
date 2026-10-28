@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
 from zero_server.protocol.wire import dump_json, json_model, parse_wire
@@ -192,6 +192,9 @@ class CorrelatedSubquery:
     hidden: bool | None = None
     subquery: AST
     system: System | None = None
+    # The builder query `subquery` is the AST of, kept alive with it: the builder interns a query by
+    # the identity of its subqueries' ASTs, so they must outlive the query keyed by them.
+    source: Any = field(default=None, repr=False, compare=False)
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {"correlation": self.correlation.to_json()}
