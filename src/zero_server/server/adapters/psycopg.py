@@ -66,6 +66,7 @@ class PsycopgConnection:
 
     async def query(self, sql: str, params: Sequence[Any] = ()) -> list[Row]:
         async with self.pool.connection() as connection:
+            await _settle(connection)
             # In autocommit, so psycopg sends no `BEGIN` of its own.
             autocommit = connection.autocommit
             await connection.set_autocommit(True)
@@ -97,11 +98,23 @@ async def _transaction[R](
     fn: Callable[[DBTransaction[psycopg.AsyncConnection[Any]]], Awaitable[R]],
     isolation_level: IsolationLevel | None,
 ) -> R:
+    await _settle(connection)
     async with connection.transaction():
         tx = PsycopgTransaction(connection)
         if isolation_level is not None:
             await tx.query(set_isolation_statement(isolation_level))
         return await fn(tx)
+
+
+async def _settle(connection: psycopg.AsyncConnection[Any]) -> None:
+    """Commit a transaction the pool handed the connection out in, keeping what it set.
+
+    A pool `check` that runs a statement opens one, and the pool takes the connection as it is. Left open,
+    psycopg refuses to switch to autocommit, and `transaction()` nests a savepoint in it that the pool
+    rolls back with the rest when the connection returns.
+    """
+    if connection.info.transaction_status == pq.TransactionStatus.INTRANS:
+        await connection.commit()
 
 
 class PsycopgDatabase(ZQLDatabase[psycopg.AsyncConnection[Any]]):
