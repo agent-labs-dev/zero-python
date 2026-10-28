@@ -3,6 +3,7 @@ the responses and of every row either side wrote."""
 
 import contextlib
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from hypothesis import example, given
@@ -532,3 +533,119 @@ async def _insert_items(engine: Any) -> None:
 
     async with engine.begin() as conn:
         await conn.execute(text("INSERT INTO item (id, value) VALUES ('a', 'x'), ('b', 'y'), ('c', 'z')"))
+
+
+# What a pool hook runs on each connection it hands out. `SELECT 1` takes a snapshot, after which a
+# transaction's isolation level can no longer be set.
+CHECKOUT_STATEMENTS = ["SELECT 1", "SET statement_timeout = '4321ms'"]
+
+
+async def _sqlalchemy_checked_out_in_a_transaction(wire_db: WireDB, driver: str, level: Any) -> tuple[Any, Any]:
+    """An engine whose `checkout` hook runs statements through the driver, which opens a transaction."""
+    from sqlalchemy import event
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from zero_server.server.adapters.sqlalchemy import SQLAlchemyConnection
+
+    engine = create_async_engine(wire_db.py_engine.url.set(drivername=f"postgresql+{driver}"), pool_size=1)
+
+    @event.listens_for(engine.sync_engine, "checkout")
+    def _checkout(dbapi_connection: Any, _record: Any, _proxy: Any) -> None:
+        cursor = dbapi_connection.cursor()
+        for statement in CHECKOUT_STATEMENTS:
+            cursor.execute(statement)
+        cursor.close()
+
+    return SQLAlchemyConnection(engine, level), engine.dispose
+
+
+async def _psycopg_checked_out_in_a_transaction(wire_db: WireDB, _driver: str, level: Any) -> tuple[Any, Any]:
+    """A pool whose `check` runs statements, which opens a transaction; the pool checks only that they ran."""
+    from psycopg_pool import AsyncConnectionPool
+
+    from zero_server.server.adapters.psycopg import PsycopgConnection
+
+    async def check(connection: Any) -> None:
+        for statement in CHECKOUT_STATEMENTS:
+            await connection.execute(statement)
+
+    url = wire_db.py_engine.url.set(drivername="postgresql").render_as_string(hide_password=False)
+    pool = AsyncConnectionPool(url, min_size=1, max_size=1, check=check, open=False)
+    await pool.open()
+    return PsycopgConnection(pool, level), pool.close
+
+
+CHECKED_OUT_IN_A_TRANSACTION = {
+    "sqlalchemy": (_sqlalchemy_checked_out_in_a_transaction, "asyncpg"),
+    "sqlalchemy-psycopg": (_sqlalchemy_checked_out_in_a_transaction, "psycopg"),
+    "psycopg": (_psycopg_checked_out_in_a_transaction, "psycopg"),
+}
+"""The adapters whose pool can hand a connection out in a transaction. asyncpg opens none implicitly."""
+
+
+@pytest.mark.parametrize("adapter", CHECKED_OUT_IN_A_TRANSACTION)
+def test_run_matches_upstream_on_a_connection_checked_out_in_a_transaction(
+    harness: Harness, wire_db: WireDB, adapter: str
+) -> None:
+    """A bare read on a connection a pool hook left in a transaction reads as upstream does, and keeps
+    what the hook set."""
+    from tests.wire.conftest import recorded_run
+
+    wire_db.reset()
+    for engine in (wire_db.ts_engine, wire_db.py_engine):
+        wire_db.run(_insert_items(engine))
+    args: dict[str, Any] = {"bare": True, "failFirst": False, "concurrent": False, "runs": 2}
+    expected = harness.call("recordedRun", url=wire_db.ts_url, **args)
+    schema = load_schema(harness.call("wireSchema"))
+    open_connection, driver = CHECKED_OUT_IN_A_TRANSACTION[adapter]
+
+    async def check() -> tuple[Any, Any]:
+        connection, close = await open_connection(wire_db, driver, None)
+        try:
+            actual = await recorded_run(wire_db, adapter, schema, inner=connection, **args)
+            return actual, await connection.query("SHOW statement_timeout")
+        finally:
+            await close()
+
+    actual, timeout = wire_db.run(check())
+    assert as_js(actual) == as_js(expected)
+    assert timeout == [{"statement_timeout": "4321ms"}]
+
+
+@pytest.mark.parametrize("adapter", CHECKED_OUT_IN_A_TRANSACTION)
+@pytest.mark.parametrize("level", [None, "serializable"])
+def test_transactions_match_upstream_on_a_connection_checked_out_in_a_transaction(
+    harness: Harness, wire_db: WireDB, adapter: str, level: Any
+) -> None:
+    """A transaction on a connection a pool hook left in a transaction runs at upstream's isolation level,
+    keeps what the hook set, and commits, alone and in a push's session."""
+    from sqlalchemy import text
+
+    from zero_server.server.zql_database import ZQLDatabase
+
+    wire_db.reset()
+    expected = harness.call("isolation", url=wire_db.ts_url, level=level)
+    open_connection, driver = CHECKED_OUT_IN_A_TRANSACTION[adapter]
+
+    async def callback(tx: Any, _hooks: Any) -> tuple[str, str]:
+        await tx.db_transaction.query("INSERT INTO item (id, value) VALUES ($1, 'x')", [str(uuid4())])
+        rows = await tx.db_transaction.query("SHOW transaction_isolation")
+        timeout = await tx.db_transaction.query("SHOW statement_timeout")
+        return rows[0]["transaction_isolation"], timeout[0]["statement_timeout"]
+
+    async def check() -> tuple[Any, Any, int]:
+        connection, close = await open_connection(wire_db, driver, level)
+        try:
+            db = ZQLDatabase(connection)
+            alone = await db.transaction(callback)
+            async with db.session() as session:
+                in_session = await session.transaction(callback)
+            async with wire_db.py_engine.connect() as conn:
+                committed = (await conn.execute(text("SELECT count(*) FROM item"))).scalar_one()
+            return alone, in_session, committed
+        finally:
+            await close()
+
+    alone, in_session, committed = wire_db.run(check())
+    assert alone == in_session == (expected, "4321ms")
+    assert committed == 2

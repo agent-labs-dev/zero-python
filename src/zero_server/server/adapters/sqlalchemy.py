@@ -82,17 +82,21 @@ class SQLAlchemyConnection:
 
     async def query(self, sql: str, params: Sequence[Any] = ()) -> list[Row]:
         async with self.engine.connect() as connection:
+            await _settle(connection)
             # Autocommit, so SQLAlchemy begins no transaction; the pool resets it when the connection returns.
             connection = await connection.execution_options(isolation_level="AUTOCOMMIT")
             return await (await sqlalchemy_transaction(connection)).query(sql, params)
 
     async def transaction[R](self, fn: Callable[[DBTransaction[AsyncConnection]], Awaitable[R]]) -> R:
-        async with self.engine.begin() as connection:
-            return await fn(await _begun(connection, self._isolation_level))
+        async with self.engine.connect() as connection:
+            await _settle(connection)
+            async with connection.begin():
+                return await fn(await _begun(connection, self._isolation_level))
 
     async def _transaction[R](
         self, connection: AsyncConnection, fn: Callable[[DBTransaction[AsyncConnection]], Awaitable[R]]
     ) -> R:
+        await _settle(connection)
         async with connection.begin():
             if connection.dialect.driver == "asyncpg":
                 await _send_begin(await connection.get_raw_connection())
@@ -101,6 +105,25 @@ class SQLAlchemyConnection:
     def session(self) -> AbstractAsyncContextManager[SessionConnection[AsyncConnection, AsyncConnection]]:
         """One connection for a push's transactions, checked back into the pool once, at the end."""
         return session(self.engine.connect, _close, self._transaction)
+
+
+async def _settle(connection: AsyncConnection) -> None:
+    """Commit a transaction the pool handed the connection out in, keeping what it set.
+
+    A pool `checkout` hook that runs a statement through the driver opens one. Left open, switching to
+    autocommit fails on psycopg and rolls it back on asyncpg, and a transaction's isolation level can't be set.
+    """
+    driver_connection = (await connection.get_raw_connection()).driver_connection
+    assert driver_connection is not None
+    if connection.dialect.driver == "asyncpg":
+        in_transaction = driver_connection.is_in_transaction()
+    else:
+        from psycopg.pq import TransactionStatus
+
+        in_transaction = driver_connection.info.transaction_status == TransactionStatus.INTRANS
+    if in_transaction:
+        # SQLAlchemy sends no `BEGIN` of its own here, so this commits the transaction already open.
+        await (await connection.begin()).commit()
 
 
 async def _begun(connection: AsyncConnection, isolation_level: IsolationLevel | None) -> SQLAlchemyTransaction:

@@ -265,11 +265,19 @@ class _RecordedBare(_Recorded):
 
 
 async def recorded_run(
-    wire_db: WireDB, adapter: str, schema: Schema, *, bare: bool, failFirst: bool, concurrent: bool, runs: int
+    wire_db: WireDB,
+    adapter: str,
+    schema: Schema,
+    *,
+    bare: bool,
+    failFirst: bool,
+    concurrent: bool,
+    runs: int,
+    inner: Any = None,
 ) -> dict[str, Any]:
     from zero_server.query.builder import create_builder
 
-    inner = wire_db.py[adapter](schema).connection
+    inner = inner if inner is not None else wire_db.py[adapter](schema).connection
     connection = _RecordedBare(inner, failFirst) if bare else _Recorded(inner, failFirst)
     db = ZQLDatabase(connection, schema)
     query = create_builder(schema).item.where("value", "!=", "x").order_by("id", "asc")
