@@ -6,9 +6,10 @@ Ported from rocicorp/mono `packages/zero-protocol/src/query-server.ts` at zero/v
 
 from typing import Any, Final, Literal
 
-from zero_server.protocol.custom_queries import TransformResponseBody
+from zero_server.protocol.custom_queries import TransformedQuery, TransformResponseBody
 from zero_server.protocol.error import TransformFailedBody
 from zero_server.protocol.wire import dump_json, json_model
+from zero_server.shared.js import js_stringify_bytes
 
 _UNSET: Final[Any] = object()
 
@@ -38,6 +39,19 @@ class QuerySuccess:
         if self._user_id is not _UNSET:  # python-only: a response built in Python without a user ID
             out["userID"] = dump_json(self._user_id)
         return out
+
+    def to_json_bytes(self) -> bytes:
+        """`js_stringify_bytes(self.to_json())`, joined from each query's text rather than one walk of the whole."""
+        queries = b",".join(
+            [
+                q.to_json_bytes() if type(q) is TransformedQuery else js_stringify_bytes(q.to_json())
+                for q in self.queries
+            ]
+        )
+        out = b'{"kind":"QueryResponse","queries":[' + queries + b"]"
+        if self._user_id is not _UNSET:  # python-only: a response built in Python without a user ID
+            out += b',"userID":' + js_stringify_bytes(dump_json(self._user_id))
+        return out + b"}"
 
 
 type QueryResponse = QuerySuccess | TransformFailedBody

@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
 from zero_server.protocol.wire import dump_json, json_model, parse_wire
 from zero_server.schema import NameMapper as SchemaNameMapper
 from zero_server.shared.asserts import AssertionFailedError
-from zero_server.shared.js import js_keys, js_sort
+from zero_server.shared.js import js_keys, js_sort, js_stringify_bytes
 from zero_server.shared.json import JSONValue
 
 if TYPE_CHECKING:
@@ -68,10 +68,10 @@ def _names(names: Sequence[Any]) -> list[Any]:
 
 # The nodes are plain slotted classes: the builder makes dozens per query, and a Pydantic model costs
 # several times as much to build. They are not frozen, which would cost as much again, but no code
-# changes a node once built: every transformation builds new ones. `to_json` writes the keys in the order
-# upstream's normalized AST has them, which every AST the builder makes is, and leaves out a field that is
-# `None`. `AST.from_json` parses through the wire
-# schema in `ast_wire`, which accepts exactly what upstream's `astSchema` accepts.
+# changes a node once built: every transformation builds new ones, so an AST keeps its JSON text once
+# written. `to_json` writes the keys in the order upstream's normalized AST has them, which every AST the
+# builder makes is, and leaves out a field that is `None`. `AST.from_json` parses through the wire schema
+# in `ast_wire`, which accepts exactly what upstream's `astSchema` accepts.
 
 
 @json_model
@@ -192,6 +192,9 @@ class CorrelatedSubquery:
     hidden: bool | None = None
     subquery: AST
     system: System | None = None
+    # The builder query `subquery` is the AST of, kept alive with it: the builder interns a query by
+    # the identity of its subqueries' ASTs, so they must outlive the query keyed by them.
+    source: Any = field(default=None, repr=False, compare=False)
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {"correlation": self.correlation.to_json()}
@@ -228,6 +231,7 @@ class AST:
     start: Bound | None = None
     limit: int | float | None = None
     order_by: Ordering | None = None
+    _text: bytes | None = field(default=None, init=False, repr=False, compare=False)
 
     def _copy(self) -> AST:
         """A shallow copy, for a caller to change one field of. Twice as fast as `AST(...)` with every field."""
@@ -240,6 +244,7 @@ class AST:
         copy.start = self.start
         copy.limit = self.limit
         copy.order_by = self.order_by
+        copy._text = None
         return copy
 
     def to_json(self) -> dict[str, Any]:
@@ -259,6 +264,13 @@ class AST:
         if self.order_by is not None:
             out["orderBy"] = [_names(part) for part in self.order_by]
         return out
+
+    def to_json_bytes(self) -> bytes:
+        """`to_json()` as the text `JSON.stringify` writes, kept for the next response that sends this AST."""
+        text = self._text
+        if text is None:
+            text = self._text = js_stringify_bytes(self.to_json())
+        return text
 
     @classmethod
     def from_json(cls, value: object) -> AST:

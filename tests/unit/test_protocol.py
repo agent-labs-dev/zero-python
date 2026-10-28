@@ -50,6 +50,10 @@ def test_user_id_is_reported_only_when_set() -> None:
     assert QuerySuccess(queries=[], user_id=None).to_json() == {"kind": "QueryResponse", "queries": [], "userID": None}
     assert QuerySuccess(queries=[]).user_id is None
     assert QuerySuccess(queries=[], user_id="u").user_id == "u"
+    assert QuerySuccess(queries=[]).to_json_bytes() == b'{"kind":"QueryResponse","queries":[]}'
+    assert (
+        QuerySuccess(queries=[], user_id=None).to_json_bytes() == b'{"kind":"QueryResponse","queries":[],"userID":null}'
+    )
 
 
 @pytest.mark.parametrize("user", [{}, {"userID": None}, {"userID": "u1"}])

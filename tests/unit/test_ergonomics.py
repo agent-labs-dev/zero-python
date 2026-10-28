@@ -227,3 +227,11 @@ def test_routes_only_for_what_is_given() -> None:
     assert [r.path for r in zero_routes(schema=load_schema(SCHEMA), authenticate=lambda _r: None)] == []
     with pytest.raises(ValueError, match="needs a database"):
         zero_routes(schema=load_schema(SCHEMA), mutators=define_mutators({}), authenticate=lambda _r: None)
+
+
+def test_builder_reuses_a_query_built_from_the_same_object() -> None:
+    """A value of no JSON type, which only Python code passes, is keyed by its identity."""
+    zql = create_builder(load_schema(json.dumps(SCHEMA)))
+    value, other = object(), object()
+    assert zql.issue.where("meta", value) is zql.issue.where("meta", value)
+    assert zql.issue.where("meta", value) is not zql.issue.where("meta", other)
