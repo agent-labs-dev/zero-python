@@ -115,6 +115,7 @@ PINNED_REFUSALS: list[tuple[str, Any]] = [
     ("cleanupResultsArg", {"clientGroupID": "g", "clientID": "c", "upToMutationID": 1, "b": 1, "a": 2, "0": 3}),
     ("cleanupResultsArg", {"clientGroupID": "g", "clientID": "c", "upToMutationID": "1"}),
     ("cleanupResultsArg", "x"),
+    ("cleanupResultsArg", True),
     ("mutateParams", {"schema": 1, "appID": 2}),
 ]
 
@@ -123,3 +124,15 @@ PINNED_REFUSALS: list[tuple[str, Any]] = [
 def test_pinned_refusals_match_upstream(harness: Harness, schema: str, value: Any) -> None:
     type_, mode = VALITA[schema]
     assert valita.parse_error(value, type_, mode) == harness.call("refusal", schema=schema, value=value)
+
+
+# Draws the random acceptance test seldom makes: query args that are not a list.
+PINNED_VALUES: list[tuple[str, Any]] = [
+    ("transformRequest", ["transform", [{"id": "1", "name": "n", "args": "x"}]]),
+]
+
+
+@pytest.mark.parametrize(("schema", "value"), PINNED_VALUES)
+def test_pinned_values_match_upstream(harness: Harness, schema: str, value: Any) -> None:
+    _strategy, parse = CASES[schema]
+    assert accepts(parse, value) == harness.call("accepts", schema=schema, value=value)

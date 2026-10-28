@@ -21,6 +21,7 @@ def python_accepts(value: Any) -> bool:
     return True
 
 
+@example({"table": "t", "start": {"row": {}, "exclusive": 1}})  # a draw seldom puts a non-boolean there
 @given(corrupted(asts(static=True)))
 def test_accepts_what_upstream_accepts(harness: Harness, value: Any) -> None:
     assert python_accepts(value) == harness.call("accepts", schema="ast", value=value)
