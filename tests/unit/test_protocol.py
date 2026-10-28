@@ -115,22 +115,6 @@ class Upper:
         return column.upper()
 
 
-def test_normalize_refuses_unresolved_parameters() -> None:
-    param = {"type": "simple", "op": "=", "left": {"type": "static", "anchor": "authData", "field": "sub"}}
-    ast = {
-        "table": "t",
-        "where": {
-            "type": "and",
-            "conditions": [
-                {**param, "right": {"type": "literal", "value": 1}},
-                {**param, "right": {"type": "literal", "value": 2}},
-            ],
-        },
-    }
-    with pytest.raises(ValueError, match="Static parameters"):
-        normalize_ast(AST.from_json(ast))
-
-
 def test_normalize_orders_and_before_or() -> None:
     pair = [_eq("a", 1).to_json(), _eq("b", 1).to_json()]
     ast = {

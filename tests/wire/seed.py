@@ -26,7 +26,7 @@ DDL = [
     "CREATE SCHEMA extra",
     """CREATE TABLE extra.gadgets (
         id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, serial UUID NOT NULL, ip INET NOT NULL, amount NUMERIC(10, 2),
-        code VARCHAR(4), mood mood, moods mood[], seen TIMESTAMPTZ)""",
+        code VARCHAR(4), mood mood, moods mood[], seen TIMESTAMPTZ, tag CHAR(3), pad BPCHAR)""",
 ]
 
 TEXTS = ["", "a", "b", "ab", "A", "é", "x%", "a_b", "Ab", "0", "1"]
@@ -43,6 +43,9 @@ COLUMN_VALUES: dict[tuple[str, str], list[Any]] = {
     ("gadget", "ip"): ["10.0.0.1", "10.0.0.1/32", "192.168.0.0/16", "::1", "10.0.0.2"],
     ("gadget", "amount"): [0, 1.5, 1.25, 10, -3.333, 99999999.99],
     ("gadget", "code"): ["", "ab", "abcd", "abcde", "AB"],
+    # `char(3)` pads with spaces and ignores trailing ones when it compares; a LIKE pattern keeps them.
+    ("gadget", "tag"): ["ab", "abc", "ab ", "a%", "a_ ", "abcd"],
+    ("gadget", "pad"): ["x", "x  ", "xy", "%  "],
     ("gadget", "mood"): ["happy", "sad", "meh"],
     ("gadget", "moods"): [[], ["happy"], ["sad", "happy"], ["meh"]],
     ("gadget", "seen"): [0, 946_684_800_000, 946_684_800_000.5, 1_577_836_800_000],
@@ -125,6 +128,8 @@ def rows() -> dict[str, list[dict[str, Any]]]:
                 "mood": maybe(rng.choice(["happy", "sad"])),
                 "moods": maybe(rng.choice(COLUMN_VALUES["gadget", "moods"][:-1])),
                 "seen": maybe(rng.choice(COLUMN_VALUES["gadget", "seen"]) / 1000),
+                "tag": maybe(rng.choice(COLUMN_VALUES["gadget", "tag"][:3])),
+                "pad": maybe(rng.choice(COLUMN_VALUES["gadget", "pad"][:3])),
             }
             for n in range(8)
         ],

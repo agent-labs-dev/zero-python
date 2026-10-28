@@ -60,6 +60,8 @@ const gadget = table('gadget')
     mood: enumeration<'happy' | 'sad'>().optional(),
     moods: json().optional(),
     seen: number().optional(),
+    tag: string().optional(),
+    pad: string().optional(),
   })
   .primaryKey('id');
 

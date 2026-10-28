@@ -107,6 +107,13 @@ PINNED = [
     _q("gadget", ["where", "ip", "10.0.0.1/32"], ["where", "amount", ">", 1.25]),
     _q("gadget", ["where", "code", "<", "abcde"], ["where", "mood", "IN", ["happy", "meh"]]),
     _q("gadget", ["where", "moods", "=", ["happy"]]),
+    # A `char(n)` column compares as `bpchar`, which ignores trailing spaces, but matches a LIKE pattern as
+    # text, which keeps them. A pattern that is not a string matches as its string.
+    _q("gadget", ["where", "tag", "ab "], ["where", "pad", "IN", ["x", "xy "]]),
+    _q("gadget", ["where", "tag", "LIKE", "ab "], ["where", "pad", "NOT ILIKE", "X%"]),
+    _q("gadget", ["where", "tag", "LIKE", None]),
+    _q("gadget", ["where", "tag", "NOT LIKE", 1]),
+    _q("gadget", ["where", "tag", "ILIKE", ["a", "b"]]),
     _q("gadget", ["where", "seen", ">=", 946_684_800_000.5], ["orderBy", "seen", "desc"]),
     _q("gadget", ["orderBy", "serial", "asc"], ["start", {"serial": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"}, True]),
     _q("gadget", ["orderBy", "amount", "desc"], ["start", {"amount": 1.5, "id": "g3"}, False]),

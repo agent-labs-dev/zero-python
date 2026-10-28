@@ -31,6 +31,9 @@ _VALITA_COPY = "unused: copying a value a transform changed; the ported schemas 
 _VALITA_UNION = "unreachable: a union shape the ported schemas do not build (optional or unknown options, a "
 _VALITA_UNION += "literal sharing a type with another option, or an ambiguous discriminator)"
 
+_ZERO_CACHE_PARSE = "unused: zero-cache's parsing of client messages from newer clients; no handler parses with it"
+_AST_DEPTH = "unused: the depth bound zero-cache puts on ASTs from clients; the server parses none"
+
 NOT_PORTED: dict[str, dict[str, str]] = {
     "shared/src/asserts.ts": {
         "7-56": "unused: assertString through assertNotNull; only `assert` and `unreachable` run in ported code",
@@ -42,17 +45,17 @@ NOT_PORTED: dict[str, dict[str, str]] = {
         "69-79": "JavaScript only: details read off a thrown value that is not an Error",
     },
     "shared/src/json-schema.ts": {
-        "13-13": "unreachable: `skipAssertJSONValue` is a build flag, false in the published package",
-        "28-39": "unused: jsonObjectSchema, which no ported schema uses",
+        "17-17": "unreachable: `skipAssertJSONValue` is a build flag, false in the published package",
+        "32-43": "unused: jsonObjectSchema, which no ported schema uses",
     },
     "shared/src/json.ts": {
-        "deepEqual": "unused",
+        "deepEqual": "client only: only the builder's query interning compares with it",
         "assertJSONValue": "unused",
         "assertJSONObject": "unused",
         "assertObjectIsJSONObject": "unused",
         "assertJSONArray": "unused",
         "isJSONObject": "unused: only jsonObjectSchema calls it",
-        "230-230": "unreachable: an array element that is not JSON, which no decoded body or Python value has",
+        "237-237": "unreachable: an array element that is not JSON, which no decoded body or Python value has",
     },
     "shared/src/object-traversal.ts": {
         "iterateLeaves": "unused: only iterateMutators, itself unused, calls it",
@@ -62,33 +65,38 @@ NOT_PORTED: dict[str, dict[str, str]] = {
         "81-84": "unreachable: a missing value always has a path, the property it is missing at",
         "112-113": "unreachable: an invalid union below the top level; every nested union of the ported "
         "schemas is told apart by type or by a literal key, so only a top-level union fails as a union",
-        "115-123": "unreachable: a custom error, which only jsonSchema raises, for a value that is not JSON",
-        "152-155": "unreachable: a union value JSON.stringify cannot write, which no decoded body is",
+        "115-116": "unreachable: a custom error, which only jsonSchema raises, for a value that is not JSON",
+        "145-148": "unreachable: a union value JSON.stringify cannot write, which no decoded body is",
         "is": "unused",
         "assert": "unused",
-        "testOptional": "unused",
         "instanceOfAbstractType": "unused",
         "deepPartial": "unused",
+        "toTerminals": _ZERO_CACHE_PARSE,
+        "assertUnrecognized": _ZERO_CACHE_PARSE,
+        "taggedTupleUnion": _ZERO_CACHE_PARSE,
+        "taggedObjectUnion": _ZERO_CACHE_PARSE,
     },
     "z2s/src/compiler.ts": {
         "100-100": "unreachable: the builder gives every related subquery an alias",
         "167-167": "unreachable: the builder completes every ordering with the primary key",
         "194-194": "unreachable: called only for a query with a start bound",
-        "561-563": "unreachable: TypeScript's exhaustiveness check after every value position type",
-        "604-609": "unreachable: the other side is a null literal, whose own comparison fails first with "
+        "579-581": "unreachable: TypeScript's exhaustiveness check after every value position type",
+        "622-627": "unreachable: the other side is a null literal, whose own comparison fails first with "
         "'Literal of unexpected type'",
-        "625-626": "unreachable: TypeScript's exhaustiveness check after every value position type",
+        "641-642": "unreachable: TypeScript's exhaustiveness check after every value position type",
     },
     "z2s/src/sql.ts": {
-        "64-64": "unreachable: a null literal fails in literalValueComparison before it becomes an argument",
-        "171-175": "unreachable: an argument of type null, which only a null literal would make",
-        "337-343": "unused: identifiers that are not strings, which no ported query builds",
+        "347-355": "unused: identifiers that are not strings, which no ported query builds",
     },
     "zero-cache/src/services/mutagen/error.ts": {
         "10-11": "unreachable: the assertion message, built only when received >= actual, which the caller rules out",
     },
     "zero-protocol/src/ast.ts": {
-        "515-515": "unreachable: after flattening, a compound condition's compound siblings share one type",
+        "813-813": "unreachable: after flattening, a compound condition's compound siblings share one type",
+        "exceedsASTDepth": _AST_DEPTH,
+        "astExceedsDepth": _AST_DEPTH,
+        "conditionExceedsDepth": _AST_DEPTH,
+        "274-276": _AST_DEPTH,
         "compareUTF8MaybeNull": "unreachable: the null arms; every op and type it compares is a string",
     },
     "zero-protocol/src/error.ts": {
@@ -142,12 +150,10 @@ NOT_PORTED: dict[str, dict[str, str]] = {
         "query internals, which carries no details",
     },
     "zero-server/src/schema.ts": {
-        "205-205": "unreachable: called only when there is an incompatibility to report",
+        "209-209": "unreachable: called only when there is an incompatibility to report",
     },
     "zero-types/src/name-mapper.ts": {
-        "26-26": "unused: the context arm; no caller passes a context",
         "tableNameIfKnown": "unused",
-        "45-45": "unused: the context arm; no caller passes a context",
         "row": "unused: only mapCRUD calls it",
         "columns": "unused: only mapCRUD calls it",
     },
@@ -172,11 +178,16 @@ NOT_PORTED: dict[str, dict[str, str]] = {
         "createRunnableBuilder": "deprecated: builds `tx.query`, the legacy query builder",
     },
     "zql/src/query/query-impl.ts": {
-        "135-155": "client only: run, preload and materialize, which throw on a query that is not runnable; "
+        "newQueryImpl": "unused: a query from an AST built elsewhere; the server builds every query itself",
+        "150-152": "unused: reusing an interned root query, which only saves work; the harness builds each "
+        "program from a fresh schema so that no program's result depends on the ones before it",
+        "326-347": "client only: run, preload and materialize, which throw on a query that is not runnable; "
         "the server runs a query with `tx.run`",
         "hash": "client only: the client caches views by AST hash; the server sends ASTs unhashed",
-        "352-355": "unreachable: a relationship has one hop or two, which the schema builder enforces",
-        "564-567": "unreachable: a relationship has one hop or two, which the schema builder enforces",
+        "392-425": "client only: #canonicalize and #sameAs, which only hash calls",
+        "616-619": "unreachable: a relationship has one hop or two, which the schema builder enforces",
+        "895-898": "unreachable: a relationship has one hop or two, which the schema builder enforces",
+        "1090-1091": "unreachable: TypeScript's exhaustiveness check after every condition type",
         "throwQueryNotRunnable": "client only: called only by run, preload and materialize",
     },
     "zql/src/query/query-registry.ts": {

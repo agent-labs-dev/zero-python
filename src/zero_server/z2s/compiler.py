@@ -1,7 +1,7 @@
 """A ZQL AST compiled to one Postgres statement that returns the whole result as JSON.
 
 Ported from rocicorp/mono `packages/z2s/src/compiler.ts` and `packages/zql/src/query/complete-ordering.ts`
-at zero/v1.10.0 (905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+at zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 
 Relationships nest as `json_agg` subqueries, so the statement returns one row whose `zql_result` column
 holds the rows the client-side query would have produced, in client names.
@@ -422,7 +422,15 @@ class _Compiler:
                 rhs = self._value(right, table, left, plural=False)
                 distinct = "IS NOT DISTINCT FROM" if condition.op == "IS" else "IS DISTINCT FROM"
                 return f"{lhs} {distinct} {rhs}"
-            case "=" | "!=" | "<" | ">" | "<=" | ">=" | "LIKE" | "NOT LIKE" | "ILIKE" | "NOT ILIKE":
+            case "LIKE" | "NOT LIKE" | "ILIKE" | "NOT ILIKE":
+                # The pattern is bound as a string, not as the column's type: as a `char(n)` column's
+                # `bpchar` it would lose its trailing spaces. Any other value matches as its string.
+                check(isinstance(right, LiteralReference), _STATIC)
+                lhs = self._value(left, table, right, plural=False)
+                pattern = right.value  # ty: ignore[unresolved-attribute]
+                rhs = self.params.null() if pattern is None else self.params.literal(js_string(pattern))
+                return f"{lhs} {condition.op} {rhs}"
+            case "=" | "!=" | "<" | ">" | "<=" | ">=":
                 lhs = self._value(left, table, right, plural=False)
                 rhs = self._value(right, table, left, plural=False)
                 return f"{lhs} {condition.op} {rhs}"
@@ -468,7 +476,7 @@ class _Compiler:
                     # a non-null scalar here. An empty list takes its element type from it.
                     return self.params.plural_literal(literal_type(value[0] if value else other.value), value)
                 if not isinstance(value, str | int | float):
-                    raise Exception(f"Literal of unexpected type. {js_string(value)} of type object")
+                    raise Exception("Literal of unexpected type: object")
                 return self.params.literal(value)
 
 

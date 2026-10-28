@@ -110,6 +110,9 @@ async def get_server_schema(tx: DBTransaction[object], schema: Schema) -> Server
             type_ = row["typename"]
         if type_ in ("bpchar", "character", "character varying", "varchar") and row["length"]:
             type_ = f"{type_}({row['length']})"
+        elif type_ == "character":
+            # Without a length `character` means `character(1)`, so an unbounded `bpchar` is `bpchar`.
+            type_ = "bpchar"
         if type_ in ("numeric", "decimal") and row["precision"] is not None and row["scale"] is not None:
             type_ = f"{type_}({row['precision']}, {row['scale']})"
         table[row["column"]] = ServerColumnSchema(type=type_, is_enum=is_enum, is_array=is_array)

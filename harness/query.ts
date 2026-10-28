@@ -16,6 +16,16 @@ type Opts = {flip?: boolean; scalar?: boolean} | null;
 
 export const zql = createBuilder(schema) as Q;
 
+/**
+ * A builder of its own for one program. Upstream interns queries per schema object, keyed so that some
+ * inputs JavaScript's types rule out (a `flip` of `'yes'`, an `orderBy` direction other than `'asc'`)
+ * share a key with others, and hand back whichever was built first. A fresh schema object per program
+ * keeps one program's result from depending on the programs before it.
+ */
+function fresh(): Q {
+  return createBuilder({...schema}) as Q;
+}
+
 function sub(program: Sub): ((q: Q) => Q) | undefined {
   return program ? q => apply(q, program.ops) : undefined;
 }
@@ -89,7 +99,7 @@ export function apply(q: Q, ops: unknown[][]): Q {
 }
 
 type Program = {table: string; ops: unknown[][]};
-const run = ({args}: {args: Program}) => apply(zql[args.table], args.ops);
+const run = ({args}: {args: Program}) => apply(fresh()[args.table], args.ops);
 
 const program = {
   '~standard': {
@@ -211,7 +221,7 @@ export async function runQuery({url, program}: {url: string; program: Program}) 
     databases.set(url, db);
   }
   try {
-    return {rows: (await db.run(apply(zql[program.table], program.ops))) ?? null};
+    return {rows: (await db.run(apply(fresh()[program.table], program.ops))) ?? null};
   } catch (e) {
     return {error: e instanceof Error ? e.message : String(e)};
   }

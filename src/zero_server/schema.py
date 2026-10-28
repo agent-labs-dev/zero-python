@@ -93,7 +93,7 @@ class NameMapper:
     def _table(self, src: str) -> DestNames:
         table = self._tables.get(src)
         if table is None:
-            raise Exception(f'unknown table "{src}" ')
+            raise Exception(f'unknown table "{src}"')
         return table
 
     def table_name(self, src: str) -> str:
@@ -113,7 +113,7 @@ class NameMapper:
         src = src if isinstance(src, str) else js_string(src)
         dest = self._table(table).columns.get(src)
         if not dest:
-            raise Exception(f'unknown column "{src}" of "{table}" table ')
+            raise Exception(f'unknown column "{src}" of "{table}" table')
         return dest
 
 

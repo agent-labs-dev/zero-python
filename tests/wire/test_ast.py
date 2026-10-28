@@ -47,16 +47,8 @@ def _eq(left: dict[str, Any]) -> dict[str, Any]:
     }
 )
 def test_normalizes_like_upstream(harness: Harness, value: Any) -> None:
-    try:
-        expected: Any = harness.call("normalizeAST", ast=value)
-    except HarnessError as e:
-        expected = e
-    if isinstance(expected, HarnessError):
-        assert "Static parameters should be resolved" in str(expected)
-        with pytest.raises(ValueError, match="Static parameters should be resolved before normalization"):
-            normalize_ast(AST.from_json(value))
-    else:
-        assert as_js(normalize_ast(AST.from_json(value)).to_json()) == as_js(expected)
+    expected = harness.call("normalizeAST", ast=value)
+    assert as_js(normalize_ast(AST.from_json(value)).to_json()) == as_js(expected)
 
 
 def _mapper(tables: dict[str, Any]) -> NameMapper:
