@@ -35,9 +35,11 @@ from zero_server.protocol.ast import (
     Correlation,
     Direction,
     LiteralReference,
+    NameMapper,
     SimpleCondition,
     System,
     insert_related,
+    map_ast,
     normalize_condition,
 )
 from zero_server.query.expression import MISSING, ExpressionBuilder, _position, and_, cmp, simplify_condition
@@ -86,6 +88,7 @@ class Query(Generic[R, C]):
         "_children",
         "_format",
         "_junction",
+        "_mapped",
         "_parent",
         "_schema",
         "_strict",
@@ -113,6 +116,7 @@ class Query(Generic[R, C]):
         self._strict = strict
         self._parent: Query[Any, Any] | None = None
         self._children: dict[Any, weakref.ref[Any]] | None = None
+        self._mapped: tuple[NameMapper, AST] | None = None
 
     def __repr__(self) -> str:  # python-only: for debugging
         return f"{type(self).__name__}({self._ast.to_json()!r})"
@@ -152,6 +156,7 @@ class Query(Generic[R, C]):
         query._strict = self._strict
         query._parent = None
         query._children = None
+        query._mapped = None
         return query
 
     def _derive[T](self, key: Any, build: Callable[[], T]) -> T:
@@ -263,17 +268,20 @@ class Query(Generic[R, C]):
         if relationship.startswith(SUBQ_PREFIX):
             raise Exception(f'Relationship names may not start with "{SUBQ_PREFIX}". That is a reserved prefix.')
         related = self._relationship(relationship)
+        base_key = ("related_base", relationship)
+        q = self._find(base_key)
         if len(related) == 1:
             (hop,) = related
-            q = self._derive(
-                ("related_base", relationship),
-                lambda: self._new(
-                    hop.dest_schema,
-                    AST(table=hop.dest_schema, alias=relationship),
-                    None,
-                    _ONE if hop.cardinality == "one" else _MANY,
-                ),
-            )
+            if q is None:
+                q = self._keep(
+                    base_key,
+                    self._new(
+                        hop.dest_schema,
+                        AST(table=hop.dest_schema, alias=relationship),
+                        None,
+                        _ONE if hop.cardinality == "one" else _MANY,
+                    ),
+                )
             sub = _as_query(cb(q) if cb else q)
             check(len(hop.source_field) >= 1, "The source of a relationship must specify at last 1 field")
             check(len(hop.dest_field) >= 1, "The destination of a relationship must specify at last 1 field")
@@ -293,15 +301,16 @@ class Query(Generic[R, C]):
             return self._with_relationship(relationship, sub, entry)
 
         first, second = related
-        q = self._derive(
-            ("related_base", relationship),
-            lambda: self._new(
-                second.dest_schema,
-                AST(table=second.dest_schema, alias=relationship),
-                relationship,
-                _ONE if second.cardinality == "one" else _MANY,
-            ),
-        )
+        if q is None:
+            q = self._keep(
+                base_key,
+                self._new(
+                    second.dest_schema,
+                    AST(table=second.dest_schema, alias=relationship),
+                    relationship,
+                    _ONE if second.cardinality == "one" else _MANY,
+                ),
+            )
         sub = _as_query(cb(q) if cb else q)
         _check_keys(first, second)
         found = self._find(("related", relationship, id(sub._ast)))
@@ -374,16 +383,16 @@ class Query(Generic[R, C]):
         scalar: bool | None = None,
     ) -> Condition:
         related = self._relationship(relationship)
+        base_key = ("exists_base", relationship)
+        q = self._find(base_key)
         if len(related) == 1:
             (hop,) = related
-            check(len(hop.source_field) >= 1, "Invalid relationship")
-            check(len(hop.dest_field) >= 1, "Invalid relationship")
-            q = self._derive(
-                ("exists_base", relationship),
-                lambda: self._new(
-                    hop.dest_schema, AST(table=hop.dest_schema, alias=f"{SUBQ_PREFIX}{relationship}"), None
-                ),
-            )
+            check(hop.source_field and hop.dest_field, "Invalid relationship")
+            if q is None:
+                q = self._keep(
+                    base_key,
+                    self._new(hop.dest_schema, AST(table=hop.dest_schema, alias=f"{SUBQ_PREFIX}{relationship}"), None),
+                )
             sub = _as_query(cb(q) if cb else q)
             return CorrelatedSubqueryCondition(
                 related=CorrelatedSubquery(
@@ -399,11 +408,11 @@ class Query(Generic[R, C]):
 
         first, second = related
         _check_keys(first, second)
-        alias = f"{SUBQ_PREFIX}zhidden_{relationship}"
-        q = self._derive(
-            ("exists_base", relationship),
-            lambda: self._new(second.dest_schema, AST(table=second.dest_schema, alias=alias), relationship),
-        )
+        if q is None:
+            alias = f"{SUBQ_PREFIX}zhidden_{relationship}"
+            q = self._keep(
+                base_key, self._new(second.dest_schema, AST(table=second.dest_schema, alias=alias), relationship)
+            )
         to_dest = _as_query(cb(q) if cb else q)
         return CorrelatedSubqueryCondition(
             related=CorrelatedSubquery(
@@ -476,6 +485,12 @@ def _condition_key(condition: Condition) -> Any:
     keeps alive (`CorrelatedSubquery.source`)."""
     kind = type(condition)
     if kind is SimpleCondition:
+        left, right, op = condition.left, condition.right, condition.op  # ty: ignore[unresolved-attribute]
+        # A column compared with a scalar, by far the usual condition, keyed flat: one tuple, not five.
+        if type(left) is ColumnReference and type(right) is LiteralReference and type(op) is str:
+            name, value = left.name, right.value
+            if type(name) is str and type(value) in _SCALAR_TYPES:
+                return name, op, type(value), value
         return (
             kind,
             _position_key(condition.left),  # ty: ignore[unresolved-attribute]
@@ -484,10 +499,11 @@ def _condition_key(condition: Condition) -> Any:
         )
     if kind is CorrelatedSubqueryCondition:
         related: CorrelatedSubquery = condition.related  # ty: ignore[unresolved-attribute]
+        correlation = related.correlation
         return (
             kind,
-            _tag(related.correlation.parent_field),
-            _tag(related.correlation.child_field),
+            _tag(correlation.parent_field),
+            _tag(correlation.child_field),
             _tag(related.hidden),
             _tag(related.system),
             _subquery_key(related),
@@ -508,8 +524,7 @@ def _subquery_key(related: CorrelatedSubquery) -> Any:
 
 
 def _check_keys(first: Connection, second: Connection) -> None:
-    for key in (first.source_field, first.dest_field, second.source_field, second.dest_field):
-        check(len(key) >= 1, "Invalid relationship")
+    check(first.source_field and first.dest_field and second.source_field and second.dest_field, "Invalid relationship")
 
 
 def _is_number(value: object) -> bool:
@@ -541,6 +556,16 @@ def as_query_internals(q: object) -> AnyQuery:
     )
     assert isinstance(q, Query)
     return q
+
+
+def mapped_ast(query: AnyQuery, mapper: NameMapper) -> AST:
+    """`map_ast(query.ast, mapper)`, kept on the query: an interned query comes back request after request."""
+    mapped = query._mapped
+    if mapped is not None and mapped[0] is mapper:
+        return mapped[1]
+    ast = map_ast(query._ast, mapper)
+    query._mapped = (mapper, ast)
+    return ast
 
 
 def _as_query(q: object) -> AnyQuery:

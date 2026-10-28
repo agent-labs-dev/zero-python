@@ -11,6 +11,7 @@ from pydantic import StrictStr
 
 from zero_server.protocol.ast import AST
 from zero_server.protocol.wire import PlainJSON, RefusesNullOffWire, WireModel, json_model
+from zero_server.shared.js import js_stringify_bytes
 from zero_server.shared.json import JSONValue
 
 
@@ -37,6 +38,11 @@ class TransformedQuery:
 
     def to_json(self) -> dict[str, Any]:
         return {"id": self.id, "name": self.name, "ast": self.ast.to_json()}
+
+    def to_json_bytes(self) -> bytes:
+        """`js_stringify_bytes(self.to_json())`, from the text the AST keeps."""
+        id_, name = js_stringify_bytes(self.id), js_stringify_bytes(self.name)
+        return b'{"id":%b,"name":%b,"ast":%b}' % (id_, name, self.ast.to_json_bytes())
 
 
 class AppErroredQuery(RefusesNullOffWire):

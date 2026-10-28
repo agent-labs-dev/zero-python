@@ -14,7 +14,7 @@ from tests.wire.errors import SHAPES
 from tests.wire.programs import RETURNS, apply, make_handler, programs
 from zero_server import Query, create_builder, server_ast
 from zero_server.schema import Schema, load_schema
-from zero_server.server.process_queries import handle_query_request
+from zero_server.server.process_queries import handle_query_request, query_response_bytes
 from zero_server.shared.js import js_stringify
 
 
@@ -64,6 +64,8 @@ def test_queries_match_upstream(harness: Harness, schema: Schema) -> None:
             handle_query_request(handler=make_handler(schema), schema=schema, body=body, user_id=user_id)
         )
         assert _comparable(actual.to_json()) == _comparable(expected)
+        # The text the HTTP endpoint sends, joined from each AST's own.
+        assert query_response_bytes(actual) == _comparable(expected).encode()
 
     check()
 
