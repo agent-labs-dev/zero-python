@@ -1,7 +1,7 @@
 """What zero-cache POSTs to a query endpoint, and what each query becomes.
 
-Ported from rocicorp/mono `packages/zero-protocol/src/custom-queries.ts` at zero/v1.10.0
-(905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/zero-protocol/src/custom-queries.ts` at zero/v1.11.3
+(e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 """
 
 from dataclasses import dataclass
@@ -10,12 +10,12 @@ from typing import Any, Literal
 from pydantic import StrictStr
 
 from zero_server.protocol.ast import AST
-from zero_server.protocol.wire import PlainJSON, RefusesNullOffWire, StrictWireModel, json_model
+from zero_server.protocol.wire import PlainJSON, RefusesNullOffWire, WireModel, json_model
 from zero_server.shared.json import JSONValue
 
 
-class TransformRequestQuery(StrictWireModel):
-    """Parsed in upstream's default (strict) mode, so an undeclared key fails the whole request."""
+class TransformRequestQuery(WireModel):
+    """Parsed in strip mode, so a newer zero-cache can add fields to the request."""
 
     id: StrictStr
     name: StrictStr

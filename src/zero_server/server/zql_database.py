@@ -1,13 +1,15 @@
 """A transaction provider over any Postgres driver, with `tx.mutate` and `tx.run` for mutators.
 
-Ported from rocicorp/mono `packages/zero-server/src/zql-database.ts` at zero/v1.10.0
-(905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/zero-server/src/zql-database.ts`, with the server schema cache of
+`CRUDMutatorFactory` in `custom.ts`, at zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538).
+Apache-2.0, Copyright Rocicorp.
 
 A driver plugs in as a `DBConnection`: something that opens a transaction and hands back a
 `DBTransaction` whose `query` takes `$1`-style placeholders. `zero_server.server.adapters` has one per
 supported driver.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, Protocol, overload
@@ -17,7 +19,7 @@ from zero_server.query.builder import OneQuery, Query
 from zero_server.schema import Schema
 from zero_server.server.process_mutations import TransactionProviderHooks, TransactionProviderInput
 from zero_server.server.server_schema import ServerSchema, get_server_schema
-from zero_server.server.transaction import DBTransaction, ServerTransaction
+from zero_server.server.transaction import ClosableDBTransaction, DBTransaction, Queryable, ServerTransaction
 from zero_server.shared.js import has_surrogate, js_number, js_stringify, to_well_formed
 from zero_server.z2s.sql import ident
 
@@ -39,6 +41,9 @@ class DBConnection[W](Protocol):
 
     A connection may also have a `session()`: an async context manager yielding a `DBConnection` whose
     transactions all run on one connection from the pool, in turn, as a push's mutations do.
+
+    It may also have `query`, with `DBTransaction.query`'s signature: one statement on the connection
+    with no transaction of its own. `ZQLDatabase.run` then reads without `BEGIN`/`COMMIT`.
     """
 
     async def transaction[R](self, fn: Callable[[DBTransaction[W]], Awaitable[R]]) -> R: ...
@@ -140,6 +145,24 @@ class ZQLDatabase[W]:
         self.connection = connection
         self.schema = schema
         self._server_schema: ServerSchema | None = None
+        # The fetch in flight, so concurrent cold callers share one catalog query.
+        self._server_schema_fetch: asyncio.Future[ServerSchema] | None = None
+
+    async def _get_or_fetch_server_schema(self, queryable: Queryable, schema: Schema) -> ServerSchema:
+        if self._server_schema is not None:
+            return self._server_schema
+        fetch = self._server_schema_fetch
+        if fetch is None:
+            fetch = self._server_schema_fetch = asyncio.ensure_future(get_server_schema(queryable, schema))
+            fetch.add_done_callback(self._forget_failed_fetch)
+        # Shielded: a caller giving up must not cancel the fetch the others wait on.
+        self._server_schema = await asyncio.shield(fetch)
+        return self._server_schema
+
+    def _forget_failed_fetch(self, fetch: "asyncio.Future[ServerSchema]") -> None:
+        # Don't poison the cache with a transient failure.
+        if fetch.cancelled() or fetch.exception() is not None:
+            self._server_schema_fetch = None
 
     async def transaction[R](
         self,
@@ -173,12 +196,25 @@ class ZQLDatabase[W]:
         )
 
         async def run(tx: DBTransaction[W]) -> R:
-            if self.schema is not None and self._server_schema is None:
-                self._server_schema = await get_server_schema(tx, self.schema)
-            server_tx = ServerTransaction(
-                tx, transaction_input.client_id, transaction_input.mutation_id, self.schema, self._server_schema
-            )
-            return await callback(server_tx, _Hooks(tx, transaction_input))
+            # What the mutator's `tx` uses. Closed once the callback settles, so a `tx` that outlives its
+            # transaction, such as one captured by a `tx.retry_on()` predicate, raises instead of reaching
+            # a connection that may already be back in the pool.
+            mutator_tx = ClosableDBTransaction(tx)
+            try:
+                server_schema = (
+                    None if self.schema is None else await self._get_or_fetch_server_schema(mutator_tx, self.schema)
+                )
+                server_tx = ServerTransaction(
+                    mutator_tx,
+                    transaction_input.client_id,
+                    transaction_input.mutation_id,
+                    self.schema,
+                    server_schema,
+                    transaction_input.add_retry_predicate,
+                )
+                return await callback(server_tx, _Hooks(tx, transaction_input))
+            finally:
+                mutator_tx.close()
 
         return await connection.transaction(run)
 
@@ -187,12 +223,30 @@ class ZQLDatabase[W]:
     @overload
     async def run[R](self, query: Query[R, Any]) -> list[R]: ...
     async def run(self, query: Query[Any, Any]) -> Any:
-        """Run a ZQL query in a transaction of its own; see `ServerTransaction.run`."""
+        """Run a single read query; see `ServerTransaction.run` for what it returns.
 
-        async def run(tx: ServerTransaction[W], _hooks: TransactionProviderHooks) -> Any:
-            return await tx.run(query)
+        When the connection has `query`, the SQL goes out as a bare statement with no `BEGIN`/`COMMIT`
+        around it, so Postgres releases its locks as soon as it finishes. Otherwise it runs in a
+        transaction of its own. For several reads to see one snapshot, run them with `tx.run` inside
+        `transaction`.
+        """
+        connection = self.connection
+        if hasattr(connection, "query"):
+            target: Queryable = connection  # ty: ignore[invalid-assignment]
+            return await self._run_on(target, query)
 
-        return await self.transaction(run)
+        async def run(tx: DBTransaction[W]) -> Any:
+            return await self._run_on(tx, query)
+
+        return await connection.transaction(run)
+
+    async def _run_on(self, target: Queryable, query: Query[Any, Any]) -> Any:
+        from zero_server.server.pg_query_executor import execute_postgres_query
+
+        if self.schema is None:  # python-only: a database built without one
+            raise RuntimeError("tx.run needs a schema: pass one to the database")
+        server_schema = await self._get_or_fetch_server_schema(target, self.schema)
+        return await execute_postgres_query(target, query.ast, query.format, self.schema, server_schema)
 
 
 class _Session[W]:

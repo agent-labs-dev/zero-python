@@ -12,7 +12,7 @@ from zero_server.protocol.ast import AST
 from zero_server.query.builder import Format
 from zero_server.schema import Schema
 from zero_server.server.server_schema import ServerSchema
-from zero_server.server.transaction import DBTransaction, Row
+from zero_server.server.transaction import Queryable, Row
 from zero_server.shared.js import js_keys
 from zero_server.z2s.compiler import ZQL_RESULT_KEY, compile_query
 
@@ -66,7 +66,7 @@ def extract_zql_result(rows: list[Row]) -> Any:
 
 
 async def execute_postgres_query(
-    tx: DBTransaction[Any], ast: AST, format: Format, schema: Schema, server_schema: ServerSchema
+    tx: Queryable, ast: AST, format: Format, schema: Schema, server_schema: ServerSchema
 ) -> Any:
     """The query's rows, as lists and dicts in client names. A singular query with no row returns `None`."""
     text, values = compile_query(server_schema, schema, ast, format)

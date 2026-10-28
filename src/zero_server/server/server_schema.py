@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from zero_server.schema import Schema
 from zero_server.server.pg_types import zql_value_type
-from zero_server.server.transaction import DBTransaction
+from zero_server.server.transaction import Queryable
 from zero_server.shared.asserts import check
 
 
@@ -86,7 +86,7 @@ def _schema_and_table(name: str, server_name: str | None) -> tuple[str, str]:
     return "public", server_name if server_name is not None else name
 
 
-async def get_server_schema(tx: DBTransaction[object], schema: Schema) -> ServerSchema:
+async def get_server_schema(tx: Queryable, schema: Schema) -> ServerSchema:
     pairs = [_schema_and_table(t.name, t.server_name) for t in schema.tables.values()]
     if not pairs:
         return {}

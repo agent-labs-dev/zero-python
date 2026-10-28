@@ -29,6 +29,8 @@ from zero_server.server.process_mutations import (
 )
 from zero_server.server.process_queries import QueryRequestHandler, handle_query_request, server_ast
 from zero_server.server.push_processor import PushProcessor
+from zero_server.server.transaction import RetryPredicate
+from zero_server.server.transaction_options import IsolationLevel
 from zero_server.shared.json import JSONValue
 
 __version__ = "0.0.3"
@@ -40,6 +42,7 @@ __all__ = [
     "CustomMutation",
     "ErrorReason",
     "ExpressionBuilder",
+    "IsolationLevel",
     "JSONValue",
     "MutateResponse",
     "MutateSuccess",
@@ -54,6 +57,7 @@ __all__ = [
     "Query",
     "QueryParseError",
     "QueryRequestHandler",
+    "RetryPredicate",
     "Schema",
     "ServerPushFailed",
     "TransactFn",

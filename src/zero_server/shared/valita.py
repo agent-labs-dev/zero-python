@@ -22,7 +22,7 @@ from typing import Any, Literal
 from zero_server.shared.js import js_keys, js_number, js_stringify
 
 type Key = str | int
-type Mode = Literal["passthrough", "strict"]
+type Mode = Literal["passthrough", "strict", "strip"]
 
 FORBID_EXTRA_KEYS = 0x1
 MISSING_VALUE = 0x4
@@ -102,7 +102,8 @@ class Type:
         return Optional(self)
 
     def try_(self, value: object, mode: Mode | None) -> Result:
-        return self.func(value, 0 if mode == "passthrough" else FORBID_EXTRA_KEYS)
+        # Only strict mode, the default, refuses keys a schema does not declare; strip drops them.
+        return self.func(value, FORBID_EXTRA_KEYS if mode is None or mode == "strict" else 0)
 
 
 class _Primitive(Type):
@@ -373,12 +374,10 @@ def message(tree: Tree, value: object, schema: Type, mode: Mode | None) -> str:
             # Upstream reads the length off the whole value, not the array at the path.
             got = len(value) if isinstance(value, list | tuple) else "undefined"
             return f"Expected array with length {length}{at_path}. Got array with length {got}"
-        case "unrecognized_keys":
-            if len(leaf.keys) == 1:
-                return f"Unexpected property {leaf.keys[0]}{at_path}"
-            return f"Unexpected properties {_display_list('and', leaf.keys)}{at_path}"
         case _:
-            # An `invalid_union`, which only a union at the top of the schema produces here.
+            # An `invalid_union`, which only a union at the top of the schema produces here. No handler
+            # parses strictly where an undeclared key can be the first issue, so no `unrecognized_keys`.
+            assert leaf.code == "invalid_union"
             assert isinstance(schema, UnionType)
             return _deepest_union_error(value, schema, mode or "strict")
 

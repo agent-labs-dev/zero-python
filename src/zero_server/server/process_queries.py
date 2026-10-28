@@ -1,7 +1,7 @@
 """The query endpoint: turn each named query zero-cache forwards into its AST, in server names.
 
-Ported from rocicorp/mono `packages/zero-server/src/queries/process-queries.ts` at zero/v1.10.0
-(905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/zero-server/src/queries/process-queries.ts` at zero/v1.11.3
+(e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 """
 
 import asyncio
@@ -77,7 +77,7 @@ async def handle_query_request(
         message = get_error_message(error)
         if isinstance(error, ValidationError):
             decoded = parse_body(body) if isinstance(body, bytes) else body
-            message = refusal(decoded, transform_request_message_schema, None, message)
+            message = refusal(decoded, transform_request_message_schema, "strip", message)
         return ServerTransformFailed(
             reason=ErrorReason.PARSE,
             message=f"Failed to parse query request: {message}",

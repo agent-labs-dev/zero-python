@@ -72,6 +72,9 @@ These are the cases where the proof holds Python to something narrower than "ide
   `orderBy` direction but `'asc'` with `'desc'`. In one process, such a value can come back as whichever
   was built first. Python builds what it is given. The harness gives each program a fresh schema, which
   upstream interns by, so that no comparison depends on the programs before it.
+- **A mutator returning `null`.** Upstream records a mutator's return value as result data unless it is
+  `undefined`, so a TypeScript mutator can return `null` as data. Python has only `None`, which the port
+  takes as returning nothing, as the tests' mutators never return `null`.
 - **The JavaScript object model.** Upstream's registries also resolve `~`, their marker key, and names every
   object inherits such as `toString`. A Python registry has neither.
 - **The runtime.** The oracle runs on Node 24, and JSON parse messages are V8's. Bun or Deno word them

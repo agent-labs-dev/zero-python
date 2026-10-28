@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 from zero_server.schema import Schema
 from zero_server.server.adapters._session import SessionConnection, session
 from zero_server.server.transaction import DBTransaction, Row
+from zero_server.server.transaction_options import IsolationLevel, set_isolation_statement
 from zero_server.server.zql_database import PostgresError, ZQLDatabase, well_formed_params
 
 
@@ -59,29 +60,58 @@ class PsycopgTransaction:
 
 
 class PsycopgConnection:
-    def __init__(self, pool: "AsyncConnectionPool") -> None:
+    def __init__(self, pool: "AsyncConnectionPool", isolation_level: IsolationLevel | None = None) -> None:
         self.pool = pool
+        self._isolation_level = isolation_level
+
+    async def query(self, sql: str, params: Sequence[Any] = ()) -> list[Row]:
+        async with self.pool.connection() as connection:
+            # In autocommit, so psycopg sends no `BEGIN` of its own.
+            autocommit = connection.autocommit
+            await connection.set_autocommit(True)
+            try:
+                return await PsycopgTransaction(connection).query(sql, params)
+            finally:
+                await connection.set_autocommit(autocommit)
 
     async def transaction[R](self, fn: Callable[[DBTransaction[psycopg.AsyncConnection[Any]]], Awaitable[R]]) -> R:
         async with self.pool.connection() as connection:
-            return await _transaction(connection, fn)
+            return await self._transaction(connection, fn)
+
+    async def _transaction[R](
+        self,
+        connection: psycopg.AsyncConnection[Any],
+        fn: Callable[[DBTransaction[psycopg.AsyncConnection[Any]]], Awaitable[R]],
+    ) -> R:
+        return await _transaction(connection, fn, self._isolation_level)
 
     def session(
         self,
     ) -> AbstractAsyncContextManager[SessionConnection[psycopg.AsyncConnection[Any], psycopg.AsyncConnection[Any]]]:
         """One connection for a push's transactions, returned to the pool once, at the end."""
-        return session(self.pool.getconn, self.pool.putconn, _transaction)
+        return session(self.pool.getconn, self.pool.putconn, self._transaction)
 
 
 async def _transaction[R](
-    connection: psycopg.AsyncConnection[Any], fn: Callable[[DBTransaction[psycopg.AsyncConnection[Any]]], Awaitable[R]]
+    connection: psycopg.AsyncConnection[Any],
+    fn: Callable[[DBTransaction[psycopg.AsyncConnection[Any]]], Awaitable[R]],
+    isolation_level: IsolationLevel | None,
 ) -> R:
     async with connection.transaction():
-        return await fn(PsycopgTransaction(connection))
+        tx = PsycopgTransaction(connection)
+        if isolation_level is not None:
+            await tx.query(set_isolation_statement(isolation_level))
+        return await fn(tx)
 
 
 class PsycopgDatabase(ZQLDatabase[psycopg.AsyncConnection[Any]]):
     """A `ZQLDatabase` on a psycopg pool (`AsyncConnectionPool(conninfo, open=False)`, then `await pool.open()`)."""
 
-    def __init__(self, pool: "AsyncConnectionPool", schema: Schema | None = None) -> None:
-        super().__init__(PsycopgConnection(pool), schema)
+    def __init__(
+        self,
+        pool: "AsyncConnectionPool",
+        schema: Schema | None = None,
+        *,
+        isolation_level: IsolationLevel | None = None,
+    ) -> None:
+        super().__init__(PsycopgConnection(pool, isolation_level), schema)
