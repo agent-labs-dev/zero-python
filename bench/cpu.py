@@ -34,7 +34,7 @@ from zero_server.protocol.push import PushBody
 from zero_server.protocol.wire import parse_wire
 from zero_server.query.builder import create_builder
 from zero_server.server.process_mutations import handle_mutate_request
-from zero_server.server.process_queries import handle_query_request
+from zero_server.server.process_queries import handle_query_request, query_response_bytes
 from zero_server.server.server_schema import get_server_schema
 from zero_server.server.zql_database import ZQLDatabase
 from zero_server.z2s.compiler import compile_query
@@ -57,7 +57,7 @@ async def cases() -> dict[str, Callable[[], Any]]:
 
             async def query_json(text: bytes = text) -> bytes:
                 response = await handle_query_request(handler=handler, schema=query_schema, body=text, user_id="u1")
-                return json_response(response.to_json())
+                return query_response_bytes(response)
 
             out[f"query.{kind}.b{n}"] = query
             out[f"query_json.{kind}.b{n}"] = query_json

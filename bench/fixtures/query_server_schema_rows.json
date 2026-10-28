@@ -518,5 +518,31 @@
   "typename": "timestamptz",
   "elemTyptype": null,
   "elemTypname": null
+ },
+ {
+  "schema": "extra",
+  "table": "gadgets",
+  "column": "tag",
+  "dataType": "character",
+  "length": 3,
+  "precision": null,
+  "scale": null,
+  "typtype": "b",
+  "typename": "bpchar",
+  "elemTyptype": null,
+  "elemTypname": null
+ },
+ {
+  "schema": "extra",
+  "table": "gadgets",
+  "column": "pad",
+  "dataType": "character",
+  "length": null,
+  "precision": null,
+  "scale": null,
+  "typtype": "b",
+  "typename": "bpchar",
+  "elemTyptype": null,
+  "elemTypname": null
  }
 ]

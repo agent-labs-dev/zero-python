@@ -1,5 +1,6 @@
 """The Python twin of `harness/mutate.ts`: the same mutators, handler and failing provider."""
 
+import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -18,7 +19,7 @@ from zero_server.server.process_mutations import (
     TransactionProviderHooks,
     TransactionProviderInput,
 )
-from zero_server.server.transaction import ServerTransaction
+from zero_server.server.transaction import RetryPredicate, ServerTransaction
 from zero_server.server.zql_database import ZQLDatabase
 
 type Tx = ServerTransaction[AsyncConnection]
@@ -102,7 +103,79 @@ def throwing(make: Callable[[], BaseException]) -> Callable[[Tx, dict[str, Any]]
     return run
 
 
-MUTATORS: dict[str, Callable[[Tx, dict[str, Any]], Awaitable[None]]] = {
+# How many times item.retry has run for each mutation, by `clientID:mutationID`. Reset per test example.
+RUNS: dict[str, int] = {}
+_kept: list[Tx] = []
+
+
+def reset_runs() -> None:
+    RUNS.clear()
+    _kept.clear()
+
+
+async def _later(_error: BaseException, _attempt: int) -> bool:
+    await asyncio.sleep(0.001)
+    return True
+
+
+def _throw(_error: BaseException, _attempt: int) -> bool:
+    raise Exception("predicate broke")
+
+
+async def _reject(_error: BaseException, _attempt: int) -> bool:
+    raise Exception("predicate rejected")
+
+
+PREDICATES: dict[str, RetryPredicate] = {  # ty: ignore[invalid-assignment] - "truthy" answers 1, not a bool
+    "yes": lambda _error, _attempt: True,
+    "no": lambda _error, _attempt: False,
+    "later": _later,
+    "throw": _throw,
+    "reject": _reject,
+    "truthy": lambda _error, _attempt: 1,
+    "firstOnly": lambda _error, attempt: attempt == 1,
+    "matches": lambda error, _attempt: "failed" in str(error),
+}
+
+
+async def return_(tx: Tx, args: dict[str, Any]) -> Any:
+    await put(tx, args)
+    return args.get("ret")
+
+
+async def retry(tx: Tx, args: dict[str, Any]) -> int:
+    from zero_server.shared.js import js_number
+
+    for name in args.get("predicates") or []:
+        tx.retry_on(PREDICATES[name])
+    await put(tx, args)
+    key = f"{tx.client_id}:{js_number(tx.mutation_id)}"
+    run = RUNS[key] = RUNS.get(key, 0) + 1
+    if run <= args.get("fail", 0):
+        if args.get("db"):
+            await tx.db_transaction.query("SELECT * FROM missing_table")
+        raise Exception(f"run {run} failed")
+    return run
+
+
+async def keep(tx: Tx, args: dict[str, Any]) -> bool:
+    _kept[:] = [tx]
+    await put(tx, args)
+    # Still open, so this is the driver's transaction.
+    return tx.db_transaction.wrapped_transaction is None
+
+
+async def use_kept(_tx: Tx, args: dict[str, Any]) -> bool:
+    if not _kept:
+        raise Exception("nothing kept")
+    if args.get("db"):
+        await _kept[0].db_transaction.query("SELECT 1")
+    if args.get("run"):
+        await _kept[0].run(_zql.item)
+    return _kept[0].db_transaction.wrapped_transaction is None
+
+
+MUTATORS: dict[str, Callable[[Tx, dict[str, Any]], Awaitable[Any]]] = {
     **{f"throw.{shape}": throwing(make) for shape, make in SHAPES.items()},
     "item.count": count,
     **{f"crud.{kind}": crud(kind) for kind in ("insert", "upsert", "update", "delete")},
@@ -112,6 +185,10 @@ MUTATORS: dict[str, Callable[[Tx, dict[str, Any]], Awaitable[None]]] = {
     "item.typeError": type_error,
     "item.detailsError": details_error,
     "item.dbError": db_error,
+    "item.return": return_,
+    "item.retry": retry,
+    "item.keep": keep,
+    "item.useKept": use_kept,
 }
 
 
@@ -126,11 +203,11 @@ async def handler(transact: TransactFn[Tx], mutation: CustomMutation) -> Mutatio
     if mutation.name == "pre.error":
         raise Exception(_js_string(args.get("message"), "pre"))
 
-    async def run(tx: Tx, name: str, mutator_args: Any) -> None:
+    async def run(tx: Tx, name: str, mutator_args: Any) -> Any:
         mutator = MUTATORS.get(name.replace("post.", "item.", 1) if name.startswith("post.") else name)
         if mutator is None:
             raise Exception(f"unknown mutator {name}")
-        await mutator(tx, _args(mutator_args))
+        return await mutator(tx, _args(mutator_args))
 
     result = await transact(run)
     if mutation.name.startswith("post."):
@@ -177,15 +254,29 @@ async def _registry_app_error(*, tx: Tx, args: Any, ctx: Any) -> None:
     await app_error(tx, _args(args))
 
 
+async def _registry_ret(*, tx: Tx, args: Any, ctx: Any) -> Any:
+    return await return_(tx, _args(args))
+
+
 async def _legacy_put(tx: Tx, args: Any) -> None:
     await put(tx, _args(args))
 
 
+async def _legacy_ret(tx: Tx, args: Any) -> Any:
+    return await return_(tx, _args(args))
+
+
 REGISTRY = {
     **define_mutators(
-        {"item": {"put": define_mutator(_registry_put), "appError": define_mutator(_registry_app_error)}}
+        {
+            "item": {
+                "put": define_mutator(_registry_put),
+                "appError": define_mutator(_registry_app_error),
+                "ret": define_mutator(_registry_ret),
+            }
+        }
     ),
-    "legacy": {"put": _legacy_put},
+    "legacy": {"put": _legacy_put, "ret": _legacy_ret},
 }
 
 

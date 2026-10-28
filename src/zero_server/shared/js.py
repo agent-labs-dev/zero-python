@@ -170,12 +170,10 @@ def _may_differ(text: bytes) -> bool:
     outside = b"".join(parts[0::2])
     if b"." in outside or outside.count(b"e") != outside.count(b"true") + outside.count(b"false"):
         return True
-    if not any(digit + b'":' in text for digit in _DIGITS):
+    # With the digits gone, a key of digits alone is an empty key: one scan rather than one per digit.
+    if b'"":' not in text.translate(None, b"0123456789"):
         return False
     return any(parts[i].isdigit() and parts[i + 1][:1] == b":" for i in range(1, len(parts) - 1, 2))
-
-
-_DIGITS = [str(d).encode() for d in range(10)]
 
 
 _SURROGATE = re.compile("[\ud800-\udfff]")

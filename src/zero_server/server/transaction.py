@@ -1,11 +1,11 @@
 """The transaction a server mutator receives.
 
-Ported from rocicorp/mono `packages/zero-server/src/custom.ts` (`TransactionImpl`) and
-`packages/zql/src/mutate/custom.ts` at zero/v1.10.0 (905d08516ba0caaf314cd28e93a5a47e8acdd482).
-Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/zero-server/src/custom.ts` (`TransactionImpl`),
+`packages/zero-server/src/closable-db-transaction.ts` and `packages/zql/src/mutate/custom.ts` at zero/v1.11.3
+(e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 """
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, Protocol, overload
 
 if TYPE_CHECKING:
@@ -16,14 +16,54 @@ if TYPE_CHECKING:
 
 type Row = dict[str, Any]
 
+type RetryPredicate = Callable[[BaseException, int], bool | Awaitable[bool]]
+"""Decides whether to run a mutator again after a run fails. Gets what was raised and the number of the
+re-run being decided: 1 after the first failure. Return `True` to re-run, or an awaitable of `True` to
+re-run once it resolves, which is how to back off. Anything else, including raising, counts as no."""
 
-class DBTransaction[W](Protocol):
-    """One open database transaction. `query` takes SQL with `$1`-style placeholders, as upstream's does."""
+
+class Queryable(Protocol):
+    """Runs one statement. `query` takes SQL with `$1`-style placeholders, as upstream's does."""
+
+    async def query(self, sql: str, params: Sequence[Any] = ()) -> list[Row]: ...
+
+
+class DBTransaction[W](Queryable, Protocol):
+    """One open database transaction."""
 
     @property
     def wrapped_transaction(self) -> W: ...
 
-    async def query(self, sql: str, params: Sequence[Any] = ()) -> list[Row]: ...
+
+def _transaction_ended() -> Exception:
+    return Exception(
+        "This transaction has ended and can no longer be used. "
+        "A tx.retryOn() predicate runs after its transaction is over."
+    )
+
+
+class ClosableDBTransaction[W]:
+    """A `DBTransaction` that stops working once closed. The mutator's `tx` is built on it, so code that
+    outlives the transaction cannot reach a connection that has been committed, rolled back or returned
+    to the pool."""
+
+    def __init__(self, inner: DBTransaction[W]) -> None:
+        self._inner = inner
+        self._closed = False
+
+    def close(self) -> None:
+        self._closed = True
+
+    @property
+    def wrapped_transaction(self) -> W:
+        if self._closed:
+            raise _transaction_ended()
+        return self._inner.wrapped_transaction
+
+    async def query(self, sql: str, params: Sequence[Any] = ()) -> list[Row]:
+        if self._closed:
+            raise _transaction_ended()
+        return await self._inner.query(sql, params)
 
 
 class ServerTransaction[W]:
@@ -38,12 +78,33 @@ class ServerTransaction[W]:
         mutation_id: int | float,
         schema: "Schema | None" = None,
         server_schema: "ServerSchema | None" = None,
+        add_retry_predicate: Callable[[RetryPredicate], None] | None = None,
     ) -> None:
         self.db_transaction = db_transaction
         self.client_id = client_id
         self.mutation_id = mutation_id
         self._schema = schema
         self._server_schema = server_schema
+        self._add_retry_predicate = add_retry_predicate
+
+    def retry_on(self, should_retry: RetryPredicate) -> None:
+        """If this run fails, ask `should_retry` whether to run the mutator again in a fresh transaction.
+
+        It sees any failure of the run: what the mutator raises, and errors the database raises at
+        `COMMIT`, which the mutator cannot catch. Everything the failed run wrote is rolled back, and the
+        re-run reads a new snapshot. The mutator is re-run if any predicate registered in the run says
+        yes; they are all asked at once, and the first yes starts the re-run. A predicate covers one run,
+        so the re-run must register again. Within one push the mutator runs at most 5 times. The
+        predicate runs after the transaction is over, so it cannot use `tx`.
+        """
+        if self._add_retry_predicate is None:
+            # Fail loudly: a predicate nothing will consult would silently turn every retryable failure
+            # into a recorded error.
+            raise Exception(
+                "tx.retryOn() is not supported on this transaction: nothing will re-run its mutator. "
+                "A custom Database must pass TransactionProviderInput.addRetryPredicate on to createTransaction."
+            )
+        self._add_retry_predicate(should_retry)
 
     def _schemas(self, what: str) -> "tuple[Schema, ServerSchema]":
         if self._schema is None or self._server_schema is None:  # python-only: a database built without one

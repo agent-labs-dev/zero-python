@@ -50,6 +50,10 @@ def test_user_id_is_reported_only_when_set() -> None:
     assert QuerySuccess(queries=[], user_id=None).to_json() == {"kind": "QueryResponse", "queries": [], "userID": None}
     assert QuerySuccess(queries=[]).user_id is None
     assert QuerySuccess(queries=[], user_id="u").user_id == "u"
+    assert QuerySuccess(queries=[]).to_json_bytes() == b'{"kind":"QueryResponse","queries":[]}'
+    assert (
+        QuerySuccess(queries=[], user_id=None).to_json_bytes() == b'{"kind":"QueryResponse","queries":[],"userID":null}'
+    )
 
 
 @pytest.mark.parametrize("user", [{}, {"userID": None}, {"userID": "u1"}])
@@ -113,22 +117,6 @@ class Upper:
 
     def column_name(self, table: str, column: str) -> str:
         return column.upper()
-
-
-def test_normalize_refuses_unresolved_parameters() -> None:
-    param = {"type": "simple", "op": "=", "left": {"type": "static", "anchor": "authData", "field": "sub"}}
-    ast = {
-        "table": "t",
-        "where": {
-            "type": "and",
-            "conditions": [
-                {**param, "right": {"type": "literal", "value": 1}},
-                {**param, "right": {"type": "literal", "value": 2}},
-            ],
-        },
-    }
-    with pytest.raises(ValueError, match="Static parameters"):
-        normalize_ast(AST.from_json(ast))
 
 
 def test_normalize_orders_and_before_or() -> None:

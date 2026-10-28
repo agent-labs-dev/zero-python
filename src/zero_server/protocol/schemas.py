@@ -3,8 +3,8 @@
 Ported from rocicorp/mono `packages/shared/src/json-schema.ts`, `packages/zero-protocol/src/data.ts`,
 `packages/zero-protocol/src/primary-key.ts`, `packages/zero-protocol/src/mutation.ts`,
 `packages/zero-protocol/src/push.ts`,
-`packages/zero-protocol/src/mutate-server.ts` and `packages/zero-protocol/src/custom-queries.ts` at zero/v1.10.0
-(905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+`packages/zero-protocol/src/mutate-server.ts` and `packages/zero-protocol/src/custom-queries.ts` at zero/v1.11.3
+(e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 
 The Pydantic models beside them decide what parses; `tests/wire/test_requests.py` holds the two to the same
 answer. These only run once a model has refused a value.

@@ -1,8 +1,8 @@
 """The message upstream's `v.parse` throws when a request does not match its wire schema.
 
-Ported from rocicorp/mono `packages/shared/src/valita.ts` at zero/v1.10.0
-(905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp. The validators underneath are
-ported from `@badrap/valita` 0.3.11 (`src/index.ts`), the version `@rocicorp/zero` 1.10.0 installs. MIT,
+Ported from rocicorp/mono `packages/shared/src/valita.ts` at zero/v1.11.3
+(e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp. The validators underneath are
+ported from `@badrap/valita` 0.5.5 (`dist/index.js`), the version `@rocicorp/zero` 1.11.3 installs. MIT,
 Copyright (c) 2021 Badrap Oy.
 
 Pydantic decides whether a request parses, and is fast. When it refuses one, the same value runs through
@@ -22,7 +22,7 @@ from typing import Any, Literal
 from zero_server.shared.js import js_keys, js_number, js_stringify
 
 type Key = str | int
-type Mode = Literal["passthrough", "strict"]
+type Mode = Literal["passthrough", "strict", "strip"]
 
 FORBID_EXTRA_KEYS = 0x1
 MISSING_VALUE = 0x4
@@ -102,7 +102,8 @@ class Type:
         return Optional(self)
 
     def try_(self, value: object, mode: Mode | None) -> Result:
-        return self.func(value, 0 if mode == "passthrough" else FORBID_EXTRA_KEYS)
+        # Only strict mode, the default, refuses keys a schema does not declare; strip drops them.
+        return self.func(value, FORBID_EXTRA_KEYS if mode is None or mode == "strict" else 0)
 
 
 class _Primitive(Type):
@@ -373,12 +374,10 @@ def message(tree: Tree, value: object, schema: Type, mode: Mode | None) -> str:
             # Upstream reads the length off the whole value, not the array at the path.
             got = len(value) if isinstance(value, list | tuple) else "undefined"
             return f"Expected array with length {length}{at_path}. Got array with length {got}"
-        case "unrecognized_keys":
-            if len(leaf.keys) == 1:
-                return f"Unexpected property {leaf.keys[0]}{at_path}"
-            return f"Unexpected properties {_display_list('and', leaf.keys)}{at_path}"
         case _:
-            # An `invalid_union`, which only a union at the top of the schema produces here.
+            # An `invalid_union`, which only a union at the top of the schema produces here. No handler
+            # parses strictly where an undeclared key can be the first issue, so no `unrecognized_keys`.
+            assert leaf.code == "invalid_union"
             assert isinstance(schema, UnionType)
             return _deepest_union_error(value, schema, mode or "strict")
 

@@ -14,7 +14,7 @@ from tests.wire.errors import SHAPES
 from tests.wire.programs import RETURNS, apply, make_handler, programs
 from zero_server import Query, create_builder, server_ast
 from zero_server.schema import Schema, load_schema
-from zero_server.server.process_queries import handle_query_request
+from zero_server.server.process_queries import handle_query_request, query_response_bytes
 from zero_server.shared.js import js_stringify
 
 
@@ -64,6 +64,8 @@ def test_queries_match_upstream(harness: Harness, schema: Schema) -> None:
             handle_query_request(handler=make_handler(schema), schema=schema, body=body, user_id=user_id)
         )
         assert _comparable(actual.to_json()) == _comparable(expected)
+        # The text the HTTP endpoint sends, joined from each AST's own.
+        assert query_response_bytes(actual) == _comparable(expected).encode()
 
     check()
 
@@ -157,6 +159,25 @@ PINNED = [
     _q("user", ["related", "manager", {"ops": [["related", "reports", None]]}]),
     _q("issue", ["related", "label", None], ["whereExists", "label", None, None]),
     _q("gadget", ["where", "serial", "IN", []], ["related", "owner", None]),
+    # The builder keeps its AST normalized: relationships sorted by alias, conditions by their values.
+    _q("issue", ["related", "owner", None], ["related", "comments", None], ["related", "labels", None]),
+    _q("issue", ["where", "priority", ">", 2], ["where", "priority", ">", 1], ["where", "priority", ">", 1]),
+    _q("issue", ["where", "open", True], ["where", "open", False]),
+    _q(
+        "issue",
+        ["where", "priority", "IN", [1, 3]],
+        ["where", "priority", "IN", [1, 2]],
+        ["where", "priority", "IN", [1]],
+    ),
+    _q("issue", *[["where", "meta", v] for v in ([1], "x", 1, True, {"a": 1}, [True], ["a"], [1, 2])]),
+    _q(
+        "issue",
+        *[
+            ["where", "title", {"$param": p}]
+            for p in (["authData", "b"], ["authData", "a"], ["authData", ["a", "b"]], ["preMutationRow", "a"])
+        ],
+        ["where", "title", "a"],
+    ),
     # Two unknown columns: upstream maps a query's own condition before its relationships, at every level.
     _q("comment", ["where", "nope", None], ["related", "author", {"ops": [["where", "nope", None]]}]),
     _q("issue", ["related", "labels", {"ops": [["where", "nope", None]]}], ["where", "nope", None]),
@@ -179,6 +200,41 @@ def test_async_handlers_match_upstream(harness: Harness, schema: Schema) -> None
     """A coroutine that finishes without suspending, and one that raises."""
     names = ["async.now", "async.throw"]
     body = ["transform", [{"id": str(n), "name": name, "args": []} for n, name in enumerate(names)]]
+    expected = harness.call("query", body=body, userID="u")
+    actual = asyncio.run(handle_query_request(handler=make_handler(schema), schema=schema, body=body, user_id="u"))
+    assert _comparable(actual.to_json()) == _comparable(expected)
+
+
+# Every kind of step, for the builder to hand back what it built before when a batch builds it again.
+REBUILT = [
+    _q(
+        "issue",
+        ["where", "open", True],
+        ["where", "priority", ">", 2.5],
+        ["whereFn", ["or", [eq, ["cmpLit", "a", "=", {"$param": ["authData", "sub"]}], exists]]],
+        ["whereExists", "labels", {"ops": [["where", "name", "!=", "zzz"]]}, {"flip": True}],
+        ["whereRaw", {"type": "and", "conditions": [_raw_eq]}],
+        ["related", "owner", None],
+        ["related", "labels", {"ops": [["where", "name", "bug"]]}],
+        ["related", "comments", {"ops": [["orderBy", "id", "desc"], ["limit", 5]]}],
+        ["orderBy", "priority", "desc"],
+        ["start", {"priority": 1.5, "id": "i1", "meta": [1, {"a": None}]}, True],
+        ["limit", 20],
+    ),
+    _q("issue", ["where", "open", True], ["where", "priority", ">", 2.5], ["one"]),
+    _q("issue", ["where", "meta", [1, "x"]], ["where", "title", "IN", ["a", "b"]]),
+    # A two-hop `exists` puts `scalar` only on its junction's condition.
+    _q("issue", ["whereExists", "labels", None, {"scalar": True}]),
+    _q("issue", ["whereExists", "labels", None, {"scalar": False}]),
+]
+
+
+def test_rebuilt_queries_match_upstream(harness: Harness, schema: Schema) -> None:
+    """The same programs, three times over in one batch, built by one builder."""
+    body = [
+        "transform",
+        [{"id": str(n), "name": "prog", "args": [program]} for n, program in enumerate(REBUILT * 3)],
+    ]
     expected = harness.call("query", body=body, userID="u")
     actual = asyncio.run(handle_query_request(handler=make_handler(schema), schema=schema, body=body, user_id="u"))
     assert _comparable(actual.to_json()) == _comparable(expected)

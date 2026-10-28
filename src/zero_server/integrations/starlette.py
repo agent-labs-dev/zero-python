@@ -20,7 +20,7 @@ from zero_server.protocol.mutation import CustomMutation, MutationResponse
 from zero_server.query.registry import must_get_query
 from zero_server.schema import Schema
 from zero_server.server.process_mutations import Database, TransactFn, handle_mutate_request
-from zero_server.server.process_queries import handle_query_request
+from zero_server.server.process_queries import handle_query_request, query_response_bytes
 from zero_server.shared.js import js_stringify_bytes
 from zero_server.shared.json import JSONValue
 from zero_server.shared.registry import Registry
@@ -88,7 +88,7 @@ def zero_routes(
                 body=await request.body(),
                 user_id=user_id,
             )
-            return _JSONResponse(response.to_json())
+            return Response(query_response_bytes(response), media_type="application/json")
 
         routes.append(Route(query_path, query, methods=["POST"]))
 
@@ -104,8 +104,8 @@ def zero_routes(
             user_id, ctx = who
 
             async def handler(transact: TransactFn[Any], _mutation: CustomMutation) -> MutationResponse:
-                async def run(tx: Any, name: str, args: JSONValue | None) -> None:
-                    await must_get_mutator(mutators, name).fn(tx=tx, ctx=ctx, args=args)
+                async def run(tx: Any, name: str, args: JSONValue | None) -> JSONValue | None:
+                    return await must_get_mutator(mutators, name).fn(tx=tx, ctx=ctx, args=args)
 
                 return await transact(run)
 

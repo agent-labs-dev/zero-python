@@ -1,7 +1,7 @@
 """The ZQL AST: what a query endpoint returns for each query zero-cache asks it to transform.
 
 Ported from rocicorp/mono `packages/zero-protocol/src/ast.ts`, `data.ts` and `primary-key.ts` at
-zero/v1.10.0 (905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 
 The AST carries server names: `map_ast` maps a client-named AST through the schema's name mapper before
 it goes on the wire, as `handleQueryRequest` does upstream.
@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
 from zero_server.protocol.wire import dump_json, json_model, parse_wire
 from zero_server.schema import NameMapper as SchemaNameMapper
 from zero_server.shared.asserts import AssertionFailedError
-from zero_server.shared.js import js_keys, js_sort, js_string
+from zero_server.shared.js import js_keys, js_sort, js_stringify_bytes
 from zero_server.shared.json import JSONValue
 
 if TYPE_CHECKING:
@@ -68,9 +68,10 @@ def _names(names: Sequence[Any]) -> list[Any]:
 
 # The nodes are plain slotted classes: the builder makes dozens per query, and a Pydantic model costs
 # several times as much to build. They are not frozen, which would cost as much again, but no code
-# changes a node once built: every transformation builds new ones. `to_json` writes upstream's keys in
-# upstream's order and leaves out a field that is `None`. `AST.from_json` parses through the wire
-# schema in `ast_wire`, which accepts exactly what upstream's `astSchema` accepts.
+# changes a node once built: every transformation builds new ones, so an AST keeps its JSON text once
+# written. `to_json` writes the keys in the order upstream's normalized AST has them, which every AST the
+# builder makes is, and leaves out a field that is `None`. `AST.from_json` parses through the wire schema
+# in `ast_wire`, which accepts exactly what upstream's `astSchema` accepts.
 
 
 @json_model
@@ -118,10 +119,10 @@ class SimpleCondition:
     op: SimpleOperator
 
     def to_json(self) -> dict[str, Any]:
-        return {"type": "simple", "left": self.left.to_json(), "right": self.right.to_json(), "op": _json(self.op)}
+        return {"type": "simple", "op": _json(self.op), "left": self.left.to_json(), "right": self.right.to_json()}
 
     def negated(self, op: str) -> SimpleCondition:
-        return _NegatedSimpleCondition(op=op, left=self.left, right=self.right)  # ty: ignore[invalid-argument-type]
+        return SimpleCondition(op=op, left=self.left, right=self.right)  # ty: ignore[invalid-argument-type]
 
     def _with_left(self, left: ValuePosition) -> SimpleCondition:
         """This condition with `left` in place of its own, of the same class."""
@@ -130,15 +131,6 @@ class SimpleCondition:
         copy.right = self.right
         copy.op = self.op
         return copy
-
-
-@json_model
-@dataclass(slots=True, kw_only=True)
-class _NegatedSimpleCondition(SimpleCondition):
-    """Upstream's `not` writes the negated condition with `op` second."""
-
-    def to_json(self) -> dict[str, Any]:
-        return {"type": "simple", "op": _json(self.op), "left": self.left.to_json(), "right": self.right.to_json()}
 
 
 @json_model
@@ -171,14 +163,7 @@ class CorrelatedSubqueryCondition:
     scalar: bool | None = None
 
     def to_json(self) -> dict[str, Any]:
-        # The builder writes a condition's subquery `system` first, where `related` on the AST has it last.
-        related = self.related
-        r: dict[str, Any] = {} if related.system is None else {"system": _json(related.system)}
-        r["correlation"] = related.correlation.to_json()
-        if related.hidden is not None:
-            r["hidden"] = related.hidden if type(related.hidden) in _SCALARS else dump_json(related.hidden)
-        r["subquery"] = related.subquery.to_json()
-        out = {"type": "correlatedSubquery", "related": r, "op": _json(self.op)}
+        out = {"type": "correlatedSubquery", "related": self.related.to_json(), "op": _json(self.op)}
         if self.flip is not None:
             out["flip"] = self.flip if type(self.flip) in _SCALARS else dump_json(self.flip)
         if self.scalar is not None:
@@ -207,6 +192,9 @@ class CorrelatedSubquery:
     hidden: bool | None = None
     subquery: AST
     system: System | None = None
+    # The builder query `subquery` is the AST of, kept alive with it: the builder interns a query by
+    # the identity of its subqueries' ASTs, so they must outlive the query keyed by them.
+    source: Any = field(default=None, repr=False, compare=False)
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {"correlation": self.correlation.to_json()}
@@ -243,6 +231,7 @@ class AST:
     start: Bound | None = None
     limit: int | float | None = None
     order_by: Ordering | None = None
+    _text: bytes | None = field(default=None, init=False, repr=False, compare=False)
 
     def _copy(self) -> AST:
         """A shallow copy, for a caller to change one field of. Twice as fast as `AST(...)` with every field."""
@@ -255,6 +244,7 @@ class AST:
         copy.start = self.start
         copy.limit = self.limit
         copy.order_by = self.order_by
+        copy._text = None
         return copy
 
     def to_json(self) -> dict[str, Any]:
@@ -274,6 +264,13 @@ class AST:
         if self.order_by is not None:
             out["orderBy"] = [_names(part) for part in self.order_by]
         return out
+
+    def to_json_bytes(self) -> bytes:
+        """`to_json()` as the text `JSON.stringify` writes, kept for the next response that sends this AST."""
+        text = self._text
+        if text is None:
+            text = self._text = js_stringify_bytes(self.to_json())
+        return text
 
     @classmethod
     def from_json(cls, value: object) -> AST:
@@ -301,15 +298,12 @@ class NameMapper(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class _Transform:
-    """How `_transform_ast` rewrites an AST. `None` leaves that part as it is."""
+    """How `_transform_ast` renames the tables and columns of an AST."""
 
-    table_name: Callable[[str], str] | None
+    table_name: Callable[[str], str]
     column_name: Callable[[str, str], str]
-    related: Callable[[list[CorrelatedSubquery]], Sequence[CorrelatedSubquery]] | None = None
-    where: Callable[[Condition], Condition | None] | None = None
-    conditions: Callable[[list[Condition]], Sequence[Condition]] | None = None
     # Mapped correlations by parent table, child table and both keys: the same few on every query.
-    correlations: dict[tuple[Any, ...], Correlation] | None = None
+    correlations: dict[tuple[Any, ...], Correlation]
 
 
 _MAX_CORRELATIONS = 4096
@@ -326,22 +320,20 @@ def _correlation(transform: _Transform, parent: str, related: CorrelatedSubquery
     correlation = related.correlation
     child = related.subquery.table
     cache = transform.correlations
-    key: tuple[Any, ...] | None = None
-    if cache is not None:
-        key = (parent, child, correlation.parent_field, correlation.child_field)
-        try:
-            mapped = cache.get(key)
-        except TypeError:  # python-only: the correlation cache, handed a key the builder got as a list
-            key = None
-        else:
-            if mapped is not None:
-                return mapped
+    key: tuple[Any, ...] | None = (parent, child, correlation.parent_field, correlation.child_field)
+    try:
+        mapped = cache.get(key)
+    except TypeError:  # python-only: the correlation cache, handed a key the builder got as a list
+        key = None
+    else:
+        if mapped is not None:
+            return mapped
     column_name = transform.column_name
     mapped = Correlation(
         parent_field=_key(column_name, parent, correlation.parent_field),
         child_field=_key(column_name, child, correlation.child_field),
     )
-    if cache is not None and key is not None:
+    if key is not None:
         if len(cache) >= _MAX_CORRELATIONS:  # python-only: the correlation cache, full
             cache.clear()
         cache[key] = mapped
@@ -360,16 +352,13 @@ def _transform_related(transform: _Transform, parent: str, related: CorrelatedSu
 def _transform_ast(ast: AST, transform: _Transform) -> AST:
     # Mapped in upstream's order, so a batch with two unknown names fails on the same one.
     table = ast.table
+    mapped_table = transform.table_name(table)
     where = ast.where
-    if where is not None and transform.where is not None:
-        where = transform.where(where)
-    mapped_table = table if transform.table_name is None else transform.table_name(table)
     if where is not None:
         where = _transform_where(where, table, transform)
     related = ast.related
     if related is not None:
-        mapped = [_transform_related(transform, table, r) for r in related]
-        related = tuple(mapped if transform.related is None else transform.related(mapped))
+        related = tuple([_transform_related(transform, table, r) for r in related])
     start = ast.start
     order_by = ast.order_by
     column_name = transform.column_name
@@ -409,10 +398,7 @@ def _transform_where(where: Condition, table: str, transform: _Transform) -> Con
             flip=where.flip,
             scalar=where.scalar,
         )
-    conditions = [_transform_where(c, table, transform) for c in where.conditions]
-    if transform.conditions is not None:
-        return type(where)(conditions=tuple(transform.conditions(conditions)))
-    return type(where)(conditions=tuple(conditions))
+    return type(where)(conditions=tuple([_transform_where(c, table, transform) for c in where.conditions]))
 
 
 def map_ast(ast: AST, mapper: NameMapper) -> AST:
@@ -426,58 +412,163 @@ def map_condition(condition: Condition, table: str, mapper: NameMapper) -> Condi
 
 def _mapping(mapper: NameMapper) -> _Transform:
     # A schema's mapper keeps what it mapped; another `NameMapper` may not always map a name the same way.
-    correlations = mapper.correlations if isinstance(mapper, SchemaNameMapper) else None
+    correlations = mapper.correlations if isinstance(mapper, SchemaNameMapper) else {}
     return _Transform(mapper.table_name, mapper.column_name, correlations=correlations)
 
 
-_NORMALIZE = _Transform(
-    table_name=None,
-    column_name=lambda _t, c: c,
-    related=lambda r: js_sort(r, _cmp_related),
-    where=lambda w: _flattened(w),
-    conditions=lambda c: js_sort(c, _cmp_condition),
-)
-
-
 def normalize_ast(ast: AST) -> AST:
-    """The canonical form zero-cache hashes: flattened conditions, sorted conditions and subqueries."""
-    return _transform_ast(ast, _NORMALIZE)
+    """The canonical form zero-cache hashes: conditions flattened and sorted, subqueries sorted.
+
+    Two ASTs that describe the same query normalize to the same JSON. Every AST the builder makes is
+    already normalized.
+    """
+    out = ast._copy()
+    where = ast.where
+    if where is not None:
+        out.where = normalize_condition(_normalize_subqueries(where))
+    related = ast.related
+    if related is not None:
+        out.related = _sorted_related(
+            [
+                CorrelatedSubquery(
+                    correlation=r.correlation, hidden=r.hidden, subquery=normalize_ast(r.subquery), system=r.system
+                )
+                for r in related
+            ]
+        )
+    return out
 
 
-def _utf8(value: str) -> bytes:
-    return value.encode("utf-8", "surrogatepass")
+def _normalize_subqueries(condition: Condition) -> Condition:
+    """`condition` with the ASTs of its correlated subqueries normalized. `normalize_condition` does the rest."""
+    if isinstance(condition, SimpleCondition):
+        return condition
+    if isinstance(condition, CorrelatedSubqueryCondition):
+        related = condition.related
+        return CorrelatedSubqueryCondition(
+            related=CorrelatedSubquery(
+                correlation=related.correlation,
+                hidden=related.hidden,
+                subquery=normalize_ast(related.subquery),
+                system=related.system,
+            ),
+            op=condition.op,
+            flip=condition.flip,
+            scalar=condition.scalar,
+        )
+    return type(condition)(conditions=tuple([_normalize_subqueries(c) for c in condition.conditions]))
+
+
+def normalize_condition(condition: Condition) -> Condition:
+    """`condition` flattened and sorted, its correlated subqueries' ASTs assumed normalized already.
+
+    Nested conjunctions of the same type are flattened into their parent and a conjunction of one
+    condition becomes that condition. An empty one stays: an empty `and` is always true and an empty
+    `or` always false.
+    """
+    kind = type(condition)
+    if kind is not Conjunction and kind is not Disjunction:
+        return condition
+    original = condition.conditions  # ty: ignore[unresolved-attribute]
+    conditions: list[Condition] = []
+    changed = False
+    for c in original:
+        t = type(c)
+        if t is Conjunction or t is Disjunction:
+            n = normalize_condition(c)
+            if type(n) is kind:
+                conditions.extend(n.conditions)  # ty: ignore[unresolved-attribute]
+                changed = True
+                continue
+            changed = changed or n is not c
+            c = n
+        conditions.append(c)
+    if len(conditions) == 1:
+        return conditions[0]
+    # Already in order, which is when the sort would leave it as it is: the condition stands as built.
+    if not changed and all(_cmp_condition(conditions[i], conditions[i - 1]) >= 0 for i in range(1, len(conditions))):
+        return condition
+    return kind(conditions=tuple(js_sort(conditions, _cmp_condition)))
+
+
+def insert_related(
+    related: tuple[CorrelatedSubquery, ...] | None, entry: CorrelatedSubquery
+) -> tuple[CorrelatedSubquery, ...]:
+    """`related` with `entry` added where it keeps the entries sorted, after any it compares equal to."""
+    if related is None:
+        return (entry,)
+    n = i = len(related)
+    while i > 0 and _cmp_related(related[i - 1], entry) > 0:
+        i -= 1
+    return (*related, entry) if i == n else (*related[:i], entry, *related[i:])
+
+
+def _sorted_related(related: list[CorrelatedSubquery]) -> tuple[CorrelatedSubquery, ...]:
+    for i in range(1, len(related)):
+        if _cmp_related(related[i - 1], related[i]) > 0:
+            return tuple(js_sort(related, _cmp_related))
+    return tuple(related)
 
 
 def _cmp(a: object, b: object) -> int:
     return (a > b) - (a < b)  # ty: ignore[unsupported-operator]
 
 
-def _cmp_utf8(a: str, b: str) -> int:
-    return _cmp(_utf8(a), _utf8(b))
+# Upstream's `compareUTF8` orders strings by their UTF-8 bytes, a lone surrogate by its own value. That is
+# code point order, which is how Python compares strings.
+_cmp_utf8 = _cmp
 
 
 def _cmp_value_position(
     a: LiteralReference | ColumnReference | Parameter, b: LiteralReference | ColumnReference | Parameter
 ) -> int:
-    if a.type != b.type:
+    kind = type(a)
+    if kind is not type(b):
         return _cmp_utf8(a.type, b.type)
-    match a, b:
-        case LiteralReference(), LiteralReference():
-            return _cmp_utf8(js_string(a.value), js_string(b.value))
-        case ColumnReference(), ColumnReference():
-            return _cmp_utf8(a.name, b.name)
+    if kind is ColumnReference:
+        return _cmp_utf8(a.name, b.name)  # ty: ignore[unresolved-attribute]
+    if kind is LiteralReference:
+        return _cmp_literal(a.value, b.value)  # ty: ignore[unresolved-attribute]
+    return _cmp_utf8(a.anchor, b.anchor) or _cmp_literal(a.field, b.field)  # ty: ignore[unresolved-attribute]
+
+
+def _literal_type(value: object) -> int:
+    """Where a literal's type sorts: null, boolean, number, string, array. Any other object sorts as null."""
+    if isinstance(value, list | tuple):
+        return 4
+    if isinstance(value, bool):
+        return 1
+    if isinstance(value, int | float):
+        return 2
+    if isinstance(value, str):
+        return 3
+    return 0
+
+
+def _cmp_literal(a: Any, b: Any) -> int:
+    by_type = _literal_type(a) - _literal_type(b)
+    if by_type:
+        return by_type
+    match _literal_type(a):
+        case 4:
+            for left, right in zip(a, b, strict=False):
+                by_element = _cmp_literal(left, right)
+                if by_element:
+                    return by_element
+            return len(a) - len(b)
+        case 3:
+            return _cmp_utf8(a, b)
+        case 1 | 2:
+            return _cmp(a, b)
         case _:
-            raise ValueError("Static parameters should be resolved before normalization")
+            return 0
 
 
 def _cmp_related(a: CorrelatedSubquery, b: CorrelatedSubquery) -> int:
-    return _cmp_utf8(_must(a.subquery.alias), _must(b.subquery.alias))
-
-
-def _must(alias: str | None) -> str:
-    if alias is None:
+    left, right = a.subquery.alias, b.subquery.alias
+    if left is None or right is None:
         raise AssertionFailedError("Unexpected undefined value")
-    return alias
+    return (left > right) - (left < right)
 
 
 def _cmp_optional_bool(a: bool | None, b: bool | None) -> int:
@@ -512,22 +603,3 @@ def _cmp_condition(a: Condition, b: Condition) -> int:
         if by_condition:
             return by_condition
     return len(a.conditions) - len(b.conditions)
-
-
-def _flattened(condition: Condition) -> Condition | None:
-    if isinstance(condition, SimpleCondition | CorrelatedSubqueryCondition):
-        return condition
-    flat: list[Condition | None] = []
-    for c in condition.conditions:
-        if isinstance(c, Conjunction | Disjunction) and c.type == condition.type:
-            flat.extend(_flattened(inner) for inner in c.conditions)
-        else:
-            flat.append(_flattened(c))
-    conditions = [c for c in flat if c is not None]
-    match len(conditions):
-        case 0:
-            return None
-        case 1:
-            return conditions[0]
-        case _:
-            return type(condition)(conditions=tuple(conditions))

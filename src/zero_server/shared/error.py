@@ -1,7 +1,7 @@
 """Reading a message and JSON details off a raised exception.
 
-Ported from rocicorp/mono `packages/shared/src/error.ts` at zero/v1.10.0
-(905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/shared/src/error.ts` at zero/v1.11.3
+(e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 
 JavaScript's `Error` is Python's `Exception`: an error whose class is exactly `Exception` carries no
 `{name}` detail, the way a plain `Error` carries none upstream. A class can set `error_name` to the name

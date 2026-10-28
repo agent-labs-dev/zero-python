@@ -4,7 +4,7 @@ A community Python server SDK for [Zero](https://zero.rocicorp.dev/). It is not 
 
 It ports what `@rocicorp/zero/server` gives a TypeScript backend: the query endpoint (`ZERO_QUERY_URL`), the mutate endpoint (`ZERO_MUTATE_URL`), the ZQL query builder, `defineQueries` and `defineMutators`, and `tx.mutate` and `tx.run` on Postgres. The client and `zero-cache` stay in TypeScript, and a Python backend serves the same TypeScript client a TypeScript backend would.
 
-Compatibility is pinned to one Zero release at a time. This version is tested against `@rocicorp/zero` **1.10.0** (see `ZERO_VERSION`).
+Compatibility is pinned to one Zero release at a time. This version is tested against `@rocicorp/zero` **1.11.3** (see `ZERO_VERSION`).
 
 ## Usage
 
@@ -77,6 +77,9 @@ app = Starlette(
 Point `ZERO_QUERY_URL` and `ZERO_MUTATE_URL` at `/query` and `/mutate`. With FastAPI, `app.router.routes.extend(zero_routes(...))`. With another framework, call `handle_query_request` and `handle_mutate_request` yourself; `zero_server/integrations/starlette.py` is short enough to copy. The types to annotate those handlers (`QueryRequestHandler`, `TransactFn`, `MutateResponse`, `MutationResponse`, `ServerPushFailed` and the rest) import from `zero_server`, and `server_ast(query, schema)` returns the AST zero-cache receives for a query.
 
 - **Databases.** `SQLAlchemyDatabase` (SQLAlchemy's asyncio engine on asyncpg or psycopg; the `sqlalchemy` extra installs neither driver), `AsyncpgDatabase` (an asyncpg pool) and `PsycopgDatabase` (a psycopg 3 async pool), under `zero_server.server.adapters`. A push's mutations run on one connection from the pool, taken at its first transaction and returned when the push ends. So mutators in one push share session state (a `SET` without `LOCAL`, session advisory locks, temp tables), and a handler that takes a second connection from the same pool while its push holds one can deadlock once the pool has fewer connections than there are concurrent pushes. Another driver plugs into `ZQLDatabase` as a `DBConnection` whose `query` takes `$1` placeholders.
+- **Mutator results.** What a mutator returns, if not `None`, reaches the client as the mutation's result data, and is also written to zero-cache's `mutations` table so it survives a lost response. Python has one `None`, so a mutator cannot return JSON `null` as data the way a TypeScript mutator can.
+- **Re-running a mutator.** `tx.retry_on(predicate)` asks `predicate(error, attempt)`, sync or async, whether to run the mutator again in a fresh transaction when the run fails, including at `COMMIT`. Only `True` means yes. A mutator runs at most 5 times per push, and `tx` is unusable once its transaction has ended, inside the predicate too.
+- **Isolation level.** Each adapter takes `isolation_level="read committed" | "repeatable read" | "serializable"` for the transactions mutations run in. Unset, the database's default applies.
 - **Validation.** `@define_query(Model)` and `@define_mutator(Model)` parse args with a Pydantic model or `TypeAdapter` first; a failure reaches the client as upstream's validation error.
 - **Strict building.** `create_builder(schema, strict=True)` refuses an unknown column when the query is built. Upstream only refuses it when the endpoint maps the query, failing the whole batch, so this is for your tests.
 

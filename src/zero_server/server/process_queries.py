@@ -1,7 +1,7 @@
 """The query endpoint: turn each named query zero-cache forwards into its AST, in server names.
 
-Ported from rocicorp/mono `packages/zero-server/src/queries/process-queries.ts` at zero/v1.10.0
-(905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/zero-server/src/queries/process-queries.ts` at zero/v1.11.3
+(e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 """
 
 import asyncio
@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 
-from zero_server.protocol.ast import AST, map_ast
+from zero_server.protocol.ast import AST
 from zero_server.protocol.custom_queries import (
     AppErroredQuery,
     ParseErroredQuery,
@@ -25,11 +25,11 @@ from zero_server.protocol.error import ErrorReason, ServerTransformFailed
 from zero_server.protocol.query_server import QuerySuccess
 from zero_server.protocol.schemas import refusal, transform_request_message_schema
 from zero_server.protocol.wire import parse_wire
-from zero_server.query.builder import Query, as_query_internals
+from zero_server.query.builder import Query, as_query_internals, mapped_ast
 from zero_server.query.registry import QueryParseError
 from zero_server.schema import Schema
 from zero_server.shared.error import error_name, get_error_details, get_error_message
-from zero_server.shared.js import js_check_in, js_truthy
+from zero_server.shared.js import js_check_in, js_stringify_bytes, js_truthy
 from zero_server.shared.json import JSONValue
 from zero_server.shared.json_parse import parse_body
 
@@ -53,7 +53,14 @@ def server_ast(query: Query, schema: Schema) -> AST:
     Python only; upstream inlines `mapAST(ast, clientToServer(schema.tables))` in its query handler.
     Raises on a table or column `schema` does not have.
     """
-    return map_ast(query.ast, schema.client_to_server_mapper)
+    return mapped_ast(query, schema.client_to_server_mapper)
+
+
+def query_response_bytes(response: QueryResponse) -> bytes:
+    """`response` as the JSON text a TypeScript server sends: `JSON.stringify(response)`."""
+    if isinstance(response, QuerySuccess):
+        return response.to_json_bytes()
+    return js_stringify_bytes(response.to_json())
 
 
 async def handle_query_request(
@@ -77,7 +84,7 @@ async def handle_query_request(
         message = get_error_message(error)
         if isinstance(error, ValidationError):
             decoded = parse_body(body) if isinstance(body, bytes) else body
-            message = refusal(decoded, transform_request_message_schema, None, message)
+            message = refusal(decoded, transform_request_message_schema, "strip", message)
         return ServerTransformFailed(
             reason=ErrorReason.PARSE,
             message=f"Failed to parse query request: {message}",
@@ -105,7 +112,7 @@ async def handle_query_request(
             return errored(request, error)
         query = as_query_internals(result)
         try:
-            ast = map_ast(query.ast, mapper)
+            ast = mapped_ast(query, mapper)
         except Exception as error:
             logger.error("Failed to map AST", exc_info=error)
             raise

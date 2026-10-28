@@ -38,7 +38,7 @@ CASES: dict[str, tuple[st.SearchStrategy[Any], Callable[[Any], object]]] = {
 # Each schema as upstream parses it: the schema and the mode its handler passes.
 VALITA: dict[str, tuple[valita.Type, valita.Mode | None]] = {
     "pushBody": (push_body_schema, "passthrough"),
-    "transformRequest": (transform_request_message_schema, None),
+    "transformRequest": (transform_request_message_schema, "strip"),
     "cleanupResultsArg": (cleanup_results_arg_schema, None),
     "mutateParams": (mutate_params_schema, "passthrough"),
 }
@@ -103,6 +103,7 @@ PINNED_REFUSALS: list[tuple[str, Any]] = [
     ("pushBody", _push({**_crud(), "args": []})),
     ("pushBody", _push({**_crud(), "type": 1})),
     ("pushBody", _push(_crud(_delete), "x")),
+    # Parsed in strip mode, so keys it does not know are dropped rather than refused.
     ("transformRequest", ["transform", [{"id": "1", "name": "n", "args": [], "b": 1, "a": 2, "0": 3}]]),
     ("transformRequest", ["transform", [{"id": "1", "name": "n", "args": [], "x": 1}]]),
     ("transformRequest", ["transform"]),
@@ -111,6 +112,7 @@ PINNED_REFUSALS: list[tuple[str, Any]] = [
     ("cleanupResultsArg", {"type": "bulk", "clientGroupID": "g", "clientIDs": []}),
     ("cleanupResultsArg", {"type": "single", "clientGroupID": "g", "clientID": 1, "upToMutationID": 1}),
     ("cleanupResultsArg", {"clientGroupID": "g", "clientID": "c", "upToMutationID": 1, "x": 1}),
+    ("cleanupResultsArg", {"clientGroupID": "g", "clientID": "c", "upToMutationID": 1, "b": 1, "a": 2, "0": 3}),
     ("cleanupResultsArg", {"clientGroupID": "g", "clientID": "c", "upToMutationID": "1"}),
     ("cleanupResultsArg", "x"),
     ("mutateParams", {"schema": 1, "appID": 2}),

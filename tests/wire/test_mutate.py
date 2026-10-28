@@ -13,7 +13,7 @@ from tests.harness import Harness, HarnessError
 from tests.strategies import as_js, cleanup_args, corrupted, json_values, mutation_ids, strings
 from tests.wire.conftest import ADAPTERS, WireDB
 from tests.wire.errors import SHAPES
-from tests.wire.mutators import REGISTRY, handler, provider, use_schema
+from tests.wire.mutators import PREDICATES, REGISTRY, handler, provider, reset_runs, use_schema
 from zero_server.protocol.push import PushBody
 from zero_server.schema import load_schema
 from zero_server.server.process_mutations import handle_mutate_request
@@ -26,6 +26,7 @@ NAMES = [
     "item.put", "item.put", "item.put", "item.count", "item.appError", "item.error", "item.typeError", "item.dbError",
     "item.detailsError",
     "pre.appError", "pre.error", "post.put", "nope",
+    "item.return", "item.retry", "item.retry", "item.keep", "item.useKept",
 ]  # fmt: skip
 
 texts = st.sampled_from(["a", "b", "c", "é", "\ud800"])
@@ -88,7 +89,15 @@ crud_args = st.one_of(
 CRUD_NAMES = ["crud.insert", "crud.upsert", "crud.update", "crud.delete"]
 mutator_args = st.fixed_dictionaries(
     {"id": texts, "value": texts},
-    optional={"message": st.sampled_from(["no", "nope", "", "m\udc00"]), "details": json_values},
+    optional={
+        "message": st.sampled_from(["no", "nope", "", "m\udc00"]),
+        "details": json_values,
+        # A mutator that returns `None` returns nothing, so JSON `null` is never result data.
+        "ret": json_values.filter(lambda v: v is not None),
+        "predicates": st.lists(st.sampled_from(sorted(PREDICATES)), max_size=3),
+        "fail": st.integers(0, 6),
+        "db": st.booleans(),
+    },
 )
 
 
@@ -314,6 +323,32 @@ BRANCHES = {
             for up_to in [1.5, 1e20, 2**63, 1e21, -1, 2**53 + 1]
         ),
     ),
+    "return values": _scenario(
+        _push(_m(1, "item.return", ret={"n": [1, None]}), _m(2, "item.return"), _m(3, "item.return", ret=0)),
+    ),
+    "retry until it succeeds": _scenario(
+        _push(
+            _m(1, "item.retry", fail=2, predicates=["yes"]),
+            _m(2, "item.retry", fail=1, predicates=["no", "later"]),
+            _m(3, "item.retry", fail=1, predicates=["throw", "reject", "truthy"]),
+            _m(4, "item.retry", fail=2, predicates=["firstOnly"]),
+            _m(5, "item.retry", fail=1, predicates=["matches"], db=True),
+            _m(6, "item.retry", fail=1, predicates=["matches"]),
+            _m(7, "item.retry", fail=6, predicates=["yes"]),
+            _m(8, "item.retry", fail=6, predicates=["yes"], db=True),
+            # One answers yes while the other is still deciding.
+            _m(9, "item.retry", fail=1, predicates=["later", "yes"]),
+        ),
+    ),
+    "transaction used after it ended": _scenario(
+        _push(
+            _m(1, "item.useKept"),
+            _m(2, "item.keep"),
+            _m(3, "item.useKept"),
+            _m(4, "item.useKept", db=True),
+            _m(5, "item.useKept", run=True),
+        ),
+    ),
     "cleanup invalid and failing": _scenario(
         _push(_cleanup({"type": "bulk", "clientGroupID": "cg1", "clientIDs": []}), _m(1)),
         _push(_cleanup({"clientGroupID": "cg1", "clientID": "cfail", "upToMutationID": 2}), _m(2)),
@@ -332,6 +367,8 @@ def _with_branches(test: Any) -> Any:
 @given(scenarios())
 def test_pushes_match_upstream(harness: Harness, wire_db: WireDB, adapter: str, pushes: list[Any]) -> None:
     wire_db.reset()
+    harness.call("resetRuns")
+    reset_runs()
     schema = load_schema(harness.call("wireSchema"))
     use_schema(schema)
     # One adapter runs without sessions, and one takes each body already parsed where it parses.
@@ -382,7 +419,9 @@ def test_asyncpg_reports_a_refused_argument_as_sqlalchemy_does(wire_db: WireDB, 
     assert wire_db.run(message("asyncpg")).startswith("invalid input for query argument $1")
 
 
-PROCESSOR_NAMES = ["item.put", "item|put", "item.appError", "legacy.put", "legacy|put", "item", "nope"]
+PROCESSOR_NAMES = [
+    "item.put", "item|put", "item.appError", "item.ret", "legacy.put", "legacy|put", "legacy.ret", "item", "nope",
+]  # fmt: skip
 
 
 @pytest.mark.parametrize("adapter", ADAPTERS)
@@ -424,3 +463,72 @@ def test_circular_cause_matches_upstream(harness: Harness, wire_db: WireDB) -> N
     expected.pop("userID")
     assert as_js(actual.to_json()) == as_js({**expected, "userID": None})
     assert as_js(wire_db.dump(wire_db.py_engine)) == as_js(wire_db.dump(wire_db.ts_engine))
+
+
+def test_retry_on_unsupported_matches_upstream(harness: Harness, wire_db: WireDB) -> None:
+    """A transaction opened with no input has nothing to re-run its mutator, so `retry_on` refuses."""
+    expected = harness.call("retryOnUnsupported", url=wire_db.ts_url)
+    schema = load_schema(harness.call("wireSchema"))
+
+    async def callback(tx: Any, _hooks: Any) -> Any:
+        try:
+            tx.retry_on(lambda _error, _attempt: True)
+        except Exception as error:
+            return str(error)
+        return None
+
+    assert wire_db.run(wire_db.py["asyncpg"](schema).transaction(callback)) == expected
+
+
+@pytest.mark.parametrize("adapter", ADAPTERS)
+@pytest.mark.parametrize("level", [None, "read committed", "repeatable read", "serializable"])
+def test_isolation_level_matches_upstream(harness: Harness, wire_db: WireDB, adapter: str, level: Any) -> None:
+    from tests.wire.conftest import with_isolation
+
+    expected = harness.call("isolation", url=wire_db.ts_url, level=level)
+    db = with_isolation(wire_db, adapter, level)
+
+    async def callback(tx: Any, _hooks: Any) -> str:
+        rows = await tx.db_transaction.query("SHOW transaction_isolation")
+        return rows[0]["transaction_isolation"]
+
+    async def in_session() -> str:
+        async with db.session() as session:
+            return await session.transaction(callback)
+
+    assert wire_db.run(db.transaction(callback)) == expected
+    # A push runs its mutations in a session.
+    assert wire_db.run(in_session()) == expected
+
+
+@pytest.mark.parametrize("adapter", ADAPTERS)
+@pytest.mark.parametrize("bare", [True, False], ids=["bare", "in transaction"])
+@pytest.mark.parametrize(
+    ("fail_first", "concurrent", "runs"),
+    # Not a failed fetch with concurrent runs: whether a run shares it or starts its own depends on timing.
+    [(False, False, 2), (True, False, 3), (False, True, 3)],
+    ids=["cached", "failed fetch not cached", "concurrent fetch shared"],
+)
+def test_run_matches_upstream(
+    harness: Harness, wire_db: WireDB, adapter: str, bare: bool, fail_first: bool, concurrent: bool, runs: int
+) -> None:
+    """`ZQLDatabase.run` reads without a transaction when the connection can, and caches the server schema
+    once fetched, sharing a fetch in flight and dropping one that failed. Compared by what each side asked
+    its connection to do."""
+    from tests.wire.conftest import recorded_run
+
+    wire_db.reset()
+    for engine in (wire_db.ts_engine, wire_db.py_engine):
+        wire_db.run(_insert_items(engine))
+    args = {"bare": bare, "failFirst": fail_first, "concurrent": concurrent, "runs": runs}
+    expected = harness.call("recordedRun", url=wire_db.ts_url, **args)
+    schema = load_schema(harness.call("wireSchema"))
+    actual = wire_db.run(recorded_run(wire_db, adapter, schema, **args))
+    assert as_js(actual) == as_js(expected)
+
+
+async def _insert_items(engine: Any) -> None:
+    from sqlalchemy import text
+
+    async with engine.begin() as conn:
+        await conn.execute(text("INSERT INTO item (id, value) VALUES ('a', 'x'), ('b', 'y'), ('c', 'z')"))

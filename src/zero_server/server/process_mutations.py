@@ -1,17 +1,20 @@
 """The mutate endpoint: exactly-once processing of a push from zero-cache.
 
-Ported from rocicorp/mono `packages/zero-server/src/process-mutations.ts` at zero/v1.10.0
-(905d08516ba0caaf314cd28e93a5a47e8acdd482), with `MutationAlreadyProcessedError` from
+Ported from rocicorp/mono `packages/zero-server/src/process-mutations.ts` at zero/v1.11.3
+(e91e55f05b7a2c631f77238e1dd6fadf1029a538), with `MutationAlreadyProcessedError` from
 `packages/zero-cache/src/services/mutagen/error.ts`. Apache-2.0, Copyright Rocicorp.
 
 Each mutation runs inside the same database transaction that bumps its client's `lastMutationID`.
 The bump comes first and the comparison second, so a duplicate or a gap is found after the bump and
 undone by rolling that transaction back. A mutation whose mutator fails is retried without the
 mutator: the second transaction takes the ID and records the error in the `mutations` table, which is
-where the client's pending mutation learns it failed.
+where the client's pending mutation learns it failed. A mutator that registered `tx.retry_on` predicates
+may first be re-run, in a fresh transaction, when one of them says yes.
 """
 
+import asyncio
 import functools
+import inspect
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, nullcontext
@@ -37,6 +40,7 @@ from zero_server.protocol.mutation_id import MutationID
 from zero_server.protocol.push import PushBody
 from zero_server.protocol.schemas import mutate_params_schema, push_body_schema, refusal
 from zero_server.protocol.wire import parse_wire
+from zero_server.server.transaction import RetryPredicate
 from zero_server.shared.asserts import check
 from zero_server.shared.error import error_name, get_error_details, get_error_message
 from zero_server.shared.js import js_number, js_truthy
@@ -70,6 +74,9 @@ class TransactionProviderInput:
     client_group_id: str
     client_id: str
     mutation_id: int | float
+    # Receives each predicate the mutator registers with `tx.retry_on()`. A `Database` passes it on to
+    # the server transaction it creates.
+    add_retry_predicate: Callable[[RetryPredicate], None] | None = None
 
 
 class Database[T](Protocol):
@@ -102,7 +109,8 @@ def _session[T](db_provider: Database[T]) -> AbstractAsyncContextManager[Databas
     return nullcontext(db_provider)
 
 
-type TransactFnCallback[T] = Callable[[T, str, JSONValue | None], Awaitable[None]]
+type TransactFnCallback[T] = Callable[[T, str, JSONValue | None], Awaitable[JSONValue | None]]
+"""Runs the mutator. What it returns, unless `None`, is the mutation's result data."""
 type TransactFn[T] = Callable[[TransactFnCallback[T]], Awaitable[MutationResponse]]
 type MutateRequestHandler[T] = Callable[[TransactFn[T], CustomMutation], Awaitable[MutationResponse]]
 """Runs once per custom mutation.
@@ -314,6 +322,43 @@ async def _process_one[T](
         return _app_error_response(mutation_id, error)
 
 
+MAX_MUTATOR_RUNS = 5
+"""The most times a mutator runs for one mutation within one push when its `tx.retry_on()` predicate keeps
+answering yes: the first run and four re-runs."""
+
+# Predicates still running after another answered yes. Their answers are ignored, as upstream ignores
+# them, but a task needs a reference until it finishes.
+_unanswered: set[asyncio.Task[bool]] = set()
+
+
+async def _ask(should_retry: RetryPredicate, error: BaseException, attempt: int) -> bool:
+    try:
+        answer = should_retry(error, attempt)
+        if inspect.isawaitable(answer):
+            answer = await answer
+        return answer is True
+    except Exception as retry_error:
+        logger.warning("retryOn predicate threw; treating it as no", exc_info=retry_error)
+        return False
+
+
+async def _should_retry(predicates: list[RetryPredicate], error: BaseException, attempt: int) -> bool:
+    """Asks all of a run's predicates at once whether to run the mutator again. The first to answer yes
+    decides it; it is no once every predicate has answered no. A predicate that raises answers no:
+    escaping here would skip recording the mutation's result, and the client would send it again."""
+    if not predicates:
+        return False
+    pending = {asyncio.ensure_future(_ask(p, error, attempt)) for p in predicates}
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        if any(task.result() for task in done):
+            for task in pending:
+                _unanswered.add(task)
+                task.add_done_callback(_unanswered.discard)
+            return True
+    return False
+
+
 class _Transactor[T]:
     def __init__(self, db_provider: Database[T], push: PushBody, params: MutateParams) -> None:
         self._db = db_provider
@@ -324,9 +369,14 @@ class _Transactor[T]:
         self, mutation: CustomMutation, mutation_id: MutationID, callback: TransactFnCallback[T]
     ) -> MutationResponse:
         app_error: ApplicationError | None = None
+        # Which run of the mutator this is: 1, then 2 for the first re-run, and so on. When a run fails,
+        # it is also the number of the re-run being decided.
+        attempt = 1
         while True:
+            # What this run registers with `tx.retry_on()`. Each run starts empty.
+            predicates: list[RetryPredicate] = []
             try:
-                result = await self._transact_impl(mutation, mutation_id, callback, app_error)
+                result = await self._transact_impl(mutation, mutation_id, callback, app_error, predicates.append)
                 if app_error is not None:
                     logger.warning(
                         "Mutation %s for client %s was retried after an error",
@@ -355,9 +405,24 @@ class _Transactor[T]:
                         exc_info=error,
                     )
                     raise
+                # What the mutator or the database raised, without the wrapper. This includes errors
+                # raised at COMMIT, which the mutator cannot catch.
                 original: BaseException = error
                 if isinstance(error, DatabaseTransactionError) and error.__cause__ is not None:
                     original = error.__cause__
+                # Re-running without setting `app_error` is the whole mechanism: `app_error` being set
+                # is what makes the next pass skip the mutator. Each pass opens a new transaction, and
+                # the failed run rolled its ID bump back.
+                if attempt < MAX_MUTATOR_RUNS and await _should_retry(predicates, original, attempt):
+                    logger.warning(
+                        "Mutation %s for client %s failed, re-running mutator (retry %s)",
+                        mutation.id,
+                        mutation.client_id,
+                        attempt,
+                        exc_info=original,
+                    )
+                    attempt += 1
+                    continue
                 app_error = wrap_with_application_error(original)
                 logger.warning(
                     "Error processing mutation %s for client %s, retrying without mutator",
@@ -371,7 +436,7 @@ class _Transactor[T]:
     ) -> None:
         """The handler raised before calling `transact`. The ID still advances and the failure is recorded."""
 
-        await self._transact_impl(mutation, mutation_id, None, app_error)
+        await self._transact_impl(mutation, mutation_id, None, app_error, None)
 
     async def _transact_impl(
         self,
@@ -379,6 +444,7 @@ class _Transactor[T]:
         mutation_id: MutationID,
         callback: TransactFnCallback[T] | None,
         app_error: ApplicationError | None,
+        add_retry_predicate: Callable[[RetryPredicate], None] | None,
     ) -> MutationResponse:
         """Bump the ID, then run `callback`, or with `app_error` set, record that error in its place."""
         phase: _DatabaseTransactionPhase = "open"
@@ -394,10 +460,17 @@ class _Transactor[T]:
             if app_error is None:
                 assert callback is not None
                 logger.debug("Executing mutator '%s' (id=%s)", mutation.name, mutation.id)
-                await callback(tx, mutation.name, mutation.args[0] if mutation.args else None)
-            else:
-                await hooks.write_mutation_result(_app_error_response(mutation_id, app_error))
-            return MutationResponse.trusted(id=mutation_id, result=_OK)
+                data = await callback(tx, mutation.name, mutation.args[0] if mutation.args else None)
+                if data is None:
+                    return MutationResponse.trusted(id=mutation_id, result=_OK)
+                # Persisted so the data still reaches the client if the push response is lost. A mutator
+                # that returns nothing writes no row.
+                success = MutationResponse.trusted(id=mutation_id, result=MutationOk.trusted(data=data))
+                await hooks.write_mutation_result(success)
+                return success
+            response = _app_error_response(mutation_id, app_error)
+            await hooks.write_mutation_result(response)
+            return response
 
         try:
             return await self._db.transaction(
@@ -407,6 +480,7 @@ class _Transactor[T]:
                     client_group_id=self._push.client_group_id,
                     client_id=mutation.client_id,
                     mutation_id=mutation.id,
+                    add_retry_predicate=add_retry_predicate,
                 ),
             )
         except (ApplicationError, OutOfOrderMutation, MutationAlreadyProcessedError):
