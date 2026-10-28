@@ -1,7 +1,7 @@
 """Run a ZQL query against Postgres and return what the client-side query would have.
 
 Ported from rocicorp/mono `packages/zero-server/src/pg-query-executor.ts` and `extractZqlResult` in
-`packages/z2s/src/compiler.ts` at zero/v1.10.0 (905d08516ba0caaf314cd28e93a5a47e8acdd482).
+`packages/z2s/src/compiler.ts` at zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538).
 Apache-2.0, Copyright Rocicorp.
 """
 

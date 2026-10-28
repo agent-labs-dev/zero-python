@@ -1,7 +1,7 @@
 """The Postgres types behind each column of the Zero schema, and the check that they agree.
 
 Ported from rocicorp/mono `packages/zero-server/src/schema.ts` and `packages/zero-types/src/server-schema.ts`
-at zero/v1.10.0 (905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+at zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 """
 
 from dataclasses import dataclass

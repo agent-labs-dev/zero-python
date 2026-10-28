@@ -1,7 +1,7 @@
 """The error application code raises to send a message and JSON details back to the client.
 
-Ported from rocicorp/mono `packages/zero-protocol/src/application-error.ts` at zero/v1.10.0
-(905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/zero-protocol/src/application-error.ts` at zero/v1.11.3
+(e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 """
 
 from typing import Literal

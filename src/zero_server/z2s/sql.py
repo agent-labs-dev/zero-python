@@ -8,7 +8,7 @@ text, a timestamp epoch milliseconds, a JSON value its `JSON.stringify` output.
 
 An identifier is checked as `escapePostgresIdentifier` checks it, ported from `@databases/escape-identifier`
 1.0.3 (`lib/index.js`) and `@databases/validate-unicode` 1.0.0 (`lib/index.js`), the versions
-`@rocicorp/zero` 1.10.0 installs. MIT, Copyright (c) Forbes Lindesay.
+`@rocicorp/zero` 1.11.3 installs. MIT, Copyright (c) Forbes Lindesay.
 """
 
 import functools

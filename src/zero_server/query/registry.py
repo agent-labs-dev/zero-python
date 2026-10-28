@@ -1,7 +1,7 @@
 """`define_query` and `define_queries`: named queries the query endpoint resolves by name.
 
 Ported from rocicorp/mono `packages/zql/src/query/query-registry.ts`, `validate-input.ts` and
-`error.ts` at zero/v1.10.0 (905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+`error.ts` at zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 
 A validator is anything with Pydantic's `validate_python` (a `TypeAdapter`, or a model class), or a
 plain callable that returns the parsed value and raises `ValueError` on bad input. Upstream takes a
