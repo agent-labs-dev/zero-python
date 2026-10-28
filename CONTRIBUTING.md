@@ -37,4 +37,9 @@ uv run --group e2e python e2e/run.py
 
 ## Bumping Zero
 
-Change `ZERO_VERSION`, the `@rocicorp/zero` version in `harness/package.json` and `e2e/package.json`, and the `rocicorp/zero` image in `e2e/docker-compose.yml`. Then run the full suite and fix what it finds.
+Change `ZERO_VERSION`, the `@rocicorp/zero` version in `harness/package.json` and `e2e/package.json`, the `rocicorp/zero` image in `e2e/docker-compose.yml`, and the version in `README.md`. Then run the full suite and fix what it finds:
+
+- Port what changed upstream, and move each ported module's docstring to the new tag and commit.
+- The line ranges in `tests/compat_scope.py` are lines of the old TypeScript. Remap them to the new version, which `tests.compat` reports as covered or uncovered regions.
+- Regenerate the benchmark fixtures with `uv run python -m bench.capture`; `tests/wire/test_bench_fixtures.py` fails until you do.
+- Record any new divergence in [`docs/compat.md`](docs/compat.md#known-differences).

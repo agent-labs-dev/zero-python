@@ -70,13 +70,17 @@ These are the cases where the proof holds Python to something narrower than "ide
 - **Interned queries.** Upstream's builder hands back the query it built before when a step repeats one,
   keyed so that some values JavaScript's types rule out share a key: a `flip` of `'yes'` with `true`, any
   `orderBy` direction but `'asc'` with `'desc'`. In one process, such a value can come back as whichever
-  was built first. Python interns as well, but by exact keys, so it builds what it is given. The harness gives each program a fresh schema, which
-  upstream interns by, so that no comparison depends on the programs before it.
+  was built first. Python interns as well, but by exact keys, so it builds what it is given. The harness
+  gives each program a fresh schema, which upstream interns by, so that no comparison depends on the
+  programs before it.
 - **A mutator returning `null`.** Upstream records a mutator's return value as result data unless it is
   `undefined`, so a TypeScript mutator can return `null` as data. Python has only `None`, which the port
   takes as returning nothing, as the tests' mutators never return `null`.
 - **The JavaScript object model.** Upstream's registries also resolve `~`, their marker key, and names every
   object inherits such as `toString`. A Python registry has neither.
+- **Logging.** Upstream logs through a `LogSink` and log level passed in. Python logs through the stdlib
+  `logging` loggers `zero_server.query`, `zero_server.mutate` and `zero_server.adapters`, so the wording
+  and fields of log lines are not compared.
 - **The runtime.** The oracle runs on Node 24, and JSON parse messages are V8's. Bun or Deno word them
   differently.
 - **The driver.** Upstream hands some values to its JavaScript driver as they are, so what gets bound

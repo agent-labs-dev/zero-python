@@ -3,8 +3,8 @@
 ## Goal
 
 A Python backend can replace a TypeScript backend behind an unmodified Zero client, for one pinned
-`@rocicorp/zero` version at a time, and later releases fast-follow each upstream release. The first pin is
-**1.10.0**.
+`@rocicorp/zero` version at a time, and later releases fast-follow each upstream release. The first pin was
+**1.10.0**; the current one is in `ZERO_VERSION`.
 
 ## Scope
 
@@ -30,7 +30,7 @@ The published npm package at the pinned version is the definition of correct. Th
 ships no `.test.ts` for zql, z2s, zero-server, zero-protocol or zero-cache, so there are no upstream tests to
 port. Three tiers of differential tests, each comparing Python against the real package:
 
-1. **Wire.** A small bun runner calls the real handlers. Hypothesis generates query args and mutation
+1. **Wire.** A small Node runner (`harness/`) calls the real handlers. Hypothesis generates query args and mutation
    sequences, including gaps, duplicates, refusals and the `_zero_cleanupResults` mutation. Diff the
    responses and the rows written to the upstream schema (`zero_0.clients`, `zero_0.mutations`).
 2. **SQL (z2s).** The same ZQL through TS and Python against the same Postgres. Compare result rows, never
@@ -45,7 +45,8 @@ tests alone must reach every line and branch of the cited upstream modules insid
 
 ## Phases
 
-Each phase is a PR. Its completion criterion is what makes it done.
+Each phase is a PR. Its completion criterion is what makes it done. Phases 1 to 7 are done, and 1.11.3
+was ported by hand. Of phase 8, publishing on a tag is done; watching npm and porting are not.
 
 1. **Scaffold.** `ZERO_VERSION` (1.10.0), CI running ruff, ty, pytest with coverage. Done when CI is green on
    an empty test suite.
