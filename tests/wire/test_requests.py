@@ -115,6 +115,7 @@ PINNED_REFUSALS: list[tuple[str, Any]] = [
     ("cleanupResultsArg", {"clientGroupID": "g", "clientID": "c", "upToMutationID": 1, "b": 1, "a": 2, "0": 3}),
     ("cleanupResultsArg", {"clientGroupID": "g", "clientID": "c", "upToMutationID": "1"}),
     ("cleanupResultsArg", "x"),
+    ("cleanupResultsArg", True),
     ("mutateParams", {"schema": 1, "appID": 2}),
 ]
 
