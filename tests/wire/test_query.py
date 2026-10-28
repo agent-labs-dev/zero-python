@@ -221,6 +221,9 @@ REBUILT = [
     ),
     _q("issue", ["where", "open", True], ["where", "priority", ">", 2.5], ["one"]),
     _q("issue", ["where", "meta", [1, "x"]], ["where", "title", "IN", ["a", "b"]]),
+    # A two-hop `exists` puts `scalar` only on its junction's condition.
+    _q("issue", ["whereExists", "labels", None, {"scalar": True}]),
+    _q("issue", ["whereExists", "labels", None, {"scalar": False}]),
 ]
 
 

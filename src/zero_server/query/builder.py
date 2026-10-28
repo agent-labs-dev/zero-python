@@ -473,8 +473,7 @@ def _position_key(position: object) -> Any:
 
 def _condition_key(condition: Condition) -> Any:
     """`condition` as an exact key. A subquery is named by the identity of its AST, which the condition
-    keeps alive. For a two-hop `exists`, whose junction AST is new every time, that is the AST of the
-    query it leads to (`CorrelatedSubquery.source`)."""
+    keeps alive (`CorrelatedSubquery.source`)."""
     kind = type(condition)
     if kind is SimpleCondition:
         return (
@@ -491,13 +490,21 @@ def _condition_key(condition: Condition) -> Any:
             _tag(related.correlation.child_field),
             _tag(related.hidden),
             _tag(related.system),
-            # A condition the builder did not make has no source; its own subquery stands for itself.
-            id(getattr(related.source, "_ast", related.subquery)),
+            _subquery_key(related),
             _tag(condition.op),  # ty: ignore[unresolved-attribute]
             _tag(condition.flip),  # ty: ignore[unresolved-attribute]
             _tag(condition.scalar),  # ty: ignore[unresolved-attribute]
         )
     return kind, tuple([_condition_key(c) for c in condition.conditions])  # ty: ignore[unresolved-attribute]
+
+
+def _subquery_key(related: CorrelatedSubquery) -> Any:
+    subquery = related.subquery
+    # A condition the builder did not make has no source, and its subquery stands for itself.
+    source = getattr(related.source, "_ast", subquery)
+    # A two-hop `exists` builds its junction AST new every time, so it is keyed by its condition,
+    # which names the query it leads to.
+    return id(subquery) if source is subquery else _condition_key(subquery.where)  # ty: ignore[invalid-argument-type]
 
 
 def _check_keys(first: Connection, second: Connection) -> None:
