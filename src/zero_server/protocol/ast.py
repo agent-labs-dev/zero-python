@@ -454,18 +454,28 @@ def normalize_condition(condition: Condition) -> Condition:
     condition becomes that condition. An empty one stays: an empty `and` is always true and an empty
     `or` always false.
     """
-    if isinstance(condition, SimpleCondition | CorrelatedSubqueryCondition):
-        return condition
     kind = type(condition)
+    if kind is not Conjunction and kind is not Disjunction:
+        return condition
+    original = condition.conditions  # ty: ignore[unresolved-attribute]
     conditions: list[Condition] = []
-    for c in condition.conditions:
-        n = normalize_condition(c)
-        if type(n) is kind:
-            conditions.extend(n.conditions)  # ty: ignore[unresolved-attribute]
-        else:
-            conditions.append(n)
+    changed = False
+    for c in original:
+        t = type(c)
+        if t is Conjunction or t is Disjunction:
+            n = normalize_condition(c)
+            if type(n) is kind:
+                conditions.extend(n.conditions)  # ty: ignore[unresolved-attribute]
+                changed = True
+                continue
+            changed = changed or n is not c
+            c = n
+        conditions.append(c)
     if len(conditions) == 1:
         return conditions[0]
+    # Already in order, which is when the sort would leave it as it is: the condition stands as built.
+    if not changed and all(_cmp_condition(conditions[i], conditions[i - 1]) >= 0 for i in range(1, len(conditions))):
+        return condition
     return kind(conditions=tuple(js_sort(conditions, _cmp_condition)))
 
 
@@ -475,10 +485,10 @@ def insert_related(
     """`related` with `entry` added where it keeps the entries sorted, after any it compares equal to."""
     if related is None:
         return (entry,)
-    i = len(related)
+    n = i = len(related)
     while i > 0 and _cmp_related(related[i - 1], entry) > 0:
         i -= 1
-    return (*related[:i], entry, *related[i:])
+    return (*related, entry) if i == n else (*related[:i], entry, *related[i:])
 
 
 def _sorted_related(related: list[CorrelatedSubquery]) -> tuple[CorrelatedSubquery, ...]:
@@ -488,32 +498,26 @@ def _sorted_related(related: list[CorrelatedSubquery]) -> tuple[CorrelatedSubque
     return tuple(related)
 
 
-def _utf8(value: str) -> bytes:
-    return value.encode("utf-8", "surrogatepass")
-
-
 def _cmp(a: object, b: object) -> int:
     return (a > b) - (a < b)  # ty: ignore[unsupported-operator]
 
 
-def _cmp_utf8(a: str, b: str) -> int:
-    return _cmp(_utf8(a), _utf8(b))
+# Upstream's `compareUTF8` orders strings by their UTF-8 bytes, a lone surrogate by its own value. That is
+# code point order, which is how Python compares strings.
+_cmp_utf8 = _cmp
 
 
 def _cmp_value_position(
     a: LiteralReference | ColumnReference | Parameter, b: LiteralReference | ColumnReference | Parameter
 ) -> int:
-    if a.type != b.type:
+    kind = type(a)
+    if kind is not type(b):
         return _cmp_utf8(a.type, b.type)
-    match a, b:
-        case LiteralReference(), LiteralReference():
-            return _cmp_literal(a.value, b.value)
-        case ColumnReference(), ColumnReference():
-            return _cmp_utf8(a.name, b.name)
-        case _:
-            assert isinstance(a, Parameter)
-            assert isinstance(b, Parameter)
-            return _cmp_utf8(a.anchor, b.anchor) or _cmp_literal(a.field, b.field)
+    if kind is ColumnReference:
+        return _cmp_utf8(a.name, b.name)  # ty: ignore[unresolved-attribute]
+    if kind is LiteralReference:
+        return _cmp_literal(a.value, b.value)  # ty: ignore[unresolved-attribute]
+    return _cmp_utf8(a.anchor, b.anchor) or _cmp_literal(a.field, b.field)  # ty: ignore[unresolved-attribute]
 
 
 def _literal_type(value: object) -> int:
@@ -549,13 +553,10 @@ def _cmp_literal(a: Any, b: Any) -> int:
 
 
 def _cmp_related(a: CorrelatedSubquery, b: CorrelatedSubquery) -> int:
-    return _cmp_utf8(_must(a.subquery.alias), _must(b.subquery.alias))
-
-
-def _must(alias: str | None) -> str:
-    if alias is None:
+    left, right = a.subquery.alias, b.subquery.alias
+    if left is None or right is None:
         raise AssertionFailedError("Unexpected undefined value")
-    return alias
+    return (left > right) - (left < right)
 
 
 def _cmp_optional_bool(a: bool | None, b: bool | None) -> int:
