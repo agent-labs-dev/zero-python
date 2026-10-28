@@ -1,7 +1,7 @@
 """Mutations as a push carries them, and the result recorded for each.
 
 Ported from rocicorp/mono `packages/zero-protocol/src/mutation.ts` and `mutation-type-enum.ts` at
-zero/v1.10.0 (905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 """
 
 from typing import Annotated, Any, Literal

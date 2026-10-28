@@ -4,7 +4,7 @@ The schema stays authored in TypeScript because the client needs it. Emit it wit
 `JSON.stringify(schema)` and load that here; this module has no schema DSL of its own.
 
 Ported from rocicorp/mono `packages/zero-types/src/schema.ts`, `schema-value.ts`, `name-mapper.ts` and
-`packages/zero-schema/src/name-mapper.ts` at zero/v1.10.0 (905d08516ba0caaf314cd28e93a5a47e8acdd482).
+`packages/zero-schema/src/name-mapper.ts` at zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538).
 Apache-2.0, Copyright Rocicorp.
 """
 
@@ -93,7 +93,7 @@ class NameMapper:
     def _table(self, src: str) -> DestNames:
         table = self._tables.get(src)
         if table is None:
-            raise Exception(f'unknown table "{src}" ')
+            raise Exception(f'unknown table "{src}"')
         return table
 
     def table_name(self, src: str) -> str:
@@ -113,7 +113,7 @@ class NameMapper:
         src = src if isinstance(src, str) else js_string(src)
         dest = self._table(table).columns.get(src)
         if not dest:
-            raise Exception(f'unknown column "{src}" of "{table}" table ')
+            raise Exception(f'unknown column "{src}" of "{table}" table')
         return dest
 
 

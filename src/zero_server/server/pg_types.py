@@ -1,7 +1,7 @@
 """Postgres column types as Zero sees them.
 
-Ported from rocicorp/mono `packages/zero-cache/src/types/pg-data-type.ts` at zero/v1.10.0
-(905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/zero-cache/src/types/pg-data-type.ts` at zero/v1.11.3
+(e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 """
 
 import functools
@@ -45,6 +45,11 @@ def is_number(pg_type: str) -> bool:
 
 def is_native_string(pg_type: str) -> bool:
     return _lookup(pg_type) in NATIVE_STRING
+
+
+def is_bpchar(pg_type: str) -> bool:
+    """`character(n)`, also known as `bpchar`."""
+    return _lookup(pg_type) in ("bpchar", "character")
 
 
 def is_text_represented(pg_type: str) -> bool:

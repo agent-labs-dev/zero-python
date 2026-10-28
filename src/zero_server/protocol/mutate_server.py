@@ -1,7 +1,7 @@
 """The mutate endpoint's response and query string.
 
-Ported from rocicorp/mono `packages/zero-protocol/src/mutate-server.ts` at zero/v1.10.0
-(905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/zero-protocol/src/mutate-server.ts` at zero/v1.11.3
+(e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 """
 
 from collections.abc import Mapping

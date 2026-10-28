@@ -1,14 +1,14 @@
 """The Postgres types behind each column of the Zero schema, and the check that they agree.
 
 Ported from rocicorp/mono `packages/zero-server/src/schema.ts` and `packages/zero-types/src/server-schema.ts`
-at zero/v1.10.0 (905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+at zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 """
 
 from dataclasses import dataclass
 
 from zero_server.schema import Schema
 from zero_server.server.pg_types import zql_value_type
-from zero_server.server.transaction import DBTransaction
+from zero_server.server.transaction import Queryable
 from zero_server.shared.asserts import check
 
 
@@ -86,7 +86,7 @@ def _schema_and_table(name: str, server_name: str | None) -> tuple[str, str]:
     return "public", server_name if server_name is not None else name
 
 
-async def get_server_schema(tx: DBTransaction[object], schema: Schema) -> ServerSchema:
+async def get_server_schema(tx: Queryable, schema: Schema) -> ServerSchema:
     pairs = [_schema_and_table(t.name, t.server_name) for t in schema.tables.values()]
     if not pairs:
         return {}
@@ -110,6 +110,9 @@ async def get_server_schema(tx: DBTransaction[object], schema: Schema) -> Server
             type_ = row["typename"]
         if type_ in ("bpchar", "character", "character varying", "varchar") and row["length"]:
             type_ = f"{type_}({row['length']})"
+        elif type_ == "character":
+            # Without a length `character` means `character(1)`, so an unbounded `bpchar` is `bpchar`.
+            type_ = "bpchar"
         if type_ in ("numeric", "decimal") and row["precision"] is not None and row["scale"] is not None:
             type_ = f"{type_}({row['precision']}, {row['scale']})"
         table[row["column"]] = ServerColumnSchema(type=type_, is_enum=is_enum, is_array=is_array)

@@ -1,9 +1,13 @@
 """The ZQL query builder: a `Query` is an immutable AST under construction, in client names.
 
-Ported from rocicorp/mono `packages/zql/src/query/query-impl.ts` and `create-builder.ts` at zero/v1.10.0
-(905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/zql/src/query/query-impl.ts` and `create-builder.ts` at zero/v1.11.3
+(e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 
 The errors match upstream's message for message, because a query endpoint reports them to the client.
+
+A query's AST is always normalized, as upstream's is: each step keeps it so, sorting a new `related`
+into place and normalizing the conditions of a `where`. Upstream also interns queries, so that
+rebuilding the same chain hands back the same objects; that only saves work, and is not ported.
 """
 
 import math
@@ -26,6 +30,8 @@ from zero_server.protocol.ast import (
     Direction,
     SimpleCondition,
     System,
+    insert_related,
+    normalize_condition,
 )
 from zero_server.query.expression import MISSING, ExpressionBuilder, _position, and_, cmp, simplify_condition
 from zero_server.schema import Connection, Schema
@@ -128,8 +134,7 @@ class Query(Generic[R, C]):
 
     def _with_relationship[Q: Query[Any, Any]](self: Q, name: str, sub: AnyQuery, entry: CorrelatedSubquery) -> Q:
         format = Format(self._format.singular, {**self._format.relationships, name: sub._format})
-        related = self._ast.related
-        return self._with("related", (*related, entry) if related else (entry,), format)
+        return self._with("related", insert_related(self._ast.related, entry), format)
 
     def one(self) -> "OneQuery[R, C]":
         """At most one row: `tx.run` returns it, or `None`."""
@@ -155,7 +160,7 @@ class Query(Generic[R, C]):
             cond = field_or_factory(self.expression_builder())
         if self._ast.where is not None:
             cond = and_(self._ast.where, cond)
-        return self._with("where", simplify_condition(cond))
+        return self._with("where", normalize_condition(simplify_condition(cond)))
 
     def where_exists[Q: Query[Any, Any]](
         self: Q,
@@ -301,6 +306,7 @@ class Query(Generic[R, C]):
                 subquery=AST(
                     table=first.dest_schema,
                     alias=f"{SUBQ_PREFIX}{relationship}",
+                    # A single condition, which needs no normalizing.
                     where=CorrelatedSubqueryCondition(
                         related=CorrelatedSubquery(
                             system=self._system,

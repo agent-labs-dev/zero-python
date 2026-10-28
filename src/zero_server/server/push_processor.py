@@ -1,7 +1,7 @@
 """`PushProcessor`: the older entry point to the mutate endpoint, dispatching to a mutator registry.
 
-Ported from rocicorp/mono `packages/zero-server/src/push-processor.ts` at zero/v1.10.0
-(905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/zero-server/src/push-processor.ts` at zero/v1.11.3
+(e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 
 Unlike `handle_mutate_request`, it reports no user ID to zero-cache.
 """
@@ -33,18 +33,17 @@ class PushProcessor[T]:
         check(body is not None, "body is required when using query params directly")
 
         async def handler(transact: TransactFn[T], _mutation: CustomMutation) -> MutationResponse:
-            async def dispatch(tx: T, name: str, args: JSONValue | None) -> None:
-                await self._dispatch(mutators, tx, name, args)
+            async def dispatch(tx: T, name: str, args: JSONValue | None) -> JSONValue | None:
+                return await self._dispatch(mutators, tx, name, args)
 
             return await transact(dispatch)
 
         return await handle_mutate(self._db, handler, query, body, None, report_user_id=False)
 
-    async def _dispatch(self, mutators: Mapping[str, Any], tx: T, key: str, args: JSONValue | None) -> None:
+    async def _dispatch(self, mutators: Mapping[str, Any], tx: T, key: str, args: JSONValue | None) -> JSONValue | None:
         mutator = value_at_path(mutators, key, SEPARATOR)
         if not callable(mutator) or isinstance(mutator, Mapping):  # `check`, formatting only on failure
             raise AssertionFailedError(f"could not find mutator {key}")
         if isinstance(mutator, Mutator):
-            await mutator.fn(args=args, ctx=self._context, tx=tx)
-        else:
-            await mutator(tx, args)
+            return await mutator.fn(args=args, ctx=self._context, tx=tx)
+        return await mutator(tx, args)

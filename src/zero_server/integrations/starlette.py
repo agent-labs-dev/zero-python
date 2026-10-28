@@ -104,8 +104,8 @@ def zero_routes(
             user_id, ctx = who
 
             async def handler(transact: TransactFn[Any], _mutation: CustomMutation) -> MutationResponse:
-                async def run(tx: Any, name: str, args: JSONValue | None) -> None:
-                    await must_get_mutator(mutators, name).fn(tx=tx, ctx=ctx, args=args)
+                async def run(tx: Any, name: str, args: JSONValue | None) -> JSONValue | None:
+                    return await must_get_mutator(mutators, name).fn(tx=tx, ctx=ctx, args=args)
 
                 return await transact(run)
 

@@ -1,14 +1,14 @@
 """Identifiers and bound values for the SQL that z2s and `tx.mutate` write.
 
 Ported from rocicorp/mono `packages/z2s/src/sql.ts` (`formatPgInternalConvert` and its argument
-conversions) at zero/v1.10.0 (905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+conversions) at zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 
 Every value is bound as text and cast in SQL, so the driver never coerces it: a number is its JSON
 text, a timestamp epoch milliseconds, a JSON value its `JSON.stringify` output.
 
 An identifier is checked as `escapePostgresIdentifier` checks it, ported from `@databases/escape-identifier`
 1.0.3 (`lib/index.js`) and `@databases/validate-unicode` 1.0.0 (`lib/index.js`), the versions
-`@rocicorp/zero` 1.10.0 installs. MIT, Copyright (c) Forbes Lindesay.
+`@rocicorp/zero` 1.11.3 installs. MIT, Copyright (c) Forbes Lindesay.
 """
 
 import functools
@@ -16,7 +16,7 @@ import re
 from collections.abc import Sequence
 from typing import Any, Literal
 
-from zero_server.server.pg_types import is_native_string, is_number, is_string, is_text_represented
+from zero_server.server.pg_types import is_bpchar, is_native_string, is_number, is_string, is_text_represented
 from zero_server.server.server_schema import ServerColumnSchema
 from zero_server.shared.js import js_string, js_stringify
 
@@ -95,8 +95,11 @@ def _cast(placeholder: str, column: ServerColumnSchema, comparison: bool) -> str
     if column.is_enum:
         return f'{placeholder}::text::"{column.type}"'
     if is_native_string(column.type):
-        # Compared as plain text, so a value longer than a varchar column still compares.
-        return f"{placeholder}::text" if comparison else f"{placeholder}::text::{column.type}"
+        if not comparison:
+            return f"{placeholder}::text::{column.type}"
+        # Compared as an unbounded type, so a value longer than the column still compares. A `char(n)`
+        # column's is `bpchar`: compared with `text`, Postgres casts the column and can't use its indexes.
+        return f"{placeholder}::text::bpchar" if is_bpchar(column.type) else f"{placeholder}::text"
     if is_text_represented(column.type):
         return f"{placeholder}::text::{column.type}"
     if is_number(column.type):
@@ -217,7 +220,11 @@ class Params:
         """A scalar compared with another literal, typed by its own JSON type."""
         kind = literal_type(value)
         index = self._bind(value, kind, value if isinstance(value, str) else js_stringify(value))
-        return f"${index}::text::{_LITERAL_PG_TYPE[kind]}"
+        return f"${index}::text" if kind == "string" else f"${index}::text::{_LITERAL_PG_TYPE[kind]}"
+
+    def null(self) -> str:
+        """A literal `null`, untyped."""
+        return f"${self._bind(None, 'null', None)}"
 
     def plural_literal(self, kind: LiteralType, values: Sequence[Any]) -> str:
         if kind not in _LITERAL_PG_TYPE:

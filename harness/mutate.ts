@@ -16,12 +16,16 @@ import {
   ApplicationError,
   handleMutateRequest,
   PushProcessor,
+  ZQLDatabase,
   type Database,
+  type DBConnection,
+  type IsolationLevel,
+  type RetryPredicate,
   type MutateRequestHandler,
   type TransactionProviderHooks,
   type TransactionProviderInput,
 } from '@rocicorp/zero/server';
-import {zeroPostgresJS} from '@rocicorp/zero/server/adapters/postgresjs';
+import {PostgresJSConnection, zeroPostgresJS} from '@rocicorp/zero/server/adapters/postgresjs';
 import postgres from 'postgres';
 import {shapes} from './errors.ts';
 
@@ -55,12 +59,27 @@ export const wireSchema = createSchema({tables: [item, thing, pair]});
 const zql = createBuilder(wireSchema);
 
 export type Tx = {
-  dbTransaction: {query(sql: string, params: unknown[]): Promise<unknown[]>};
+  clientID: string;
+  mutationID: number;
+  dbTransaction: {query(sql: string, params: unknown[]): Promise<unknown[]>; wrappedTransaction: unknown};
   run(query: unknown): Promise<unknown>;
+  retryOn(shouldRetry: RetryPredicate): void;
   // oxlint-disable-next-line no-explicit-any
   mutate: any;
 };
-export type Args = {id?: string; value?: string; message?: string; details?: unknown; table?: string; row?: unknown};
+export type Args = {
+  id?: string;
+  value?: string;
+  message?: string;
+  details?: unknown;
+  table?: string;
+  row?: unknown;
+  ret?: unknown;
+  predicates?: string[];
+  fail?: number;
+  db?: boolean;
+  run?: boolean;
+};
 
 const PUT = `INSERT INTO item (id, value) VALUES ($1, $2)
   ON CONFLICT (id) DO UPDATE SET value = item.value || '+' || excluded.value`;
@@ -69,7 +88,37 @@ export async function put(tx: Tx, args: Args) {
   await tx.dbTransaction.query(PUT, [String(args.id ?? 'x'), String(args.value ?? '')]);
 }
 
-export const mutators: Record<string, (tx: Tx, args: Args) => Promise<void>> = {
+// How many times item.retry has run for each mutation, by `clientID:mutationID`. Reset per test example.
+const runs = new Map<string, number>();
+// A transaction item.keep held on to after it ended.
+let kept: Tx | undefined;
+
+export function resetRuns() {
+  runs.clear();
+  kept = undefined;
+  return null;
+}
+
+/** The tx.retryOn() predicates item.retry registers, by name; tests/wire/mutators.py has their twins. */
+const predicates: Record<string, RetryPredicate> = {
+  yes: () => true,
+  no: () => false,
+  later: async () => {
+    await new Promise(resolve => setTimeout(resolve, 1));
+    return true;
+  },
+  throw: () => {
+    throw new Error('predicate broke');
+  },
+  reject: async () => {
+    throw new Error('predicate rejected');
+  },
+  truthy: () => 1 as never,
+  firstOnly: (_error, attempt) => attempt === 1,
+  matches: error => error instanceof Error && error.message.includes('failed'),
+};
+
+export const mutators: Record<string, (tx: Tx, args: Args) => Promise<unknown>> = {
   'item.put': put,
   'item.appError': async (tx, args) => {
     await put(tx, args);
@@ -102,6 +151,45 @@ export const mutators: Record<string, (tx: Tx, args: Args) => Promise<void>> = {
   'item.dbError': async tx => {
     await tx.dbTransaction.query('SELECT * FROM missing_table', []);
   },
+  // Whatever `ret` holds is the mutation's result data; without it, there is none.
+  'item.return': async (tx, args) => {
+    await put(tx, args);
+    return args.ret;
+  },
+  // Fails its first `fail` runs, after registering `predicates`, and returns the number of the run.
+  'item.retry': async (tx, args) => {
+    for (const name of args.predicates ?? []) {
+      tx.retryOn(predicates[name]);
+    }
+    await put(tx, args);
+    const key = `${tx.clientID}:${tx.mutationID}`;
+    const run = (runs.get(key) ?? 0) + 1;
+    runs.set(key, run);
+    if (run <= Number(args.fail ?? 0)) {
+      if (args.db) {
+        await tx.dbTransaction.query('SELECT * FROM missing_table', []);
+      }
+      throw new Error(`run ${run} failed`);
+    }
+    return run;
+  },
+  'item.keep': async (tx, args) => {
+    kept = tx;
+    await put(tx, args);
+    // Still open, so this is the driver's transaction.
+    return tx.dbTransaction.wrappedTransaction === undefined;
+  },
+  // Uses the transaction item.keep held on to, which has ended.
+  'item.useKept': async (_tx, args) => {
+    if (!kept) throw new Error('nothing kept');
+    if (args.db) {
+      await kept.dbTransaction.query('SELECT 1', []);
+    }
+    if (args.run) {
+      await kept.run(zql.item);
+    }
+    return kept.dbTransaction.wrappedTransaction === undefined;
+  },
   ...Object.fromEntries(
     Object.entries(shapes).map(([shape, make]) => [
       `throw.${shape}`,
@@ -124,7 +212,7 @@ export const handler: MutateRequestHandler<Database<Tx>> = async (transact, muta
   const result = await transact(async (tx, name, mutatorArgs) => {
     const mutator = mutators[name.replace(/^post\./, 'item.')];
     if (!mutator) throw new Error(`unknown mutator ${name}`);
-    await mutator(tx, (mutatorArgs ?? {}) as Args);
+    return (await mutator(tx, (mutatorArgs ?? {}) as Args)) as never;
   });
   if (mutation.name.startsWith('post.')) {
     throw new Error('after commit');
@@ -192,9 +280,12 @@ const registry = defineMutators({
       put(tx, {...args, value: `${String(args?.value ?? '')}@${ctx.tag}`}),
     ),
     appError: defineMutator(async ({tx, args}: {tx: Tx; args: Args}) => mutators['item.appError'](tx, args ?? {})),
+    ret: defineMutator(async ({tx, args}: {tx: Tx; args: Args}) => mutators['item.return'](tx, args ?? {})),
   },
 } as never);
-const legacy = {legacy: {put: (tx: Tx, args: Args) => put(tx, args ?? {})}};
+const legacy = {
+  legacy: {put: (tx: Tx, args: Args) => put(tx, args ?? {}), ret: (tx: Tx, args: Args) => mutators['item.return'](tx, args ?? {})},
+};
 
 export function pushProcessor({url, query, body}: {url: string; query: Record<string, string>; body: unknown}) {
   return new PushProcessor(provider(url) as never, {tag: 'ctx'}, 'debug').process(
@@ -234,4 +325,100 @@ export function mutateWithSchema({
     userID: null,
     logLevel: 'error',
   }).finally(() => sql.end());
+}
+
+/** tx.retryOn() on a transaction nothing will re-run: one ZQLDatabase.transaction opens with no input. */
+export async function retryOnUnsupported({url}: {url: string}) {
+  const sql = postgres(url, {onnotice: () => {}});
+  try {
+    return await zeroPostgresJS(wireSchema, sql).transaction(async tx => {
+      try {
+        (tx as unknown as Tx).retryOn(() => true);
+        return null;
+      } catch (e) {
+        return (e as Error).message;
+      }
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
+/** The isolation level a transaction of zeroPostgresJS runs at, given `level` or none. */
+export async function isolation({url, level}: {url: string; level: IsolationLevel | null}) {
+  const sql = postgres(url, {onnotice: () => {}});
+  try {
+    return await zeroPostgresJS(wireSchema, sql, level === null ? undefined : {isolationLevel: level}).transaction(
+      async tx => {
+        const rows = (await (tx as unknown as Tx).dbTransaction.query('SHOW transaction_isolation', [])) as {
+          transaction_isolation: string;
+        }[];
+        return rows[0].transaction_isolation;
+      },
+    );
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
+ * `ZQLDatabase.run` over a connection that logs what it is asked to do: with `bare`, one that runs
+ * statements outside a transaction. With `failFirst`, the first statement fails. With `concurrent`, the
+ * runs start together, otherwise one after another. Returns each run's rows or error, and the log.
+ */
+export async function recordedRun({
+  url,
+  bare,
+  failFirst,
+  concurrent,
+  runs: count,
+}: {
+  url: string;
+  bare: boolean;
+  failFirst: boolean;
+  concurrent: boolean;
+  runs: number;
+}) {
+  const sql = postgres(url, {onnotice: () => {}});
+  const inner = new PostgresJSConnection(sql);
+  const log: string[] = [];
+  let failing = failFirst;
+  const record = (event: string, run: () => Promise<unknown>) => {
+    log.push(event);
+    if (failing) {
+      failing = false;
+      return Promise.reject(new Error('statement failed'));
+    }
+    return run();
+  };
+  const connection: DBConnection<unknown> = {
+    transaction: cb => {
+      log.push('transaction');
+      return inner.transaction(dbTx => {
+        const wrapped = Object.create(dbTx);
+        wrapped.query = (q: string, p: unknown[]) => record('query in transaction', () => dbTx.query(q, p));
+        return cb(wrapped);
+      });
+    },
+    ...(bare ? {query: (q: string, p: unknown[]) => record('query', () => inner.query(q, p))} : {}),
+  } as DBConnection<unknown>;
+  const db = new ZQLDatabase(connection, wireSchema);
+  const one = async () => {
+    try {
+      return {rows: await db.run(zql.item.where('value', '!=', 'x').orderBy('id', 'asc') as never)};
+    } catch (e) {
+      return {error: (e as Error).message};
+    }
+  };
+  try {
+    const results = [];
+    if (concurrent) {
+      results.push(...(await Promise.all(Array.from({length: count}, one))));
+    } else {
+      for (let i = 0; i < count; i++) results.push(await one());
+    }
+    return {results, log};
+  } finally {
+    await sql.end();
+  }
 }

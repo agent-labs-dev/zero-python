@@ -11,7 +11,18 @@ import {
   v,
 } from './zero.ts';
 import {ApplicationError, isApplicationError} from '@rocicorp/zero/server';
-import {mutate, mutateRequest, mutateWithSchema, pushProcessor, pushProcessorRequest, wireSchema} from './mutate.ts';
+import {
+  isolation,
+  mutate,
+  mutateRequest,
+  mutateWithSchema,
+  pushProcessor,
+  pushProcessorRequest,
+  recordedRun,
+  resetRuns,
+  retryOnUnsupported,
+  wireSchema,
+} from './mutate.ts';
 import {query, queryRequest, rawQuery, runQuery, schemaJSON} from './query.ts';
 import {httpMutate, httpQuery} from './http.ts';
 import {registryLookup} from './registry.ts';
@@ -21,7 +32,7 @@ const schemas = {
   ast: [astSchema, undefined],
   pushBody: [pushBodySchema, 'passthrough'],
   mutateParams: [mutateParamsSchema, 'passthrough'],
-  transformRequest: [transformRequestMessageSchema, undefined],
+  transformRequest: [transformRequestMessageSchema, 'strip'],
   cleanupResultsArg: [cleanupResultsArgSchema, undefined],
 } as const;
 
@@ -41,6 +52,10 @@ export const ops = {
   pushProcessor,
   pushProcessorRequest,
   mutateWithSchema,
+  resetRuns,
+  retryOnUnsupported,
+  isolation,
+  recordedRun,
   httpMutate,
   query,
   queryRequest,

@@ -15,7 +15,7 @@ services:
       retries: 60
 
   zero-ts: &zero
-    image: rocicorp/zero:1.10.0
+    image: rocicorp/zero:1.11.3
     depends_on:
       postgres:
         condition: service_healthy

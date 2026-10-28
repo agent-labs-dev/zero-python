@@ -157,6 +157,25 @@ PINNED = [
     _q("user", ["related", "manager", {"ops": [["related", "reports", None]]}]),
     _q("issue", ["related", "label", None], ["whereExists", "label", None, None]),
     _q("gadget", ["where", "serial", "IN", []], ["related", "owner", None]),
+    # The builder keeps its AST normalized: relationships sorted by alias, conditions by their values.
+    _q("issue", ["related", "owner", None], ["related", "comments", None], ["related", "labels", None]),
+    _q("issue", ["where", "priority", ">", 2], ["where", "priority", ">", 1], ["where", "priority", ">", 1]),
+    _q("issue", ["where", "open", True], ["where", "open", False]),
+    _q(
+        "issue",
+        ["where", "priority", "IN", [1, 3]],
+        ["where", "priority", "IN", [1, 2]],
+        ["where", "priority", "IN", [1]],
+    ),
+    _q("issue", *[["where", "meta", v] for v in ([1], "x", 1, True, {"a": 1}, [True], ["a"], [1, 2])]),
+    _q(
+        "issue",
+        *[
+            ["where", "title", {"$param": p}]
+            for p in (["authData", "b"], ["authData", "a"], ["authData", ["a", "b"]], ["preMutationRow", "a"])
+        ],
+        ["where", "title", "a"],
+    ),
     # Two unknown columns: upstream maps a query's own condition before its relationships, at every level.
     _q("comment", ["where", "nope", None], ["related", "author", {"ops": [["where", "nope", None]]}]),
     _q("issue", ["related", "labels", {"ops": [["where", "nope", None]]}], ["where", "nope", None]),

@@ -59,7 +59,8 @@ DDL = [
 ADAPTERS = ["sqlalchemy", "sqlalchemy-psycopg", "asyncpg", "psycopg"]
 """Every Python adapter runs the same wire and SQL tiers."""
 
-type Databases = dict[str, Callable[[Schema | None], ZQLDatabase[Any]]]
+type Databases = dict[str, Callable[..., ZQLDatabase[Any]]]
+"""Per adapter, `(schema, isolation_level=None) -> ZQLDatabase`."""
 
 
 async def open_adapters(url: str, engine: AsyncEngine) -> tuple[Databases, Callable[[], Any]]:
@@ -78,10 +79,16 @@ async def open_adapters(url: str, engine: AsyncEngine) -> tuple[Databases, Calla
         await psycopg_engine.dispose()
 
     return {
-        "sqlalchemy": lambda schema: SQLAlchemyDatabase(engine, schema),
-        "sqlalchemy-psycopg": lambda schema: SQLAlchemyDatabase(psycopg_engine, schema),
-        "asyncpg": lambda schema: AsyncpgDatabase(pool, schema),
-        "psycopg": lambda schema: PsycopgDatabase(psycopg_pool, schema),
+        "sqlalchemy": lambda schema, isolation_level=None: SQLAlchemyDatabase(
+            engine, schema, isolation_level=isolation_level
+        ),
+        "sqlalchemy-psycopg": lambda schema, isolation_level=None: SQLAlchemyDatabase(
+            psycopg_engine, schema, isolation_level=isolation_level
+        ),
+        "asyncpg": lambda schema, isolation_level=None: AsyncpgDatabase(pool, schema, isolation_level=isolation_level),
+        "psycopg": lambda schema, isolation_level=None: PsycopgDatabase(
+            psycopg_pool, schema, isolation_level=isolation_level
+        ),
     }, close
 
 
@@ -208,3 +215,73 @@ def wire_db() -> Iterator[WireDB]:
         runner.run(close())
         runner.run(ts_engine.dispose())
         runner.run(py_engine.dispose())
+
+
+def with_isolation(wire_db: WireDB, adapter: str, level: Any) -> ZQLDatabase[Any]:
+    return wire_db.py[adapter](None, isolation_level=level)
+
+
+class _Recorded:
+    """The twin of the connection `recordedRun` in `harness/mutate.ts` builds: logs what it is asked to do,
+    and fails the first statement when told to."""
+
+    def __init__(self, inner: Any, fail_first: bool) -> None:
+        self.inner = inner
+        self.log: list[str] = []
+        self._failing = fail_first
+
+    async def record(self, event: str, run: Callable[[], Any]) -> Any:
+        self.log.append(event)
+        if self._failing:
+            self._failing = False
+            raise Exception("statement failed")
+        return await run()
+
+    async def transaction(self, fn: Callable[[Any], Any]) -> Any:
+        self.log.append("transaction")
+
+        async def wrapped(tx: Any) -> Any:
+            return await fn(_RecordedTransaction(self, tx))
+
+        return await self.inner.transaction(wrapped)
+
+
+class _RecordedTransaction:
+    def __init__(self, recorded: _Recorded, tx: Any) -> None:
+        self._recorded = recorded
+        self._tx = tx
+
+    @property
+    def wrapped_transaction(self) -> Any:
+        return self._tx.wrapped_transaction
+
+    async def query(self, sql: str, params: Any = ()) -> Any:
+        return await self._recorded.record("query in transaction", lambda: self._tx.query(sql, params))
+
+
+class _RecordedBare(_Recorded):
+    async def query(self, sql: str, params: Any = ()) -> Any:
+        return await self.record("query", lambda: self.inner.query(sql, params))
+
+
+async def recorded_run(
+    wire_db: WireDB, adapter: str, schema: Schema, *, bare: bool, failFirst: bool, concurrent: bool, runs: int
+) -> dict[str, Any]:
+    from zero_server.query.builder import create_builder
+
+    inner = wire_db.py[adapter](schema).connection
+    connection = _RecordedBare(inner, failFirst) if bare else _Recorded(inner, failFirst)
+    db = ZQLDatabase(connection, schema)
+    query = create_builder(schema).item.where("value", "!=", "x").order_by("id", "asc")
+
+    async def one() -> dict[str, Any]:
+        try:
+            return {"rows": await db.run(query)}
+        except Exception as error:
+            return {"error": str(error)}
+
+    if concurrent:
+        results = list(await asyncio.gather(*(one() for _ in range(runs))))
+    else:
+        results = [await one() for _ in range(runs)]
+    return {"results": results, "log": connection.log}

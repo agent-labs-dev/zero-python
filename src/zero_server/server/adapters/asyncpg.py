@@ -9,6 +9,7 @@ import asyncpg
 from zero_server.schema import Schema
 from zero_server.server.adapters._session import SessionConnection, session
 from zero_server.server.transaction import DBTransaction, Row
+from zero_server.server.transaction_options import IsolationLevel
 from zero_server.server.zql_database import PostgresError, ZQLDatabase, well_formed_params
 
 
@@ -31,27 +32,34 @@ class AsyncpgTransaction:
 
 
 class AsyncpgConnection:
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(self, pool: asyncpg.Pool, isolation_level: IsolationLevel | None = None) -> None:
         self.pool = pool
+        # asyncpg spells the level with an underscore; `None` sends a bare `BEGIN`.
+        self._isolation = None if isolation_level is None else isolation_level.replace(" ", "_")
+
+    async def query(self, sql: str, params: Sequence[Any] = ()) -> list[Row]:
+        async with self.pool.acquire() as connection:
+            return await AsyncpgTransaction(connection).query(sql, params)
 
     async def transaction[R](self, fn: Callable[[DBTransaction[asyncpg.Connection]], Awaitable[R]]) -> R:
         async with self.pool.acquire() as connection:
-            return await _transaction(connection, fn)
+            return await self._transaction(connection, fn)
+
+    async def _transaction[R](
+        self, connection: asyncpg.Connection, fn: Callable[[DBTransaction[asyncpg.Connection]], Awaitable[R]]
+    ) -> R:
+        async with connection.transaction(isolation=self._isolation):
+            return await fn(AsyncpgTransaction(connection))
 
     def session(self) -> AbstractAsyncContextManager[SessionConnection[asyncpg.Connection, asyncpg.Connection]]:
         """One connection for a push's transactions, released (and so reset by the pool) once, at the end."""
-        return session(self.pool.acquire, self.pool.release, _transaction)
-
-
-async def _transaction[R](
-    connection: asyncpg.Connection, fn: Callable[[DBTransaction[asyncpg.Connection]], Awaitable[R]]
-) -> R:
-    async with connection.transaction():
-        return await fn(AsyncpgTransaction(connection))
+        return session(self.pool.acquire, self.pool.release, self._transaction)
 
 
 class AsyncpgDatabase(ZQLDatabase[asyncpg.Connection]):
     """A `ZQLDatabase` on an asyncpg pool (`await asyncpg.create_pool(dsn)`)."""
 
-    def __init__(self, pool: asyncpg.Pool, schema: Schema | None = None) -> None:
-        super().__init__(AsyncpgConnection(pool), schema)
+    def __init__(
+        self, pool: asyncpg.Pool, schema: Schema | None = None, *, isolation_level: IsolationLevel | None = None
+    ) -> None:
+        super().__init__(AsyncpgConnection(pool, isolation_level), schema)
