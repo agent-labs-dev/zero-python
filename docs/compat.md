@@ -67,6 +67,9 @@ These are the cases where the proof holds Python to something narrower than "ide
 - **Two failures in one query batch.** Upstream runs a batch's handlers together under `Promise.all`, and
   so does Python. When two of them fail the whole batch, which failure is reported depends on how each
   runtime orders its promise callbacks, and the two runtimes can disagree.
+- **A mutator returning `null`.** Upstream records a mutator's return value as result data unless it is
+  `undefined`, so a TypeScript mutator can return `null` as data. Python has only `None`, which the port
+  takes as returning nothing, as the tests' mutators never return `null`.
 - **The JavaScript object model.** Upstream's registries also resolve `~`, their marker key, and names every
   object inherits such as `toString`. A Python registry has neither.
 - **The runtime.** The oracle runs on Node 24, and JSON parse messages are V8's. Bun or Deno word them

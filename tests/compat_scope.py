@@ -39,7 +39,9 @@ NOT_PORTED: dict[str, dict[str, str]] = {
     "shared/src/error.ts": {
         "10-10": "JavaScript only: a thrown string",
         "44-44": "JavaScript only: a thrown object that is not an Error but has a message",
-        "69-79": "JavaScript only: details read off a thrown value that is not an Error",
+        "getErrorCauses": "unused: the client logs an error's causes with it",
+        "readCause": "unused: only getErrorCauses calls it",
+        "109-119": "JavaScript only: details read off a thrown value that is not an Error",
     },
     "shared/src/json-schema.ts": {
         "13-13": "unreachable: `skipAssertJSONValue` is a build flag, false in the published package",
@@ -109,7 +111,7 @@ NOT_PORTED: dict[str, dict[str, str]] = {
         "validator": "unused",
     },
     "zero-server/src/custom.ts": {
-        "79-105": "deprecated: the delegate behind `tx.query`, the legacy query builder (enableLegacyQueries)",
+        "85-112": "deprecated: the delegate behind `tx.query`, the legacy query builder (enableLegacyQueries)",
         "makeSchemaCRUD": "deprecated",
         "makeServerCRUDExecutor": "unused: only makeServerTransaction and makeSchemaCRUD call it; the "
         "adapters build their executor through CRUDMutatorFactory, which is compared",
@@ -119,14 +121,14 @@ NOT_PORTED: dict[str, dict[str, str]] = {
         "Python's DBTransaction returns a list",
     },
     "zero-server/src/process-mutations.ts": {
-        "250-250": _PARSE_DETAILS,
-        "276-276": _PARSE_DETAILS,
-        "299-299": _PARSE_DETAILS,
-        "458-459": "JavaScript only: a URLSearchParams instance; the port takes a mapping",
-        "487-487": _DEPRECATED_POSITIONAL,
-        "503-506": _DEPRECATED_POSITIONAL,
-        "572-572": "unreachable: a DatabaseTransactionError always has a cause",
-        "592-593": "unreachable: the callback a pre-transaction failure passes, never called because an "
+        "278-278": _PARSE_DETAILS,
+        "304-304": _PARSE_DETAILS,
+        "327-327": _PARSE_DETAILS,
+        "487-488": "JavaScript only: a URLSearchParams instance; the port takes a mapping",
+        "518-521": _DEPRECATED_POSITIONAL,
+        "537-541": _DEPRECATED_POSITIONAL,
+        "669-669": "unreachable: a DatabaseTransactionError always has a cause",
+        "713-714": "unreachable: the callback a pre-transaction failure passes, never called because an "
         "application error is recorded instead",
         "getMutation": "deprecated: use getMutator",
         "getObjectAtPath": "deprecated: only getMutation calls it",
@@ -136,9 +138,9 @@ NOT_PORTED: dict[str, dict[str, str]] = {
         "handleTransformRequest": "deprecated",
         "161-167": _DEPRECATED_POSITIONAL,
         "226-226": _DEPRECATED_POSITIONAL,
-        "260-260": _PARSE_DETAILS,
-        "305-305": "deprecated: a response with no userID, which only the positional call forms produce",
-        "317-317": "unreachable: an internal failure is a plain Error from mapping the AST or asserting "
+        "261-261": _PARSE_DETAILS,
+        "306-306": "deprecated: a response with no userID, which only the positional call forms produce",
+        "318-318": "unreachable: an internal failure is a plain Error from mapping the AST or asserting "
         "query internals, which carries no details",
     },
     "zero-server/src/schema.ts": {

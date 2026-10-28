@@ -14,6 +14,7 @@ from sqlalchemy.pool import PoolProxiedConnection
 from zero_server.schema import Schema
 from zero_server.server.adapters._session import SessionConnection, session
 from zero_server.server.transaction import DBTransaction, Row
+from zero_server.server.transaction_options import IsolationLevel, set_isolation_statement
 from zero_server.server.zql_database import PostgresError, ZQLDatabase, well_formed_params
 
 
@@ -75,29 +76,42 @@ async def sqlalchemy_transaction(connection: AsyncConnection) -> SQLAlchemyTrans
 
 
 class SQLAlchemyConnection:
-    def __init__(self, engine: AsyncEngine) -> None:
+    def __init__(self, engine: AsyncEngine, isolation_level: IsolationLevel | None = None) -> None:
         self.engine = engine
+        self._isolation_level = isolation_level
+
+    async def query(self, sql: str, params: Sequence[Any] = ()) -> list[Row]:
+        async with self.engine.connect() as connection:
+            # Autocommit, so SQLAlchemy begins no transaction; the pool resets it when the connection returns.
+            connection = await connection.execution_options(isolation_level="AUTOCOMMIT")
+            return await (await sqlalchemy_transaction(connection)).query(sql, params)
 
     async def transaction[R](self, fn: Callable[[DBTransaction[AsyncConnection]], Awaitable[R]]) -> R:
         async with self.engine.begin() as connection:
-            return await fn(await sqlalchemy_transaction(connection))
+            return await fn(await _begun(connection, self._isolation_level))
+
+    async def _transaction[R](
+        self, connection: AsyncConnection, fn: Callable[[DBTransaction[AsyncConnection]], Awaitable[R]]
+    ) -> R:
+        async with connection.begin():
+            if connection.dialect.driver == "asyncpg":
+                await _send_begin(await connection.get_raw_connection())
+            return await fn(await _begun(connection, self._isolation_level))
 
     def session(self) -> AbstractAsyncContextManager[SessionConnection[AsyncConnection, AsyncConnection]]:
         """One connection for a push's transactions, checked back into the pool once, at the end."""
-        return session(self.engine.connect, _close, _transaction)
+        return session(self.engine.connect, _close, self._transaction)
+
+
+async def _begun(connection: AsyncConnection, isolation_level: IsolationLevel | None) -> SQLAlchemyTransaction:
+    tx = await sqlalchemy_transaction(connection)
+    if isolation_level is not None:
+        await tx.query(set_isolation_statement(isolation_level))
+    return tx
 
 
 async def _close(connection: AsyncConnection) -> None:
     await connection.close()
-
-
-async def _transaction[R](
-    connection: AsyncConnection, fn: Callable[[DBTransaction[AsyncConnection]], Awaitable[R]]
-) -> R:
-    async with connection.begin():
-        if connection.dialect.driver == "asyncpg":
-            await _send_begin(await connection.get_raw_connection())
-        return await fn(await sqlalchemy_transaction(connection))
 
 
 async def _send_begin(pooled: PoolProxiedConnection) -> None:
@@ -116,5 +130,7 @@ class SQLAlchemyDatabase(ZQLDatabase[AsyncConnection]):
     """A `ZQLDatabase` on `engine`, whose URL names the asyncpg or the psycopg driver
     (`postgresql+asyncpg://` or `postgresql+psycopg://`)."""
 
-    def __init__(self, engine: AsyncEngine, schema: Schema | None = None) -> None:
-        super().__init__(SQLAlchemyConnection(engine), schema)
+    def __init__(
+        self, engine: AsyncEngine, schema: Schema | None = None, *, isolation_level: IsolationLevel | None = None
+    ) -> None:
+        super().__init__(SQLAlchemyConnection(engine, isolation_level), schema)

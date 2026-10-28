@@ -1,7 +1,7 @@
 """`define_mutator` and `define_mutators`: named server mutators the mutate endpoint dispatches to.
 
-Ported from rocicorp/mono `packages/zql/src/mutate/mutator.ts` and `mutator-registry.ts` at zero/v1.10.0
-(905d08516ba0caaf314cd28e93a5a47e8acdd482). Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/zql/src/mutate/mutator.ts` and `mutator-registry.ts` at zero/v1.11.3
+(e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
 
 A mutator here is the server half of the TypeScript mutator of the same name: the client runs its own
 optimistically, and this one runs authoritatively inside the mutation's transaction.
@@ -15,8 +15,9 @@ from zero_server.query.registry import is_schema_validator, validate_input
 from zero_server.shared.json import JSONValue
 from zero_server.shared.registry import Registry, build, merge, value_at_path
 
-type MutatorFn = Callable[..., Awaitable[None]]
-"""Called as `await fn(args=..., ctx=..., tx=...)`."""
+type MutatorFn = Callable[..., Awaitable[JSONValue | None]]
+"""Called as `await fn(args=..., ctx=..., tx=...)`. What it returns, unless `None`, reaches the client as
+the mutation's result data."""
 
 
 @dataclass(frozen=True)
@@ -53,9 +54,9 @@ class Mutator:
         self.mutator_name = name
         self._definition = definition
 
-    async def fn(self, *, args: JSONValue | None = None, ctx: Any = None, tx: Any) -> None:
+    async def fn(self, *, args: JSONValue | None = None, ctx: Any = None, tx: Any) -> JSONValue | None:
         validated = validate_input(self.mutator_name, args, self._definition.validator, "mutator")
-        await self._definition.fn(args=validated, ctx=ctx, tx=tx)
+        return await self._definition.fn(args=validated, ctx=ctx, tx=tx)
 
     def __call__(self, args: JSONValue | None = None) -> MutateRequest:
         return MutateRequest(mutator=self, args=args)

@@ -24,6 +24,7 @@ from zero_server.server.adapters.sqlalchemy import sqlalchemy_transaction
 from zero_server.server.process_queries import handle_query_request
 from zero_server.server.server_schema import get_server_schema
 from zero_server.server.transaction import ServerTransaction
+from zero_server.server.zql_database import ZQLDatabase
 from zero_server.shared.asserts import AssertionFailedError
 
 SCHEMA = {
@@ -149,6 +150,16 @@ def test_query_parse_error_message() -> None:
 def test_mutate_needs_a_schema() -> None:
     with pytest.raises(RuntimeError, match=r"tx\.mutate needs a schema"):
         _ = ServerTransaction(db_transaction=None, client_id="c", mutation_id=1).mutate  # ty: ignore[invalid-argument-type]
+
+
+async def test_run_needs_a_schema() -> None:
+    class Bare:
+        async def transaction(self, fn: Any) -> Any: ...
+
+        async def query(self, sql: str, params: Any = ()) -> Any: ...
+
+    with pytest.raises(RuntimeError, match=r"tx\.run needs a schema"):
+        await ZQLDatabase(Bare()).run(create_builder(load_schema(SCHEMA)).plain)
 
 
 async def test_server_schema_of_no_tables() -> None:
