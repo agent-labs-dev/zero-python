@@ -1,7 +1,7 @@
 """A transaction provider over any Postgres driver, with `tx.mutate` and `tx.run` for mutators.
 
 Ported from rocicorp/mono `packages/zero-server/src/zql-database.ts`, with the server schema cache of
-`CRUDMutatorFactory` in `custom.ts`, at zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538).
+`CRUDMutatorFactory` in `custom.ts`, at zero/v1.11.4 (be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb).
 Apache-2.0, Copyright Rocicorp.
 
 A driver plugs in as a `DBConnection`: something that opens a transaction and hands back a

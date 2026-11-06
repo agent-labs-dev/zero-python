@@ -1,8 +1,8 @@
 """Error kinds, origins and reasons, and the bodies of a failed push or transform.
 
 Ported from rocicorp/mono `packages/zero-protocol/src/error.ts`, `error-kind-enum.ts`,
-`error-origin-enum.ts` and `error-reason-enum.ts` at zero/v1.11.3
-(e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
+`error-origin-enum.ts` and `error-reason-enum.ts` at zero/v1.11.4
+(be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb). Apache-2.0, Copyright Rocicorp.
 """
 
 from enum import StrEnum

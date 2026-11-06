@@ -1,8 +1,8 @@
 """The message upstream's `v.parse` throws when a request does not match its wire schema.
 
-Ported from rocicorp/mono `packages/shared/src/valita.ts` at zero/v1.11.3
-(e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp. The validators underneath are
-ported from `@badrap/valita` 0.5.5 (`dist/index.js`), the version `@rocicorp/zero` 1.11.3 installs. MIT,
+Ported from rocicorp/mono `packages/shared/src/valita.ts` at zero/v1.11.4
+(be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb). Apache-2.0, Copyright Rocicorp. The validators underneath are
+ported from `@badrap/valita` 0.5.5 (`dist/index.js`), the version `@rocicorp/zero` 1.11.4 installs. MIT,
 Copyright (c) 2021 Badrap Oy.
 
 Pydantic decides whether a request parses, and is fast. When it refuses one, the same value runs through

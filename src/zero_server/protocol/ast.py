@@ -1,7 +1,7 @@
 """The ZQL AST: what a query endpoint returns for each query zero-cache asks it to transform.
 
 Ported from rocicorp/mono `packages/zero-protocol/src/ast.ts`, `data.ts` and `primary-key.ts` at
-zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
+zero/v1.11.4 (be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb). Apache-2.0, Copyright Rocicorp.
 
 The AST carries server names: `map_ast` maps a client-named AST through the schema's name mapper before
 it goes on the wire, as `handleQueryRequest` does upstream.

@@ -4,7 +4,7 @@ The schema stays authored in TypeScript because the client needs it. Emit it wit
 `JSON.stringify(schema)` and load that here; this module has no schema DSL of its own.
 
 Ported from rocicorp/mono `packages/zero-types/src/schema.ts`, `schema-value.ts`, `name-mapper.ts` and
-`packages/zero-schema/src/name-mapper.ts` at zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538).
+`packages/zero-schema/src/name-mapper.ts` at zero/v1.11.4 (be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb).
 Apache-2.0, Copyright Rocicorp.
 """
 
