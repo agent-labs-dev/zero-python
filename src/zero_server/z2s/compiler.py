@@ -1,7 +1,7 @@
 """A ZQL AST compiled to one Postgres statement that returns the whole result as JSON.
 
 Ported from rocicorp/mono `packages/z2s/src/compiler.ts` and `packages/zql/src/query/complete-ordering.ts`
-at zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
+at zero/v1.11.4 (be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb). Apache-2.0, Copyright Rocicorp.
 
 Relationships nest as `json_agg` subqueries, so the statement returns one row whose `zql_result` column
 holds the rows the client-side query would have produced, in client names.

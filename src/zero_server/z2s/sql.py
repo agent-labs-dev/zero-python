@@ -1,14 +1,14 @@
 """Identifiers and bound values for the SQL that z2s and `tx.mutate` write.
 
 Ported from rocicorp/mono `packages/z2s/src/sql.ts` (`formatPgInternalConvert` and its argument
-conversions) at zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
+conversions) at zero/v1.11.4 (be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb). Apache-2.0, Copyright Rocicorp.
 
 Every value is bound as text and cast in SQL, so the driver never coerces it: a number is its JSON
 text, a timestamp epoch milliseconds, a JSON value its `JSON.stringify` output.
 
 An identifier is checked as `escapePostgresIdentifier` checks it, ported from `@databases/escape-identifier`
 1.0.3 (`lib/index.js`) and `@databases/validate-unicode` 1.0.0 (`lib/index.js`), the versions
-`@rocicorp/zero` 1.11.3 installs. MIT, Copyright (c) Forbes Lindesay.
+`@rocicorp/zero` 1.11.4 installs. MIT, Copyright (c) Forbes Lindesay.
 """
 
 import functools

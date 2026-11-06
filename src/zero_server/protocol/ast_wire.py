@@ -1,7 +1,7 @@
 """The AST's wire schema: what `AST.from_json` accepts, mirroring upstream's `astSchema`.
 
 Ported from rocicorp/mono `packages/zero-protocol/src/ast.ts`, `data.ts` and `primary-key.ts` at
-zero/v1.11.3 (e91e55f05b7a2c631f77238e1dd6fadf1029a538). Apache-2.0, Copyright Rocicorp.
+zero/v1.11.4 (be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb). Apache-2.0, Copyright Rocicorp.
 
 These models are only ever parsed. Each turns into the plain node class of `zero_server.protocol.ast`
 it mirrors, which the builder, the query endpoint and z2s work with.
