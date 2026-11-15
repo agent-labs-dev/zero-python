@@ -301,3 +301,24 @@ def test_raw_handlers_match_upstream(harness: Harness, schema: Schema) -> None:
             handle_query_request(handler=lambda n, args: raw[n](args), schema=schema, body=body, user_id="u")
         )
         assert _comparable(actual.to_json()) == _comparable(expected), name
+
+
+def test_repeated_relationship_callbacks_match_upstream(harness: Harness, schema: Schema) -> None:
+    """Two exists callbacks reuse one parent query's interned relationship base."""
+    program = _q(
+        "issue",
+        [
+            "whereFn",
+            [
+                "and",
+                [
+                    ["exists", "comments", {"ops": [["where", "body", "a"]]}, None],
+                    ["exists", "comments", {"ops": [["where", "body", "b"]]}, None],
+                ],
+            ],
+        ],
+    )
+    body = ["transform", [{"id": "repeated", "name": "prog", "args": [program]}]]
+    expected = harness.call("query", body=body, userID="u")
+    actual = asyncio.run(handle_query_request(handler=make_handler(schema), schema=schema, body=body, user_id="u"))
+    assert _comparable(actual.to_json()) == _comparable(expected)

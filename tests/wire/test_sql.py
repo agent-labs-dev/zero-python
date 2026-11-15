@@ -142,3 +142,15 @@ def test_pinned_queries_return_upstreams_rows(
 ) -> None:
     expected = harness.call("runQuery", url=sql_db.url, program=program)
     assert as_js(run_python(sql_db, schema, program, adapter)) == as_js(expected)
+
+
+@pytest.mark.parametrize("adapter", ADAPTERS)
+@pytest.mark.parametrize("operator", ["IN", "NOT IN"])
+@pytest.mark.parametrize("excluded", [[], ["a"], [None, "a"]])
+def test_membership_matches_upstreams_rows(
+    harness: Harness, sql_db: SqlDB, schema: Schema, adapter: str, operator: str, excluded: list[str | None]
+) -> None:
+    """Pin both membership operators, including empty and null-containing SQL arrays."""
+    program = _q("issue", ["where", "title", operator, excluded])
+    expected = harness.call("runQuery", url=sql_db.url, program=program)
+    assert as_js(run_python(sql_db, schema, program, adapter)) == as_js(expected)
