@@ -29,3 +29,14 @@ def test_harnesses_run_the_pinned_zero() -> None:
 def test_e2e_runs_the_pinned_zero_cache() -> None:
     version = (ROOT / "ZERO_VERSION").read_text().strip()
     assert f"image: rocicorp/zero:{version}" in (ROOT / "e2e" / "docker-compose.yml").read_text()
+
+
+def test_harnesses_drive_zero_with_its_postgres_major() -> None:
+    # The oracle is the published package as it ships: the postgres.js client handed to its adapter
+    # must be the major release @rocicorp/zero itself depends on, or the oracle's results change with it.
+    import json
+
+    for project in ("harness", "e2e"):
+        lock = json.loads((ROOT / project / "package-lock.json").read_text())["packages"]
+        zero_postgres = lock["node_modules/@rocicorp/zero"]["dependencies"]["postgres"]
+        assert lock["node_modules/postgres"]["version"].split(".")[0] == zero_postgres.split(".")[0]

@@ -23,6 +23,10 @@ updates:
       interval: weekly
     ignore:
       - dependency-name: "@rocicorp/zero"
+      # postgres.js is the client handed to Zero's adapter, so it stays on the major
+      # @rocicorp/zero depends on (tests/test_pin.py checks this).
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
     groups:
       npm:
         patterns: ["*"]
