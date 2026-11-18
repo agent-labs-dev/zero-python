@@ -16,7 +16,7 @@ The tests start Postgres in Docker. To use your own instead, set `ZERO_SERVER_PG
 
 ## Checks
 
-CI runs these, and a PR merges only when they pass:
+Run `scripts/gate --changed` before pushing (`scripts/gate` for the whole tree and every offline unit test). CI runs the full steps, and a PR merges only when they pass:
 
 ```sh
 uv run ruff check

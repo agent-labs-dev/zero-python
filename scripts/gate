@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# The fast local gate: format, lint, type check and the offline unit tests. Needs no Docker, Node or keys.
+#   scripts/gate            ruff over the whole tree, ty on files changed from origin/main, tests/unit
+#   scripts/gate --changed  only what this branch's changed files reach
+# Whole-repo ty, tests/wire, tests.compat, the e2e run and the benchmarks need Docker and Node and run in CI.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+changed_only=0
+case "${1:-}" in
+  "") ;;
+  --changed) changed_only=1 ;;
+  *) echo "usage: scripts/gate [--changed]" >&2; exit 2 ;;
+esac
+
+base=$(git merge-base HEAD origin/main)
+mapfile -t changed < <({ git diff --name-only "$base"; git ls-files --others --exclude-standard; } | sort -u)
+
+py=()
+run_unit=0
+for f in "${changed[@]}"; do
+  [[ $f == *.py && -f $f ]] && py+=("$f")
+  [[ $f == src/* || $f == tests/unit/* || $f == tests/conftest.py || $f == pyproject.toml || $f == uv.lock ]] && run_unit=1
+done
+
+uv sync --locked -q
+if ((changed_only)); then
+  ((${#py[@]})) && { uv run ruff check "${py[@]}"; uv run ruff format --check "${py[@]}"; }
+else
+  uv run ruff check
+  uv run ruff format --check
+fi
+((${#py[@]})) && uv run ty check "${py[@]}"
+if ((!changed_only || run_unit)); then
+  uv run pytest tests/unit --no-cov -q
+fi
+exit 0
