@@ -28,4 +28,4 @@ Docker and Node. Bumping Zero is covered in [CONTRIBUTING.md](CONTRIBUTING.md#bu
 
 ## Standards
 
-- `repo-standards`: the RS-* requirements every cjber and agent-labs-dev repo meets; its `audit.py` checks this repo.
+- `repo-standards`: the RS-* requirements every agent-labs-dev repo meets; its `audit.py` checks this repo.
