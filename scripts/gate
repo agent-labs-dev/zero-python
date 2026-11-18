@@ -13,7 +13,7 @@ case "${1:-}" in
   *) echo "usage: scripts/gate [--changed]" >&2; exit 2 ;;
 esac
 
-base=$(git merge-base HEAD origin/main)
+base=$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main)
 mapfile -t changed < <({ git diff --name-only "$base"; git ls-files --others --exclude-standard; } | sort -u)
 
 py=()
