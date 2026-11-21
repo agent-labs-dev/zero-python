@@ -1,8 +1,8 @@
 """`tx.mutate.<table>.insert / upsert / update / delete` on the server, as SQL.
 
 Ported from rocicorp/mono `packages/zero-server/src/custom.ts` (`makeServerTableCRUD`),
-`packages/zql/src/mutate/crud.ts` and the column conversions of `packages/z2s/src/sql.ts` at zero/v1.11.4
-(be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb). Apache-2.0, Copyright Rocicorp.
+`packages/zql/src/mutate/crud.ts` and the column conversions of `packages/z2s/src/sql.ts` at zero/v1.12.0
+(d489a3218ad603b3fd65e33cec76ae77cea7c7af). Apache-2.0, Copyright Rocicorp.
 
 Values are bound as `zero_server.z2s.sql` binds them.
 """

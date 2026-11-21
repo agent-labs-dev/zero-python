@@ -192,6 +192,11 @@
      "type": "string",
      "optional": true,
      "customType": null
+    },
+    "note": {
+     "type": "json",
+     "optional": true,
+     "customType": null
     }
    },
    "primaryKey": [
@@ -279,12 +284,50 @@
      "type": "string",
      "optional": true,
      "customType": null
+    },
+    "isbn": {
+     "type": "string",
+     "optional": true,
+     "customType": null
     }
    },
    "primaryKey": [
     "id"
    ],
    "serverName": "extra.gadgets"
+  },
+  "synthetic": {
+   "name": "synthetic",
+   "columns": {
+    "id": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "count": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    },
+    "n": {
+     "type": "number",
+     "optional": true,
+     "customType": null
+    },
+    "_0_value": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    },
+    "_0_key": {
+     "type": "string",
+     "optional": false,
+     "customType": null
+    }
+   },
+   "primaryKey": [
+    "id"
+   ]
   }
  },
  "relationships": {

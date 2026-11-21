@@ -9,8 +9,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -22,8 +24,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -35,8 +39,10 @@
   "scale": 0,
   "typtype": "b",
   "typename": "int4",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -48,8 +54,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "bool",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -61,8 +69,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -74,8 +84,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -87,8 +99,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -100,8 +114,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -113,8 +129,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "jsonb",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -126,8 +144,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "float8",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -139,8 +159,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "bool",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -152,8 +174,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -165,8 +189,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -178,8 +204,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -191,8 +219,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -204,8 +234,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -217,8 +249,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -230,8 +264,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -243,8 +279,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -256,8 +294,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -269,8 +309,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "timestamptz",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -282,8 +324,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "date",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -295,8 +339,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "time",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -308,8 +354,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "timetz",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -321,8 +369,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "timestamp",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -334,8 +384,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "_timestamptz",
+  "typenamespace": "pg_catalog",
   "elemTyptype": "b",
-  "elemTypname": "timestamptz"
+  "elemTypname": "timestamptz",
+  "elemTypenamespace": "pg_catalog"
  },
  {
   "schema": "public",
@@ -347,8 +399,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "_text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": "b",
-  "elemTypname": "text"
+  "elemTypname": "text",
+  "elemTypenamespace": "pg_catalog"
  },
  {
   "schema": "public",
@@ -360,8 +414,25 @@
   "scale": null,
   "typtype": "e",
   "typename": "mood",
+  "typenamespace": "public",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
+ },
+ {
+  "schema": "public",
+  "table": "audit",
+  "column": "note",
+  "dataType": "json",
+  "length": null,
+  "precision": null,
+  "scale": null,
+  "typtype": "b",
+  "typename": "json",
+  "typenamespace": "pg_catalog",
+  "elemTyptype": null,
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -373,8 +444,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -386,8 +459,10 @@
   "scale": 0,
   "typtype": "b",
   "typename": "int8",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "public",
@@ -399,8 +474,85 @@
   "scale": null,
   "typtype": "b",
   "typename": "_int8",
+  "typenamespace": "pg_catalog",
   "elemTyptype": "b",
-  "elemTypname": "int8"
+  "elemTypname": "int8",
+  "elemTypenamespace": "pg_catalog"
+ },
+ {
+  "schema": "public",
+  "table": "synthetic",
+  "column": "id",
+  "dataType": "text",
+  "length": null,
+  "precision": null,
+  "scale": null,
+  "typtype": "b",
+  "typename": "text",
+  "typenamespace": "pg_catalog",
+  "elemTyptype": null,
+  "elemTypname": null,
+  "elemTypenamespace": null
+ },
+ {
+  "schema": "public",
+  "table": "synthetic",
+  "column": "count",
+  "dataType": "double precision",
+  "length": null,
+  "precision": 53,
+  "scale": null,
+  "typtype": "b",
+  "typename": "float8",
+  "typenamespace": "pg_catalog",
+  "elemTyptype": null,
+  "elemTypname": null,
+  "elemTypenamespace": null
+ },
+ {
+  "schema": "public",
+  "table": "synthetic",
+  "column": "n",
+  "dataType": "double precision",
+  "length": null,
+  "precision": 53,
+  "scale": null,
+  "typtype": "b",
+  "typename": "float8",
+  "typenamespace": "pg_catalog",
+  "elemTyptype": null,
+  "elemTypname": null,
+  "elemTypenamespace": null
+ },
+ {
+  "schema": "public",
+  "table": "synthetic",
+  "column": "_0_value",
+  "dataType": "text",
+  "length": null,
+  "precision": null,
+  "scale": null,
+  "typtype": "b",
+  "typename": "text",
+  "typenamespace": "pg_catalog",
+  "elemTyptype": null,
+  "elemTypname": null,
+  "elemTypenamespace": null
+ },
+ {
+  "schema": "public",
+  "table": "synthetic",
+  "column": "_0_key",
+  "dataType": "text",
+  "length": null,
+  "precision": null,
+  "scale": null,
+  "typtype": "b",
+  "typename": "text",
+  "typenamespace": "pg_catalog",
+  "elemTyptype": null,
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "extra",
@@ -412,8 +564,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "extra",
@@ -425,8 +579,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "text",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "extra",
@@ -438,8 +594,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "uuid",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "extra",
@@ -451,8 +609,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "inet",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "extra",
@@ -464,8 +624,10 @@
   "scale": 2,
   "typtype": "b",
   "typename": "numeric",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "extra",
@@ -477,8 +639,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "varchar",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "extra",
@@ -490,8 +654,10 @@
   "scale": null,
   "typtype": "e",
   "typename": "mood",
+  "typenamespace": "public",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "extra",
@@ -503,8 +669,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "_mood",
+  "typenamespace": "public",
   "elemTyptype": "e",
-  "elemTypname": "mood"
+  "elemTypname": "mood",
+  "elemTypenamespace": "public"
  },
  {
   "schema": "extra",
@@ -516,8 +684,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "timestamptz",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "extra",
@@ -529,8 +699,10 @@
   "scale": null,
   "typtype": "b",
   "typename": "bpchar",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
  },
  {
   "schema": "extra",
@@ -542,7 +714,24 @@
   "scale": null,
   "typtype": "b",
   "typename": "bpchar",
+  "typenamespace": "pg_catalog",
   "elemTyptype": null,
-  "elemTypname": null
+  "elemTypname": null,
+  "elemTypenamespace": null
+ },
+ {
+  "schema": "extra",
+  "table": "gadgets",
+  "column": "isbn",
+  "dataType": "USER-DEFINED",
+  "length": null,
+  "precision": null,
+  "scale": null,
+  "typtype": "b",
+  "typename": "isbn",
+  "typenamespace": "public",
+  "elemTyptype": null,
+  "elemTypname": null,
+  "elemTypenamespace": null
  }
 ]

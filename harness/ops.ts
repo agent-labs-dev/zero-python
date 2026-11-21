@@ -46,6 +46,13 @@ function tagNonFinite(value: unknown): unknown {
   return value;
 }
 
+type Tables = {tableName: string; columns: Record<string, string>; jsonColumns?: string[]};
+
+/** A mapper's names for one table. With `jsonColumns`, it refuses a JSON path into any other column. */
+function destNames({jsonColumns, ...names}: Tables) {
+  return {...names, allColumnsSame: false, jsonColumns: jsonColumns && new Set(jsonColumns)};
+}
+
 export const ops = {
   mutate,
   mutateRequest,
@@ -134,19 +141,19 @@ export const ops = {
   }: {
     condition: unknown;
     table: string;
-    tables: Record<string, {tableName: string; columns: Record<string, string>}>;
+    tables: Record<string, Tables>;
   }) {
     const mapper = new NameMapper(
-      new Map(Object.entries(tables).map(([t, d]) => [t, {...d, allColumnsSame: false}])),
+      new Map(Object.entries(tables).map(([t, d]) => [t, destNames(d)])),
     );
     const ast = v.parse({table, where: condition}, astSchema);
     return mapCondition(ast.where!, table, mapper);
   },
 
   /** `mapAST` through a mapper built from `{table: {tableName, columns}}`. */
-  mapAST({ast, tables}: {ast: unknown; tables: Record<string, {tableName: string; columns: Record<string, string>}>}) {
+  mapAST({ast, tables}: {ast: unknown; tables: Record<string, Tables>}) {
     const mapper = new NameMapper(
-      new Map(Object.entries(tables).map(([t, d]) => [t, {...d, allColumnsSame: false}])),
+      new Map(Object.entries(tables).map(([t, d]) => [t, destNames(d)])),
     );
     return mapAST(v.parse(ast, astSchema), mapper);
   },

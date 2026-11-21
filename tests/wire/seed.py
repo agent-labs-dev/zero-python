@@ -21,12 +21,16 @@ DDL = [
     "CREATE TYPE mood AS ENUM ('happy', 'sad')",
     """CREATE TABLE audit (
         id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL, day DATE, tm TIME, ttz TIMETZ, plain TIMESTAMP,
-        stamps TIMESTAMPTZ[], tags TEXT[], mood mood)""",
+        stamps TIMESTAMPTZ[], tags TEXT[], mood mood, note JSON)""",
     "CREATE TABLE counter (id TEXT PRIMARY KEY, n BIGINT NOT NULL, history BIGINT[])",
+    """CREATE TABLE synthetic (
+        id TEXT PRIMARY KEY, count DOUBLE PRECISION, n DOUBLE PRECISION,
+        "_0_value" TEXT NOT NULL, "_0_key" TEXT NOT NULL)""",
+    "CREATE EXTENSION isn",
     "CREATE SCHEMA extra",
     """CREATE TABLE extra.gadgets (
         id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, serial UUID NOT NULL, ip INET NOT NULL, amount NUMERIC(10, 2),
-        code VARCHAR(4), mood mood, moods mood[], seen TIMESTAMPTZ, tag CHAR(3), pad BPCHAR)""",
+        code VARCHAR(4), mood mood, moods mood[], seen TIMESTAMPTZ, tag CHAR(3), pad BPCHAR, isbn isbn)""",
 ]
 
 TEXTS = ["", "a", "b", "ab", "A", "é", "x%", "a_b", "Ab", "0", "1"]
@@ -48,9 +52,29 @@ COLUMN_VALUES: dict[tuple[str, str], list[Any]] = {
     ("gadget", "pad"): ["x", "x  ", "xy", "%  "],
     ("gadget", "mood"): ["happy", "sad", "meh"],
     ("gadget", "moods"): [[], ["happy"], ["sad", "happy"], ["meh"]],
+    # `isbn` is an extension's type, in `public`, which a comparison casts to by its qualified name.
+    ("gadget", "isbn"): ["978-0-306-40615-7", "0-306-40615-2", "nope"],
     ("gadget", "seen"): [0, 946_684_800_000, 946_684_800_000.5, 1_577_836_800_000],
     ("issue", "meta"): [{"a": 1}, [1, "x"], "s", 2.5, True, {}, {"a": [1, None]}],
 }
+
+
+# What a JSON path reads: numbers, strings and booleans at the same path, nested and in arrays, and a JSON
+# null beside a missing key.
+META: list[Any] = [
+    {"a": 1},
+    [1, "x"],
+    "s",
+    2.5,
+    True,
+    None,
+    {"a": "1", "b": [3, "x"]},
+    {"a": 2.5, "k": {"n": 4}},
+    {"a": None, "b": [True, None]},
+    {"a": "x", "k": {"n": "s"}},
+    {"a": -3, "b": [0, "a"]},
+    [[1], {"a": 2}],
+]
 
 
 def rows() -> dict[str, list[dict[str, Any]]]:
@@ -79,7 +103,7 @@ def rows() -> dict[str, list[dict[str, Any]]]:
                 "id": i,
                 "owner_id": rng.choice([*users, "ghost"]),
                 "title": rng.choice(TEXTS),
-                "meta": maybe(json.dumps(rng.choice([{"a": 1}, [1, "x"], "s", 2.5, True, None]))),
+                "meta": maybe(json.dumps(rng.choice(META))),
                 "priority": rng.choice([-5, -1, 0, 0.5, 1, 2, 3, 5]),
                 "open": rng.random() < 0.6,
             }
@@ -110,8 +134,13 @@ def rows() -> dict[str, list[dict[str, Any]]]:
                 "stamps": maybe(["2020-01-01 00:00:00+00", "2021-06-01 12:00:00+02"][: rng.randint(0, 2)]),
                 "tags": maybe(rng.sample(TEXTS, rng.randint(0, 3))),
                 "mood": maybe(rng.choice(["happy", "sad"])),
+                "note": maybe(json.dumps(rng.choice(META))),
             }
             for n in range(6)
+        ],
+        "synthetic": [
+            {"id": f"s{n}", "count": maybe(n % 3), "n": maybe(n / 2), "_0_value": "ab"[n % 2], "_0_key": "xy"[n % 2]}
+            for n in range(5)
         ],
         # The last value is past 2^53, which upstream refuses to return rather than round.
         # k8's unsafe integer is in an array, after rows whose arrays hold none.
@@ -130,6 +159,7 @@ def rows() -> dict[str, list[dict[str, Any]]]:
                 "seen": maybe(rng.choice(COLUMN_VALUES["gadget", "seen"]) / 1000),
                 "tag": maybe(rng.choice(COLUMN_VALUES["gadget", "tag"][:3])),
                 "pad": maybe(rng.choice(COLUMN_VALUES["gadget", "pad"][:3])),
+                "isbn": maybe(rng.choice(COLUMN_VALUES["gadget", "isbn"][:2])),
             }
             for n in range(8)
         ],
@@ -157,6 +187,7 @@ _CASTS = {
     ("audit", "plain"): "CAST(CAST(:plain AS text) AS timestamp)",
     ("audit", "stamps"): "CAST(CAST(:stamps AS text[]) AS timestamptz[])",
     ("audit", "mood"): "CAST(CAST(:mood AS text) AS mood)",
+    ("audit", "note"): "CAST(:note AS json)",
     ("counter", "history"): "CAST(CAST(:history AS text[]) AS bigint[])",
     ("extra.gadgets", "serial"): "CAST(CAST(:serial AS text) AS uuid)",
     ("extra.gadgets", "ip"): "CAST(CAST(:ip AS text) AS inet)",
@@ -164,6 +195,7 @@ _CASTS = {
     ("extra.gadgets", "mood"): "CAST(CAST(:mood AS text) AS mood)",
     ("extra.gadgets", "moods"): "CAST(CAST(:moods AS text[]) AS mood[])",
     ("extra.gadgets", "seen"): "to_timestamp(:seen)",
+    ("extra.gadgets", "isbn"): "CAST(CAST(:isbn AS text) AS isbn)",
 }
 
 

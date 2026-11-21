@@ -44,6 +44,8 @@ const audit = table('audit')
     stamps: json().optional(),
     tags: json().optional(),
     mood: string().optional(),
+    // A `json` column, where the others are `jsonb` or arrays.
+    note: json().optional(),
   })
   .primaryKey('id');
 const counter = table('counter').columns({id: string(), n: number(), history: json().optional()}).primaryKey('id');
@@ -62,6 +64,7 @@ const gadget = table('gadget')
     seen: number().optional(),
     tag: string().optional(),
     pad: string().optional(),
+    isbn: string().optional(),
   })
   .primaryKey('id');
 
@@ -98,8 +101,13 @@ const gadgetRelationships = relationships(gadget, ({one}) => ({
   owner: one({sourceField: ['ownerID'], destField: ['id'], destSchema: user}),
 }));
 
+// Columns named as an aggregate's value and as the synthetic columns a grouped row carries.
+const synthetic = table('synthetic')
+  .columns({id: string(), count: number().optional(), n: number().optional(), _0_value: string(), _0_key: string()})
+  .primaryKey('id');
+
 export const schema = createSchema({
-  tables: [user, issue, comment, label, issueLabel, audit, counter, gadget],
+  tables: [user, issue, comment, label, issueLabel, audit, counter, gadget, synthetic],
   relationships: [
     userRelationships,
     issueRelationships,

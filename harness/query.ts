@@ -39,10 +39,31 @@ function v(value: unknown): unknown {
   return value;
 }
 
+/** `{json: [column, ...path]}` becomes `b.json(column, ...path)` of the builder `b`. */
+function ref(b: Q, value: unknown): unknown {
+  if (typeof value === 'object' && value !== null && 'json' in value) {
+    const [column, ...path] = (value as {json: unknown[]}).json;
+    return b.json(column, ...path);
+  }
+  return value;
+}
+
+/** An aggregate's argument: `{json: [...]}` becomes a selector callback, `{returns: x}` one returning `x`. */
+function selector(value: unknown): unknown {
+  if (typeof value === 'object' && value !== null && 'json' in value) return (b: Q) => ref(b, value);
+  if (typeof value === 'object' && value !== null && 'returns' in value) return () => (value as {returns: unknown}).returns;
+  return value;
+}
+
+/** `target[fn](selector)`, or `target[fn]()` when the op names no selector. */
+function aggregate(target: Q, fn: string, args: unknown[]): Q {
+  return args.length === 0 ? target[fn]() : target[fn](selector(args[0]));
+}
+
 function expr(eb: Q, e: unknown[]): unknown {
   switch (e[0]) {
     case 'cmp':
-      return e.length === 3 ? eb.cmp(e[1], v(e[2])) : eb.cmp(e[1], e[2], v(e[3]));
+      return e.length === 3 ? eb.cmp(ref(eb, e[1]), ref(eb, v(e[2]))) : eb.cmp(ref(eb, e[1]), e[2], ref(eb, v(e[3])));
     case 'cmpLit':
       return eb.cmpLit(v(e[1]), e[2], v(e[3]));
     case 'and':
@@ -90,6 +111,19 @@ export function apply(q: Q, ops: unknown[][]): Q {
         break;
       case 'one':
         q = q.one();
+        break;
+      case 'count':
+      case 'sum':
+      case 'avg':
+      case 'min':
+      case 'max':
+        q = aggregate(q, op[0], op.slice(1));
+        break;
+      case 'distinct':
+        q = q.distinct(...(op[1] as unknown[]));
+        break;
+      case 'groupBy':
+        q = aggregate(q.groupBy(...(op[1] as unknown[])), op[2] as string, op.slice(3));
         break;
       default:
         throw new Error(`bad op ${op[0]}`);

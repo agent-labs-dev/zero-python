@@ -193,6 +193,81 @@ PINNED = [
     _q("issue", ["where", "nope", "x"]),
     # Object.entries puts an index-like key first, so upstream maps `1` before `nope`.
     _q("comment", ["start", {"nope": None, "1": None}, None]),
+    # Two subqueries of one relationship under one query, which share their base.
+    _q(
+        "issue",
+        ["whereFn", ["or", [["exists", "comments", None, None], ["exists", "comments", {"ops": [["count"]]}, None]]]],
+    ),
+    # Aggregates, distinct() and groupBy(), and each order of steps they refuse.
+    _q("issue", ["where", "open", True], ["count"]),
+    _q("issue", ["sum", {"json": ["meta", "a", 0]}], ["where", "open", True]),
+    _q("issue", ["count"], ["related", "owner", None], ["orderBy", "title", "asc"]),
+    _q("issue", ["related", "labels", {"ops": [["count"]]}], ["related", "comments", {"ops": [["max", "body"]]}]),
+    _q("issue", ["related", "labels", {"ops": [["where", "name", "a"], ["min", "name"]]}]),
+    _q("issue", ["related", "labels", {"ops": [["start", {"id": "l1"}, None], ["count"]]}]),
+    _q("issue", ["related", "owner", {"ops": [["related", "issues", None], ["count"]]}]),
+    _q("issue", ["related", "comments", {"ops": [["distinct", ["authorID"]]]}]),
+    _q("issue", ["related", "comments", {"ops": [["groupBy", ["authorID"], "count"]]}]),
+    _q("issue", ["related", "comments", {"ops": [["distinct", ["authorID"]], ["count"]]}]),
+    _q("issue", ["whereExists", "comments", {"ops": [["count"]]}, None]),
+    _q("issue", ["whereExists", "comments", {"ops": [["distinct", ["authorID"]]]}, None]),
+    _q("issue", ["whereExists", "labels", {"ops": [["groupBy", ["name"], "count"]]}, None]),
+    _q("issue", ["whereExists", "labels", {"ops": [["sum", "name"]]}, None]),
+    *[
+        _q("issue", ["count"], [op, *args])
+        for op, args in (("one", []), ("limit", [1]), ("start", [{"id": "i"}, None]))
+    ],
+    _q("issue", ["count"], ["count"]),
+    *[_q("issue", ["count"], [fn, "priority"]) for fn in ("sum", "avg", "min", "max")],
+    _q("issue", ["distinct", ["ownerID", "open"]], ["orderBy", "open", "desc"], ["count"]),
+    _q("issue", ["distinct", ["ownerID"]], ["orderBy", "title", "asc"]),
+    _q("issue", ["orderBy", "title", "asc"], ["distinct", ["ownerID"]]),
+    *[_q("issue", ["distinct", ["ownerID"]], [op, *args]) for op, args in (("one", []), ("limit", [1]))],
+    _q("issue", ["distinct", ["ownerID"]], ["start", {"id": "i"}, None]),
+    _q("issue", ["distinct", ["ownerID"]], ["related", "owner", None]),
+    _q("issue", ["distinct", ["ownerID"]], ["distinct", ["open"]]),
+    _q("issue", ["distinct", ["ownerID"]], ["sum", "priority"]),
+    _q("issue", ["groupBy", ["ownerID"], "count"], ["count"]),
+    _q("issue", ["groupBy", ["ownerID"], "sum", "priority"], ["orderBy", "ownerID", "desc"], ["where", "open", True]),
+    _q("issue", ["groupBy", ["ownerID"], "max", {"json": ["meta", "k", "n"]}], ["orderBy", "priority", "asc"]),
+    _q("issue", ["groupBy", ["ownerID"], "min", "title"], ["limit", 2]),
+    _q("issue", ["limit", 2], ["groupBy", ["ownerID"], "count"]),
+    _q("issue", ["one"], ["distinct", ["ownerID"]]),
+    _q("issue", ["related", "owner", None], ["distinct", ["ownerID"]]),
+    _q("issue", ["count"], ["distinct", ["ownerID"]]),
+    _q("issue", ["groupBy", [], "count"]),
+    _q("issue", ["distinct", ["nope"]]),
+    _q("issue", ["distinct", [1]]),
+    _q("issue", ["distinct", ["meta"]]),
+    _q("issue", ["distinct", ["id", "id"]]),
+    _q("issue", ["groupBy", ["open"], "count"], ["orderBy", 1, "asc"]),
+    # A column named as the aggregate's value, or as a synthetic column, which a schema can have.
+    _q("synthetic", ["groupBy", ["count"], "count"]),
+    _q("synthetic", ["groupBy", ["count"], "sum", "n"]),
+    _q("synthetic", ["distinct", ["_0_value"]]),
+    _q("synthetic", ["groupBy", ["_0_key"], "max", "n"]),
+    # The selector of an aggregate: none, a callback returning no json() reference, a json() path refused.
+    _q("issue", ["sum"]),
+    _q("issue", ["max", {"returns": 5}]),
+    _q("issue", ["avg", {"json": ["meta"]}]),
+    _q("issue", ["min", {"json": ["meta", 1.5]}]),
+    _q("issue", ["min", {"json": ["meta", True, -0.0]}]),
+    _q("issue", ["sum", {"json": ["title", "a"]}]),
+    _q("issue", ["groupBy", ["open"], "avg", {"returns": None}]),
+    # json() in a condition: mapped as a json column, refused elsewhere or out of shape.
+    _q("issue", ["whereFn", ["cmp", {"json": ["meta", "a"]}, "IN", ["x", "y"]]]),
+    _q("issue", ["whereFn", ["cmp", {"json": ["meta", "a"]}, "IN", ["x", 1]]]),
+    _q("issue", ["whereFn", ["cmp", {"json": ["meta", "a"]}, "NOT IN", [None, None]]]),
+    _q("issue", ["whereFn", ["cmp", {"json": ["meta", "a"]}, {"json": ["meta", "b"]}]]),
+    _q("issue", ["whereFn", ["cmp", {"json": ["title", "a"]}, "x"]]),
+    _q("issue", ["whereFn", ["cmp", {"json": ["meta", 2**31]}, 1]]),
+    _q("issue", ["whereFn", ["cmp", {"json": ["meta"]}, 1]]),
+    _q(
+        "issue",
+        ["whereFn", ["cmp", {"json": ["meta", "a", 0]}, 1]],
+        ["whereFn", ["cmp", {"json": ["meta", "a", "0"]}, 1]],
+        ["whereFn", ["cmp", {"json": ["meta", "a"]}, 1]],
+    ),
 ]
 
 
@@ -226,6 +301,11 @@ REBUILT = [
     # A two-hop `exists` puts `scalar` only on its junction's condition.
     _q("issue", ["whereExists", "labels", None, {"scalar": True}]),
     _q("issue", ["whereExists", "labels", None, {"scalar": False}]),
+    _q("issue", ["where", "open", True], ["count"]),
+    _q("issue", ["sum", {"json": ["meta", "a"]}]),
+    _q("issue", ["distinct", ["ownerID"]], ["count"]),
+    _q("issue", ["groupBy", ["ownerID"], "avg", "priority"]),
+    _q("issue", ["whereFn", ["cmp", {"json": ["meta", "a", 0]}, ">", 1]], ["related", "labels", {"ops": [["count"]]}]),
 ]
 
 
@@ -272,7 +352,7 @@ def test_server_ast_is_what_upstream_sends(harness: Harness, schema: Schema, dat
 
     if expected.get("kind") == "TransformFailed":
         # Upstream fails the whole batch when the AST does not map.
-        with pytest.raises(Exception, match="unknown"):
+        with pytest.raises(Exception, match=f"^{re.escape(expected['message'])}$"):
             server_ast(build(), schema)
     elif "ast" in expected["queries"][0]:
         assert as_js(server_ast(build(), schema).to_json()) == as_js(expected["queries"][0]["ast"])

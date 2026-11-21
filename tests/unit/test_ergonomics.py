@@ -83,10 +83,14 @@ def test_strict_builder_refuses_unknown_columns() -> None:
         lambda: zql.issue.where(lambda eb: eb.cmp("nope", 1)),
         lambda: zql.issue.order_by("nope", "asc"),
         lambda: zql.issue.start({"nope": 1}),
+        lambda: zql.issue.sum("nope"),
+        lambda: zql.issue.group_by("id").max("nope"),
     ):
         with pytest.raises(UnknownColumnError, match='unknown column "nope" of "issue" table'):
             build()
     assert zql.issue.where("title", "x").order_by("n", "desc").start({"n": 1}).ast.start is not None
+    assert zql.issue.sum("n").ast.aggregate is not None
+    assert zql.issue.group_by("id").max(lambda b: b.json("meta", "a")).ast.group_by == ("id",)
     assert create_builder(load_schema(SCHEMA)).issue.where("nope", 1).ast.where is not None
 
 

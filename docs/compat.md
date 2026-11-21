@@ -76,6 +76,9 @@ These are the cases where the proof holds Python to something narrower than "ide
 - **A mutator returning `null`.** Upstream records a mutator's return value as result data unless it is
   `undefined`, so a TypeScript mutator can return `null` as data. Python has only `None`, which the port
   takes as returning nothing, as the tests' mutators never return `null`.
+- **An aggregate's arguments.** Upstream's `sum(null)` aggregates a column named `null`, and its `count(x)`
+  ignores `x`. Python's `None` is no selector at all, as upstream's `sum()` with none is, and `count()` takes
+  no argument, so the tests give neither.
 - **The JavaScript object model.** Upstream's registries also resolve `~`, their marker key, and names every
   object inherits such as `toString`. A Python registry has neither.
 - **Logging.** Upstream logs through a `LogSink` and log level passed in. Python logs through the stdlib

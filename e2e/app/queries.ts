@@ -9,6 +9,13 @@ type IDArgs = {id: string};
 
 export const queries = defineQueries({
   projects: {
+    // Each of the caller's projects with its number of open tasks.
+    stats: defineQuery(({ctx}) =>
+      zql.project
+        .where('ownerID', ctx.userID)
+        .related('tasks', q => q.where('done', false).count())
+        .orderBy('id', 'asc'),
+    ),
     // Only the caller's own projects: the server decides who the caller is.
     mine: defineQuery(({ctx}) =>
       zql.project
@@ -40,5 +47,13 @@ export const queries = defineQueries({
         .orderBy('id', 'asc'),
     ),
     byID: defineQuery(({args}: {args: IDArgs}) => zql.task.where('id', args.id).related('project').one()),
+    // The number of tasks at each priority, and the tasks whose first tag is `a`, with their labels counted.
+    byPriority: defineQuery(() => zql.task.groupBy('priority').count().orderBy('priority', 'desc')),
+    tagged: defineQuery(() =>
+      zql.task
+        .where(({cmp, json}) => cmp(json('tags', 0), '=', 'a'))
+        .related('labels', q => q.count())
+        .orderBy('id', 'asc'),
+    ),
   },
 });

@@ -1,7 +1,7 @@
 """The ZQL AST: what a query endpoint returns for each query zero-cache asks it to transform.
 
-Ported from rocicorp/mono `packages/zero-protocol/src/ast.ts`, `data.ts` and `primary-key.ts` at
-zero/v1.11.4 (be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb). Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/zero-protocol/src/ast.ts`, `data.ts`, `primary-key.ts` and
+`aggregate-table.ts` at zero/v1.12.0 (d489a3218ad603b3fd65e33cec76ae77cea7c7af). Apache-2.0, Copyright Rocicorp.
 
 The AST carries server names: `map_ast` maps a client-named AST through the schema's name mapper before
 it goes on the wire, as `handleQueryRequest` does upstream.
@@ -44,6 +44,66 @@ type CorrelatedSubqueryConditionOperator = Literal["EXISTS", "NOT EXISTS"]
 type Scalar = str | int | float | bool
 # A list, not a tuple: the SQL compiler tells literals apart by identity, and Python shares `()`.
 type LiteralValue = Scalar | list[Scalar] | None
+
+type JsonPath = tuple[str | int | float, ...]
+"""Object keys and array indices into a `json()` column. Data, not schema names: name mapping leaves it alone."""
+
+type AggregateFunction = Literal["count", "sum", "avg", "min", "max"]
+
+MAX_JSON_PATH_INDEX = 2**31 - 1
+"""The largest array index every engine can use: SQLite wraps larger ones and Postgres's `->` takes an int4."""
+
+AGGREGATE_TABLE_PREFIX = "aggregate:"
+"""Prefix of the synthetic table an aggregate's rows sync under."""
+
+
+def is_valid_json_path_index(index: object) -> bool:
+    """A numeric segment is an array index, an integer in `[0, MAX_JSON_PATH_INDEX]`."""
+    return (
+        isinstance(index, int | float)
+        and not isinstance(index, bool)
+        and float(index).is_integer()
+        and 0 <= index <= MAX_JSON_PATH_INDEX
+    )
+
+
+def is_homogeneous_list(values: Sequence[object]) -> bool:
+    """Whether every element has the JavaScript type of the first; an empty list is."""
+    return all(_typeof(v) == _typeof(values[0]) for v in values)
+
+
+def _typeof(value: object) -> str:
+    match value:
+        case bool():
+            return "boolean"
+        case int() | float():
+            return "number"
+        case str():
+            return "string"
+        case _:
+            return "object"
+
+
+def json_literal_type(literal: object) -> Literal["string", "number", "boolean"] | None:
+    """The JSON type a leaf must have to compare with `literal`, or `None` for `null` and an empty list.
+    For a list, its first element's: the lists are homogeneous."""
+    value = (literal[0] if literal else None) if isinstance(literal, list | tuple) else literal
+    kind = _typeof(value)
+    return kind if kind != "object" else None  # ty: ignore[invalid-return-type]
+
+
+_NEGATED = frozenset({"!=", "NOT LIKE", "NOT ILIKE", "NOT IN"})
+_LIKE = frozenset({"LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE"})
+
+
+def is_negated_operator(op: str) -> bool:
+    """The operators under which a JSON leaf of another type than the literal matches."""
+    return op in _NEGATED
+
+
+def is_like_operator(op: str) -> bool:
+    return op in _LIKE
+
 
 type Value = JSONValue
 """A row value. Upstream also allows `undefined`, which it treats as `null`."""
@@ -107,7 +167,45 @@ class Parameter:
         return {"type": "static", "anchor": _json(self.anchor), "field": _json(self.field)}
 
 
-type ValuePosition = LiteralReference | ColumnReference | Parameter
+@json_model
+@dataclass(slots=True, kw_only=True)
+class JsonPathReference:
+    """A value inside a `json()` column: `value`'s JSON, navigated by `path`. Only ever a left operand."""
+
+    type: ClassVar[Literal["json"]] = "json"
+    value: ColumnReference
+    path: JsonPath
+
+    def to_json(self) -> dict[str, Any]:
+        return {"type": "json", "value": self.value.to_json(), "path": dump_json(self.path)}
+
+
+type ValuePosition = LiteralReference | ColumnReference | Parameter | JsonPathReference
+
+
+@json_model
+@dataclass(slots=True, kw_only=True)
+class Aggregate:
+    """Reduces a query, or a relationship per parent row, to one value.
+
+    `field` is the column, absent for `count`; with a `path` it is a `json()` column and the value is the
+    leaf there. `distinct`, for a `count`, counts the distinct combinations of those columns instead.
+    """
+
+    fn: AggregateFunction
+    field: str | None = None
+    path: JsonPath | None = None
+    distinct: tuple[str, ...] | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"fn": _json(self.fn)}
+        if self.field is not None:
+            out["field"] = _json(self.field)
+        if self.path is not None:
+            out["path"] = dump_json(self.path)
+        if self.distinct is not None:
+            out["distinct"] = _names(self.distinct)
+        return out
 
 
 @json_model
@@ -192,6 +290,8 @@ class CorrelatedSubquery:
     hidden: bool | None = None
     subquery: AST
     system: System | None = None
+    # Reduces the subquery to one value per parent row. It lives here, never on `subquery` itself.
+    aggregate: Aggregate | None = None
     # The builder query `subquery` is the AST of, kept alive with it: the builder interns a query by
     # the identity of its subqueries' ASTs, so they must outlive the query keyed by them.
     source: Any = field(default=None, repr=False, compare=False)
@@ -203,6 +303,8 @@ class CorrelatedSubquery:
         out["subquery"] = self.subquery.to_json()
         if self.system is not None:
             out["system"] = _json(self.system)
+        if self.aggregate is not None:
+            out["aggregate"] = self.aggregate.to_json()
         return out
 
 
@@ -231,6 +333,10 @@ class AST:
     start: Bound | None = None
     limit: int | float | None = None
     order_by: Ordering | None = None
+    # Reduces the rows left after `where`, `start` and `limit` to one value.
+    aggregate: Aggregate | None = None
+    # One row per combination of these columns' values: with `aggregate`, that per group.
+    group_by: tuple[str, ...] | None = None
     _text: bytes | None = field(default=None, init=False, repr=False, compare=False)
 
     def _copy(self) -> AST:
@@ -244,6 +350,8 @@ class AST:
         copy.start = self.start
         copy.limit = self.limit
         copy.order_by = self.order_by
+        copy.aggregate = self.aggregate
+        copy.group_by = self.group_by
         copy._text = None
         return copy
 
@@ -263,6 +371,10 @@ class AST:
             out["limit"] = self.limit if type(self.limit) in _SCALARS else dump_json(self.limit)
         if self.order_by is not None:
             out["orderBy"] = [_names(part) for part in self.order_by]
+        if self.aggregate is not None:
+            out["aggregate"] = self.aggregate.to_json()
+        if self.group_by is not None:
+            out["groupBy"] = _names(self.group_by)
         return out
 
     def to_json_bytes(self) -> bytes:
@@ -295,6 +407,8 @@ class NameMapper(Protocol):
 
     def column_name(self, table: str, column: str, /) -> str: ...
 
+    def json_column_name(self, table: str, column: str, /) -> str: ...
+
 
 @dataclass(frozen=True, slots=True)
 class _Transform:
@@ -302,6 +416,8 @@ class _Transform:
 
     table_name: Callable[[str], str]
     column_name: Callable[[str, str], str]
+    # The column a JSON path reads, which a mapper knowing column types refuses unless it is json.
+    json_column_name: Callable[[str, str], str]
     # Mapped correlations by parent table, child table and both keys: the same few on every query.
     correlations: dict[tuple[Any, ...], Correlation]
 
@@ -340,13 +456,36 @@ def _correlation(transform: _Transform, parent: str, related: CorrelatedSubquery
     return mapped
 
 
-def _transform_related(transform: _Transform, parent: str, related: CorrelatedSubquery) -> CorrelatedSubquery:
+def _transform_related(
+    transform: _Transform, parent: str, related: CorrelatedSubquery, *, in_condition: bool = False
+) -> CorrelatedSubquery:
+    correlation = _correlation(transform, parent, related)
+    subquery = _transform_ast(related.subquery, transform)
+    aggregate = related.aggregate
+    # Upstream maps the aggregate of a `related` entry, and passes one in a condition's subquery as it is.
+    if aggregate is not None and not in_condition:
+        aggregate = _transform_aggregate(aggregate, _aggregate_field_table(related), transform)
     return CorrelatedSubquery(
-        correlation=_correlation(transform, parent, related),
-        hidden=related.hidden,
-        subquery=_transform_ast(related.subquery, transform),
-        system=related.system,
+        correlation=correlation, hidden=related.hidden, subquery=subquery, system=related.system, aggregate=aggregate
     )
+
+
+def _aggregate_field_table(related: CorrelatedSubquery) -> str:
+    """The table an aggregate relationship's `field` is a column of: the destination of a junction, which
+    is the subquery's one `related` entry, or else the subquery's own table."""
+    dest = related.subquery.related
+    return dest[0].subquery.table if dest else related.subquery.table
+
+
+def _transform_aggregate(aggregate: Aggregate, table: str, transform: _Transform) -> Aggregate:
+    fn, field_, path, distinct = aggregate.fn, aggregate.field, aggregate.path, aggregate.distinct
+    if distinct is not None:
+        return Aggregate(fn=fn, distinct=tuple([transform.column_name(table, c) for c in distinct]))
+    if field_ is None:
+        return Aggregate(fn=fn)
+    if path is None:
+        return Aggregate(fn=fn, field=transform.column_name(table, field_))
+    return Aggregate(fn=fn, field=transform.json_column_name(table, field_), path=path)
 
 
 def _transform_ast(ast: AST, transform: _Transform) -> AST:
@@ -368,12 +507,20 @@ def _transform_ast(ast: AST, transform: _Transform) -> AST:
         )
     if order_by is not None:
         order_by = tuple([(column_name(table, name), direction) for name, direction in order_by])
+    aggregate = ast.aggregate
+    if aggregate is not None:
+        aggregate = _transform_aggregate(aggregate, table, transform)
+    group_by = ast.group_by
+    if group_by is not None:
+        group_by = tuple([column_name(table, name) for name in group_by])
     out = ast._copy()
     out.table = mapped_table
     out.where = where
     out.related = related
     out.start = start
     out.order_by = order_by
+    out.aggregate = aggregate
+    out.group_by = group_by
     return out
 
 
@@ -387,13 +534,16 @@ def _entries(row: Row) -> list[tuple[str, Value]]:
 def _transform_where(where: Condition, table: str, transform: _Transform) -> Condition:
     if isinstance(where, SimpleCondition):
         left = where.left
-        if not isinstance(left, ColumnReference):
-            return where
-        return where._with_left(ColumnReference(name=transform.column_name(table, left.name)))
+        if isinstance(left, ColumnReference):
+            return where._with_left(ColumnReference(name=transform.column_name(table, left.name)))
+        if isinstance(left, JsonPathReference):
+            column = ColumnReference(name=transform.json_column_name(table, left.value.name))
+            return where._with_left(JsonPathReference(value=column, path=left.path))
+        return where
     if isinstance(where, CorrelatedSubqueryCondition):
         related = where.related
         return CorrelatedSubqueryCondition(
-            related=_transform_related(transform, table, related),
+            related=_transform_related(transform, table, related, in_condition=True),
             op=where.op,
             flip=where.flip,
             scalar=where.scalar,
@@ -413,7 +563,7 @@ def map_condition(condition: Condition, table: str, mapper: NameMapper) -> Condi
 def _mapping(mapper: NameMapper) -> _Transform:
     # A schema's mapper keeps what it mapped; another `NameMapper` may not always map a name the same way.
     correlations = mapper.correlations if isinstance(mapper, SchemaNameMapper) else {}
-    return _Transform(mapper.table_name, mapper.column_name, correlations=correlations)
+    return _Transform(mapper.table_name, mapper.column_name, mapper.json_column_name, correlations=correlations)
 
 
 def normalize_ast(ast: AST) -> AST:
@@ -431,7 +581,11 @@ def normalize_ast(ast: AST) -> AST:
         out.related = _sorted_related(
             [
                 CorrelatedSubquery(
-                    correlation=r.correlation, hidden=r.hidden, subquery=normalize_ast(r.subquery), system=r.system
+                    correlation=r.correlation,
+                    hidden=r.hidden,
+                    subquery=normalize_ast(r.subquery),
+                    system=r.system,
+                    aggregate=r.aggregate,
                 )
                 for r in related
             ]
@@ -451,6 +605,7 @@ def _normalize_subqueries(condition: Condition) -> Condition:
                 hidden=related.hidden,
                 subquery=normalize_ast(related.subquery),
                 system=related.system,
+                aggregate=related.aggregate,
             ),
             op=condition.op,
             flip=condition.flip,
@@ -519,14 +674,15 @@ def _cmp(a: object, b: object) -> int:
 _cmp_utf8 = _cmp
 
 
-def _cmp_value_position(
-    a: LiteralReference | ColumnReference | Parameter, b: LiteralReference | ColumnReference | Parameter
-) -> int:
+def _cmp_value_position(a: ValuePosition, b: ValuePosition) -> int:
     kind = type(a)
     if kind is not type(b):
         return _cmp_utf8(a.type, b.type)
     if kind is ColumnReference:
         return _cmp_utf8(a.name, b.name)  # ty: ignore[unresolved-attribute]
+    if kind is JsonPathReference:
+        # A path is strings and numbers, which `_cmp_literal` orders by type: a key `"0"` is not an index `0`.
+        return _cmp_utf8(a.value.name, b.value.name) or _cmp_literal(a.path, b.path)  # ty: ignore[unresolved-attribute]
     if kind is LiteralReference:
         return _cmp_literal(a.value, b.value)  # ty: ignore[unresolved-attribute]
     return _cmp_utf8(a.anchor, b.anchor) or _cmp_literal(a.field, b.field)  # ty: ignore[unresolved-attribute]

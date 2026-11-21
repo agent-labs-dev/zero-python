@@ -1,7 +1,7 @@
 """JSON values, as Zero's wire format allows them.
 
-Ported from rocicorp/mono `packages/shared/src/json.ts` at zero/v1.11.4
-(be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb). Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/shared/src/json.ts` at zero/v1.12.0
+(d489a3218ad603b3fd65e33cec76ae77cea7c7af). Apache-2.0, Copyright Rocicorp.
 """
 
 from typing import Any

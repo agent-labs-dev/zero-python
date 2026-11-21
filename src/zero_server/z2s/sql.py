@@ -1,14 +1,14 @@
 """Identifiers and bound values for the SQL that z2s and `tx.mutate` write.
 
 Ported from rocicorp/mono `packages/z2s/src/sql.ts` (`formatPgInternalConvert` and its argument
-conversions) at zero/v1.11.4 (be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb). Apache-2.0, Copyright Rocicorp.
+conversions) at zero/v1.12.0 (d489a3218ad603b3fd65e33cec76ae77cea7c7af). Apache-2.0, Copyright Rocicorp.
 
 Every value is bound as text and cast in SQL, so the driver never coerces it: a number is its JSON
 text, a timestamp epoch milliseconds, a JSON value its `JSON.stringify` output.
 
 An identifier is checked as `escapePostgresIdentifier` checks it, ported from `@databases/escape-identifier`
 1.0.3 (`lib/index.js`) and `@databases/validate-unicode` 1.0.0 (`lib/index.js`), the versions
-`@rocicorp/zero` 1.11.4 installs. MIT, Copyright (c) Forbes Lindesay.
+`@rocicorp/zero` 1.12.0 installs. MIT, Copyright (c) Forbes Lindesay.
 """
 
 import functools
@@ -69,43 +69,68 @@ _PLACEHOLDER = "\x00"  # never in a type name
 
 
 type Binding = tuple[str, bool, bool, str, str]
-"""How a value for a column is bound: the column's type and whether it is an array, whether a scalar goes
-as the text postgres.js sends rather than as JSON, and the SQL before and after its placeholder that
-casts it to the column's type."""
+"""How a value for a column is bound: the key its type shares placeholders by and whether it is an array,
+whether a scalar goes as the text postgres.js sends rather than as JSON, and the SQL before and after its
+placeholder that casts it to the column's type."""
 
 
 @functools.cache
 def binding(column: ServerColumnSchema, comparison: bool) -> Binding:
     before, after = _cast(_PLACEHOLDER, column, comparison).split(_PLACEHOLDER)
-    return column.type, column.is_array, column.is_enum or is_string(column.type), before, after
+    # An enum is bound as its raw text even when it shares a name with a type bound as JSON, such as `json`,
+    # so the two never share a placeholder. A type name cannot contain NUL.
+    type_key = f"{column.type}\0enum" if column.is_enum else column.type
+    return type_key, column.is_array, column.is_enum or is_string(column.type), before, after
+
+
+def is_builtin_type_schema(type_schema: str | None) -> bool:
+    """Whether a type in `type_schema` is built in: in `pg_catalog`, or in a namespace nobody recorded."""
+    return type_schema is None or type_schema == "pg_catalog"
+
+
+def _id(name: str) -> str:
+    """Upstream's `id`, which quotes any name Postgres takes, unlike `escapePostgresIdentifier`."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _cast_target(column: ServerColumnSchema, quote_name: bool) -> str:
+    """The type a value is cast to. Qualified outside `pg_catalog`, `public` included: Postgres searches
+    `pg_catalog` first, so an unqualified `public` type with a built-in name would resolve to the built-in."""
+    if not is_builtin_type_schema(column.type_schema):
+        return f"{_id(column.type_schema)}.{_id(column.type)}"  # ty: ignore[invalid-argument-type]
+    return _id(column.type) if quote_name else column.type
 
 
 def _cast(placeholder: str, column: ServerColumnSchema, comparison: bool) -> str:
-    match column.type:
-        case "timestamptz" | "timestamp with time zone":
-            return f"to_timestamp({placeholder}::text::numeric / 1000.0)"
-        case "date" | "timestamp" | "timestamp without time zone":
-            return f"to_timestamp({placeholder}::text::numeric / 1000.0) AT TIME ZONE 'UTC'"
-        case "timetz" | "time with time zone":
-            return f"({placeholder}::text::int * interval'1ms')::time"
-        case "time" | "time without time zone":
-            return f"({placeholder}::text::int * interval'1ms')::time AT TIME ZONE 'UTC'"
-        case "uuid":
-            return f"{placeholder}::text::uuid"
     if column.is_enum:
-        return f'{placeholder}::text::"{column.type}"'
-    if is_native_string(column.type):
+        return f"{placeholder}::text::{_cast_target(column, True)}"
+    # Type names are unique only within a namespace: a user-defined type may be called `uuid` or `numeric`,
+    # and its values are cast to it, not converted as the built-in's.
+    builtin = is_builtin_type_schema(column.type_schema)
+    if builtin:
+        match column.type:
+            case "timestamptz" | "timestamp with time zone":
+                return f"to_timestamp({placeholder}::text::numeric / 1000.0)"
+            case "date" | "timestamp" | "timestamp without time zone":
+                return f"to_timestamp({placeholder}::text::numeric / 1000.0) AT TIME ZONE 'UTC'"
+            case "timetz" | "time with time zone":
+                return f"({placeholder}::text::int * interval'1ms')::time"
+            case "time" | "time without time zone":
+                return f"({placeholder}::text::int * interval'1ms')::time AT TIME ZONE 'UTC'"
+            case "uuid":
+                return f"{placeholder}::text::uuid"
+    if builtin and is_native_string(column.type):
         if not comparison:
             return f"{placeholder}::text::{column.type}"
         # Compared as an unbounded type, so a value longer than the column still compares. A `char(n)`
         # column's is `bpchar`: compared with `text`, Postgres casts the column and can't use its indexes.
         return f"{placeholder}::text::bpchar" if is_bpchar(column.type) else f"{placeholder}::text"
     if is_text_represented(column.type):
-        return f"{placeholder}::text::{column.type}"
-    if is_number(column.type):
+        return f"{placeholder}::text::{_cast_target(column, False)}"
+    if builtin and is_number(column.type):
         # Compared as a double, the representation every ZQL number has.
         return f"{placeholder}::text::double precision" if comparison else f"{placeholder}::text::{column.type}"
-    return f"{placeholder}::text::{column.type}"
+    return f"{placeholder}::text::{_cast_target(column, False)}"
 
 
 def _plural(index: int, select: str) -> str:
@@ -130,7 +155,7 @@ def _driver_text(value: object) -> str:
     return js_string(value)
 
 
-def _same_value_key(value: object) -> object:
+def same_value_key(value: object) -> object:
     """A key equal for values a JavaScript `Map` treats as one key: equal primitives, the same object.
 
     The builder gives every literal its own list, as every JavaScript array literal is its own object.
@@ -173,7 +198,7 @@ class Params:
         self._held: list[object] = []
 
     def _bind(self, value: object, type_key: str, bound: str | None) -> int:
-        key = (_same_value_key(value), type_key)
+        key = (same_value_key(value), type_key)
         index = self._seen.get(key)
         if index is None:
             self._held.append(value)
@@ -198,7 +223,7 @@ class Params:
         else:
             bound = js_stringify(value)
         # `_bind`, inline: this runs for every value a mutation writes.
-        key = (_same_value_key(value), type_key)
+        key = (same_value_key(value), type_key)
         index = self._seen.get(key)
         if index is None:
             self._held.append(value)
