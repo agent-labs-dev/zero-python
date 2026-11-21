@@ -1,7 +1,7 @@
 """The AST's wire schema: what `AST.from_json` accepts, mirroring upstream's `astSchema`.
 
 Ported from rocicorp/mono `packages/zero-protocol/src/ast.ts`, `data.ts` and `primary-key.ts` at
-zero/v1.11.4 (be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb). Apache-2.0, Copyright Rocicorp.
+zero/v1.12.0 (d489a3218ad603b3fd65e33cec76ae77cea7c7af). Apache-2.0, Copyright Rocicorp.
 
 These models are only ever parsed. Each turns into the plain node class of `zero_server.protocol.ast`
 it mirrors, which the builder, the query endpoint and z2s work with.
@@ -9,9 +9,9 @@ it mirrors, which the builder, the query endpoint and z2s work with.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import Field, StrictBool, StrictStr
+from pydantic import AfterValidator, Field, StrictBool, StrictStr, model_validator
 
 from zero_server.protocol import ast
 from zero_server.protocol.wire import Number, Omittable, PlainJSON, StrictWireModel
@@ -21,6 +21,24 @@ type _Ordering = tuple[tuple[StrictStr, _Direction], ...]
 type _Scalar = StrictStr | Number | StrictBool
 type _LiteralValue = _Scalar | list[_Scalar] | None
 type _CompoundKey = Annotated[tuple[StrictStr, ...], Field(min_length=1)]
+
+
+def _index(value: int | float) -> int | float:
+    if not ast.is_valid_json_path_index(value):
+        raise ValueError("expected a non-negative integer array index")
+    return value
+
+
+def _non_empty_path(path: tuple[str | int | float, ...]) -> tuple[str | int | float, ...]:
+    # The compilers address the last segment, and a bare column is not a JSON leaf.
+    if not path:
+        raise ValueError("expected a non-empty JSON path")
+    return path
+
+
+type _JsonPath = Annotated[
+    tuple[StrictStr | Annotated[Number, AfterValidator(_index)], ...], AfterValidator(_non_empty_path)
+]
 
 
 class LiteralReference(StrictWireModel):
@@ -48,7 +66,18 @@ class Parameter(StrictWireModel):
         return ast.Parameter(anchor=self.anchor, field=self.field)
 
 
-type _ValuePosition = Annotated[LiteralReference | ColumnReference | Parameter, Field(discriminator="type")]
+class JsonPathReference(StrictWireModel):
+    type: Literal["json"] = "json"
+    value: ColumnReference
+    path: _JsonPath
+
+    def node(self) -> ast.JsonPathReference:
+        return ast.JsonPathReference(value=self.value.node(), path=self.path)
+
+
+type _ValuePosition = Annotated[
+    LiteralReference | ColumnReference | JsonPathReference | Parameter, Field(discriminator="type")
+]
 
 
 class SimpleCondition(StrictWireModel):
@@ -56,6 +85,22 @@ class SimpleCondition(StrictWireModel):
     left: _ValuePosition
     right: Annotated[Parameter | LiteralReference, Field(discriminator="type")]
     op: ast.SimpleOperator
+
+    @model_validator(mode="after")
+    def _json_leaf_literal(self) -> Self:
+        """Against a JSON path, `IN`/`NOT IN` take a list of one type (or `null`) and the rest a scalar."""
+        if not isinstance(self.left, JsonPathReference) or not isinstance(self.right, LiteralReference):
+            return self
+        value = self.right.value
+        is_list = isinstance(value, list)
+        if self.op in ("IN", "NOT IN"):
+            if not (is_list or value is None):
+                raise ValueError("expected a list for IN/NOT IN against a JSON path and a scalar for other operators")
+            if is_list and not ast.is_homogeneous_list(value):
+                raise ValueError("expected a list of values of one type for IN/NOT IN against a JSON path")
+        elif is_list:
+            raise ValueError("expected a list for IN/NOT IN against a JSON path and a scalar for other operators")
+        return self
 
     def node(self) -> ast.SimpleCondition:
         return ast.SimpleCondition(op=self.op, left=self.left.node(), right=self.right.node())
@@ -100,11 +145,36 @@ class Correlation(StrictWireModel):
     child_field: _CompoundKey = Field(alias="childField")
 
 
+class Aggregate(StrictWireModel):
+    fn: ast.AggregateFunction
+    field: Omittable[StrictStr] = None
+    path: Omittable[_JsonPath] = None
+    distinct: Omittable[tuple[StrictStr, ...]] = None
+
+    @model_validator(mode="after")
+    def _shape(self) -> Self:
+        if self.path is not None and (self.field is None or self.fn == "count"):
+            raise ValueError("expected an aggregate JSON path to have a field and not be a count")
+        if self.distinct is not None and (self.fn != "count" or self.field is not None or not self.distinct):
+            raise ValueError("expected an aggregate over distinct columns to be a count of at least one")
+        return self
+
+    def node(self) -> ast.Aggregate:
+        return ast.Aggregate(fn=self.fn, field=self.field, path=self.path, distinct=self.distinct)
+
+
+def _named_group(columns: tuple[str, ...]) -> tuple[str, ...]:
+    if not columns:
+        raise ValueError("expected groupBy to name a column")
+    return columns
+
+
 class CorrelatedSubquery(StrictWireModel):
     correlation: Correlation
     hidden: Omittable[StrictBool] = None
     subquery: AST
     system: Omittable[ast.System] = None
+    aggregate: Omittable[Aggregate] = None
 
     def node(self) -> ast.CorrelatedSubquery:
         return ast.CorrelatedSubquery(
@@ -114,6 +184,7 @@ class CorrelatedSubquery(StrictWireModel):
             hidden=self.hidden,
             subquery=self.subquery.node(),
             system=self.system,
+            aggregate=self.aggregate.node() if self.aggregate is not None else None,
         )
 
 
@@ -131,6 +202,10 @@ class AST(StrictWireModel):
     start: Omittable[Bound] = None
     limit: Omittable[Number] = None
     order_by: Omittable[_Ordering] = Field(default=None, alias="orderBy")
+    aggregate: Omittable[Aggregate] = None
+    group_by: Omittable[Annotated[tuple[StrictStr, ...], AfterValidator(_named_group)]] = Field(
+        default=None, alias="groupBy"
+    )
 
     def node(self) -> ast.AST:
         return ast.AST(
@@ -142,6 +217,8 @@ class AST(StrictWireModel):
             start=ast.Bound(row=self.start.row, exclusive=self.start.exclusive) if self.start is not None else None,
             limit=self.limit,
             order_by=self.order_by,
+            aggregate=self.aggregate.node() if self.aggregate is not None else None,
+            group_by=self.group_by,
         )
 
 

@@ -135,7 +135,7 @@ def test_subclasses_of_json_types_are_their_base() -> None:
     from enum import IntEnum, StrEnum
 
     from zero_server.shared.js import js_stringify
-    from zero_server.z2s.sql import _same_value_key
+    from zero_server.z2s.sql import same_value_key
 
     class Name(StrEnum):
         A = "a"
@@ -144,5 +144,5 @@ def test_subclasses_of_json_types_are_their_base() -> None:
         ONE = 1
 
     assert js_stringify(Name.A) == '"a"'
-    assert _same_value_key(Name.A) == _same_value_key("a")
-    assert _same_value_key(Level.ONE) == _same_value_key(1.0)
+    assert same_value_key(Name.A) == same_value_key("a")
+    assert same_value_key(Level.ONE) == same_value_key(1.0)

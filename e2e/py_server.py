@@ -73,14 +73,43 @@ def search_tasks(*, args: SearchArgs, ctx: Ctx) -> Any:
 
 
 @define_query
+def project_stats(*, args: None, ctx: Ctx) -> Any:
+    return (
+        zql.project.where("ownerID", ctx["userID"])
+        .related("tasks", lambda q: q.where("done", False).count())
+        .order_by("id", "asc")
+    )
+
+
+@define_query
+def tasks_by_priority(*, args: None, ctx: Ctx) -> Any:
+    return zql.task.group_by("priority").count().order_by("priority", "desc")
+
+
+@define_query
+def tagged_tasks(*, args: None, ctx: Ctx) -> Any:
+    return (
+        zql.task.where(lambda eb: eb.cmp(eb.json("tags", 0), "=", "a"))
+        .related("labels", lambda q: q.count())
+        .order_by("id", "asc")
+    )
+
+
+@define_query
 def task_by_id(*, args: dict[str, str], ctx: Ctx) -> Any:
     return zql.task.where("id", args["id"]).related("project").one()
 
 
 queries = define_queries(
     {
-        "projects": {"mine": my_projects},
-        "tasks": {"open": open_tasks, "search": search_tasks, "byID": task_by_id},
+        "projects": {"mine": my_projects, "stats": project_stats},
+        "tasks": {
+            "open": open_tasks,
+            "search": search_tasks,
+            "byID": task_by_id,
+            "byPriority": tasks_by_priority,
+            "tagged": tagged_tasks,
+        },
     }
 )
 

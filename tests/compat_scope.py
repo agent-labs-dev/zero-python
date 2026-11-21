@@ -33,6 +33,11 @@ _VALITA_UNION += "literal sharing a type with another option, or an ambiguous di
 
 _ZERO_CACHE_PARSE = "unused: zero-cache's parsing of client messages from newer clients; no handler parses with it"
 _AST_DEPTH = "unused: the depth bound zero-cache puts on ASTs from clients; the server parses none"
+_CLEANUP_CHECKED = (
+    "unreachable: a cleanup naming another client group, which the push is checked for before any mutation runs"
+)
+_NAMED_QUERY = "client only: an aggregate or grouping on a named query, which only the client's builder makes"
+_IVM = "client only: zql's IVM operators, which run the query in memory; the server compiles it to SQL"
 
 NOT_PORTED: dict[str, dict[str, str]] = {
     "shared/src/asserts.ts": {
@@ -69,7 +74,6 @@ NOT_PORTED: dict[str, dict[str, str]] = {
         "schemas is told apart by type or by a literal key, so only a top-level union fails as a union",
         "101-108": "unreachable: an undeclared key reported; transform requests are parsed in strip mode and "
         "push bodies in passthrough, so no request is refused for one",
-        "115-116": "unreachable: a custom error, which only jsonSchema raises, for a value that is not JSON",
         "145-148": "unreachable: a union value JSON.stringify cannot write, which no decoded body is",
         "is": "unused",
         "assert": "unused",
@@ -81,27 +85,36 @@ NOT_PORTED: dict[str, dict[str, str]] = {
         "taggedObjectUnion": _ZERO_CACHE_PARSE,
     },
     "z2s/src/compiler.ts": {
-        "100-100": "unreachable: the builder gives every related subquery an alias",
-        "167-167": "unreachable: the builder completes every ordering with the primary key",
-        "194-194": "unreachable: called only for a query with a start bound",
-        "579-581": "unreachable: TypeScript's exhaustiveness check after every value position type",
-        "622-627": "unreachable: the other side is a null literal, whose own comparison fails first with "
+        "92-93": "unreachable: the message of a group column named as its aggregate's value, which the "
+        "builder refuses first",
+        "266-267": "unreachable: TypeScript's exhaustiveness check after every aggregate function",
+        "314-317": "unreachable: a count of a JSON leaf, which the builder never makes, and TypeScript's "
+        "exhaustiveness check after every aggregate function",
+        "362-362": "unreachable: the builder gives every related subquery an alias",
+        "456-456": "unreachable: called only for a query with a start bound",
+        "911-912": "unreachable: TypeScript's exhaustiveness check after every value position type",
+        "974-979": "unreachable: the other side is a null literal, whose own comparison fails first with "
         "'Literal of unexpected type'",
-        "641-642": "unreachable: TypeScript's exhaustiveness check after every value position type",
+        "993-994": "unreachable: TypeScript's exhaustiveness check after every value position type",
+        "1305-1305": "unreachable: the catalog names a time with a time zone `time with time zone`, not `timetz`",
     },
     "z2s/src/sql.ts": {
-        "347-355": "unused: identifiers that are not strings, which no ported query builds",
+        "219-219": "unreachable: a quoted built-in type name; only an enum is quoted, and the catalog never puts "
+        "one in pg_catalog",
     },
     "zero-cache/src/services/mutagen/error.ts": {
-        "10-11": "unreachable: the assertion message, built only when received >= actual, which the caller rules out",
+        "17-18": "unreachable: the assertion message, built only when received >= actual, which the caller rules out",
     },
     "zero-protocol/src/ast.ts": {
-        "813-813": "unreachable: after flattening, a compound condition's compound siblings share one type",
+        "1228-1228": "unreachable: after flattening, a compound condition's compound siblings share one type",
         "exceedsASTDepth": _AST_DEPTH,
         "astExceedsDepth": _AST_DEPTH,
         "conditionExceedsDepth": _AST_DEPTH,
-        "274-276": _AST_DEPTH,
+        "467-469": _AST_DEPTH,
         "compareUTF8MaybeNull": "unreachable: the null arms; every op and type it compares is a string",
+        "formatJsonPathReference": "client only: the planner's and the builder's debug output",
+        "aggregateValue": "client only: the value the IVM aggregate reduces for a row",
+        "jsonValueAtPath": "client only: the in-memory reader of a JSON path, which z2s compiles to SQL instead",
     },
     "zero-protocol/src/error.ts": {
         "162-177": "unused: ProtocolError and isProtocolError, which the client raises and the server never does",
@@ -115,9 +128,9 @@ NOT_PORTED: dict[str, dict[str, str]] = {
     },
     "zero-schema/src/name-mapper.ts": {
         "serverToClient": "unused: the server maps only client names to server names",
-        "32-34": "unused: the server-to-client arm of createMapperFrom",
-        "38-38": "unused: the server-to-client arm of createMapperFrom",
-        "41-41": "unused: the server-to-client arm of createMapperFrom",
+        "32-33": "unused: the server-to-client arm of createMapperFrom",
+        "39-39": "unused: the server-to-client arm of createMapperFrom",
+        "42-42": "unused: the server-to-client arm of createMapperFrom",
         "validator": "unused",
     },
     "zero-server/src/custom.ts": {
@@ -131,15 +144,17 @@ NOT_PORTED: dict[str, dict[str, str]] = {
         "Python's DBTransaction returns a list",
     },
     "zero-server/src/process-mutations.ts": {
-        "278-278": _PARSE_DETAILS,
-        "304-304": _PARSE_DETAILS,
-        "327-327": _PARSE_DETAILS,
-        "487-488": "JavaScript only: a URLSearchParams instance; the port takes a mapping",
-        "518-521": _DEPRECATED_POSITIONAL,
-        "537-541": _DEPRECATED_POSITIONAL,
-        "669-669": "unreachable: a DatabaseTransactionError always has a cause",
-        "713-714": "unreachable: the callback a pre-transaction failure passes, never called because an "
+        "283-283": _PARSE_DETAILS,
+        "309-309": _PARSE_DETAILS,
+        "332-332": _PARSE_DETAILS,
+        "504-505": "JavaScript only: a URLSearchParams instance; the port takes a mapping",
+        "535-538": _DEPRECATED_POSITIONAL,
+        "554-558": _DEPRECATED_POSITIONAL,
+        "694-694": "unreachable: a DatabaseTransactionError always has a cause",
+        "738-739": "unreachable: the callback a pre-transaction failure passes, never called because an "
         "application error is recorded instead",
+        "391-391": _CLEANUP_CHECKED,
+        "967-967": _CLEANUP_CHECKED,
         "getMutation": "deprecated: use getMutator",
         "getObjectAtPath": "deprecated: only getMutation calls it",
     },
@@ -154,7 +169,11 @@ NOT_PORTED: dict[str, dict[str, str]] = {
         "query internals, which carries no details",
     },
     "zero-server/src/schema.ts": {
-        "209-209": "unreachable: called only when there is an incompatibility to report",
+        "110-110": "unreachable: a type's namespace is never null in the catalog",
+        "227-227": "unreachable: called only when there is an incompatibility to report",
+    },
+    "zero-types/src/schema-value.ts": {
+        "valueTypeOf": "client only: the type of a value in a row, which the client's views read",
     },
     "zero-types/src/name-mapper.ts": {
         "tableNameIfKnown": "unused",
@@ -183,16 +202,28 @@ NOT_PORTED: dict[str, dict[str, str]] = {
     },
     "zql/src/query/query-impl.ts": {
         "newQueryImpl": "unused: a query from an AST built elsewhere; the server builds every query itself",
-        "150-152": "unused: reusing an interned root query, which only saves work; the harness builds each "
+        "158-160": "unused: reusing an interned root query, which only saves work; the harness builds each "
         "program from a fresh schema so that no program's result depends on the ones before it",
-        "326-347": "client only: run, preload and materialize, which throw on a query that is not runnable; "
+        "334-355": "client only: run, preload and materialize, which throw on a query that is not runnable; "
         "the server runs a query with `tx.run`",
         "hash": "client only: the client caches views by AST hash; the server sends ASTs unhashed",
-        "392-425": "client only: #canonicalize and #sameAs, which only hash calls",
-        "616-619": "unreachable: a relationship has one hop or two, which the schema builder enforces",
-        "895-898": "unreachable: a relationship has one hop or two, which the schema builder enforces",
-        "1090-1091": "unreachable: TypeScript's exhaustiveness check after every condition type",
+        "400-433": "client only: #canonicalize and #sameAs, which only hash calls",
+        "979-982": "unreachable: a relationship has one hop or two, which the schema builder enforces",
+        "1275-1278": "unreachable: a relationship has one hop or two, which the schema builder enforces",
+        "1540-1541": "unreachable: TypeScript's exhaustiveness check after every condition type",
+        "491-493": _NAMED_QUERY,
+        "631-633": _NAMED_QUERY,
         "throwQueryNotRunnable": "client only: called only by run, preload and materialize",
+    },
+    # The builder reads one helper from each of these, and z2s one; the rest is the IVM engine.
+    "zql/src/ivm/aggregate.ts": {
+        "98-110": "client only: assertNotSyntheticColumn and carriesComponents, which the IVM operator calls",
+        "126-751": _IVM,
+    },
+    "zql/src/ivm/group-by.ts": {
+        "66-603": _IVM,
+        "612-612": "unreachable: z2s moves a count's distinct columns into `groupBy` before it orders them",
+        "614-614": "unreachable: z2s completes every ordering before it orders the groups",
     },
     "zql/src/query/query-registry.ts": {
         "addContextToQuery": "unused: not exported by the published package",

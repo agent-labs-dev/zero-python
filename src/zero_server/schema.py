@@ -4,7 +4,7 @@ The schema stays authored in TypeScript because the client needs it. Emit it wit
 `JSON.stringify(schema)` and load that here; this module has no schema DSL of its own.
 
 Ported from rocicorp/mono `packages/zero-types/src/schema.ts`, `schema-value.ts`, `name-mapper.ts` and
-`packages/zero-schema/src/name-mapper.ts` at zero/v1.11.4 (be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb).
+`packages/zero-schema/src/name-mapper.ts` at zero/v1.12.0 (d489a3218ad603b3fd65e33cec76ae77cea7c7af).
 Apache-2.0, Copyright Rocicorp.
 """
 
@@ -82,6 +82,9 @@ class DestNames:
     table_name: str
     columns: dict[str, str]
     all_columns_same: bool
+    # The source names of the table's json columns, when the mapper knows column types. Without them the
+    # json-column check is skipped.
+    json_columns: frozenset[str] | None = None
 
 
 class NameMapper:
@@ -116,16 +119,28 @@ class NameMapper:
             raise Exception(f'unknown column "{src}" of "{table}" table')
         return dest
 
+    def json_column_name(self, table: str, src: str) -> str:
+        """The column a JSON path reads, which must be a json column when the mapper knows column types."""
+        dest = self._table(table)
+        if dest.json_columns is not None and src not in dest.json_columns:
+            raise Exception(f'column "{js_string(src)}" of "{table}" table is not a json column')
+        return self.column_name(table, src)
+
 
 def client_to_server(tables: Mapping[str, TableSchema]) -> NameMapper:
     mapping: dict[str, DestNames] = {}
     for table_name, table in tables.items():
         all_same = True
         names: dict[str, str] = {}
+        json_columns: set[str] = set()
         for name, column in table.columns.items():
             if column.server_name and column.server_name != name:
                 all_same = False
             names[name] = column.server_name if column.server_name is not None else name
+            if column.type == "json":
+                json_columns.add(name)
         server_table = table.server_name if table.server_name is not None else table_name
-        mapping[table_name] = DestNames(table_name=server_table, columns=names, all_columns_same=all_same)
+        mapping[table_name] = DestNames(
+            table_name=server_table, columns=names, all_columns_same=all_same, json_columns=frozenset(json_columns)
+        )
     return NameMapper(mapping)

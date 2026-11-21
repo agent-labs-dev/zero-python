@@ -1,7 +1,7 @@
 """The Postgres types behind each column of the Zero schema, and the check that they agree.
 
 Ported from rocicorp/mono `packages/zero-server/src/schema.ts` and `packages/zero-types/src/server-schema.ts`
-at zero/v1.11.4 (be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb). Apache-2.0, Copyright Rocicorp.
+at zero/v1.12.0 (d489a3218ad603b3fd65e33cec76ae77cea7c7af). Apache-2.0, Copyright Rocicorp.
 """
 
 from dataclasses import dataclass
@@ -17,6 +17,9 @@ class ServerColumnSchema:
     type: str
     is_enum: bool
     is_array: bool
+    # The Postgres namespace `type` lives in; for an array, its element type's. Lets the SQL generator
+    # schema-qualify casts to user-defined types. `None` when unknown, as for a schema built by hand.
+    type_schema: str | None = None
 
 
 type ServerTableSchema = dict[str, ServerColumnSchema]
@@ -54,8 +57,10 @@ _QUERY = """
           END AS scale,
           ut.typtype::text AS typtype,
           ut.typname::text AS typename,
+          nut.nspname::text AS "typenamespace",
           CASE WHEN ut.typelem <> 0 THEN et.typtype::text ELSE NULL END AS "elemTyptype",
-          CASE WHEN ut.typelem <> 0 THEN et.typname::text ELSE NULL END AS "elemTypname"
+          CASE WHEN ut.typelem <> 0 THEN et.typname::text ELSE NULL END AS "elemTypname",
+          CASE WHEN ut.typelem <> 0 THEN net.nspname::text ELSE NULL END AS "elemTypenamespace"
       FROM
           pg_catalog.pg_attribute a
       JOIN pg_catalog.pg_class cl ON cl.oid = a.attrelid
@@ -64,6 +69,7 @@ _QUERY = """
       JOIN pg_catalog.pg_type ut ON ut.oid = CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE t.oid END
       JOIN pg_catalog.pg_namespace nut ON nut.oid = ut.typnamespace
       LEFT JOIN pg_catalog.pg_type et ON et.oid = ut.typelem
+      LEFT JOIN pg_catalog.pg_namespace net ON net.oid = et.typnamespace
       CROSS JOIN LATERAL
           (SELECT CASE WHEN t.typtype = 'd' THEN t.typtypmod ELSE a.atttypmod END AS typmod) tm
       WHERE
@@ -115,7 +121,10 @@ async def get_server_schema(tx: Queryable, schema: Schema) -> ServerSchema:
             type_ = "bpchar"
         if type_ in ("numeric", "decimal") and row["precision"] is not None and row["scale"] is not None:
             type_ = f"{type_}({row['precision']}, {row['scale']})"
-        table[row["column"]] = ServerColumnSchema(type=type_, is_enum=is_enum, is_array=is_array)
+        type_schema = row["elemTypenamespace"] if is_array else row["typenamespace"]
+        table[row["column"]] = ServerColumnSchema(
+            type=type_, is_enum=is_enum, is_array=is_array, type_schema=type_schema
+        )
 
     errors = check_schemas_are_compatible(schema, server_schema)
     check(not errors, _incompatible_message(errors))

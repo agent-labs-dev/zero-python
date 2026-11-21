@@ -85,6 +85,9 @@ mutations['grace task in ada project'] = await settle(
 
 const reads = {
   'ada projects.mine': await read(ada, queries.projects.mine()),
+  'ada projects.stats': await read(ada, queries.projects.stats()),
+  'ada tasks.byPriority': await read(ada, queries.tasks.byPriority()),
+  'ada tasks.tagged': await read(ada, queries.tasks.tagged()),
   'ada tasks.open p1': await read(ada, queries.tasks.open({projectID: 'p1'})),
   'ada tasks.open p2': await read(ada, queries.tasks.open({projectID: 'p2'})),
   'ada tasks.search': await read(ada, queries.tasks.search({text: 'I', labels: ['bug']})),

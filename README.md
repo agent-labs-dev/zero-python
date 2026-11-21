@@ -4,7 +4,7 @@ A community Python server SDK for [Zero](https://zero.rocicorp.dev/). It is not 
 
 It ports what `@rocicorp/zero/server` gives a TypeScript backend: the query endpoint (`ZERO_QUERY_URL`), the mutate endpoint (`ZERO_MUTATE_URL`), the ZQL query builder, `defineQueries` and `defineMutators`, and `tx.mutate` and `tx.run` on Postgres. The client and `zero-cache` stay in TypeScript, and a Python backend serves the same TypeScript client a TypeScript backend would.
 
-Compatibility is pinned to one Zero release at a time. This version is tested against `@rocicorp/zero` **1.11.4** (see `ZERO_VERSION`).
+Compatibility is pinned to one Zero release at a time. This version is tested against `@rocicorp/zero` **1.12.0** (see `ZERO_VERSION`).
 
 ## Usage
 
@@ -82,6 +82,7 @@ Point `ZERO_QUERY_URL` and `ZERO_MUTATE_URL` at `/query` and `/mutate`. With Fas
 - **Isolation level.** Each adapter takes `isolation_level="read committed" | "repeatable read" | "serializable"` for the transactions mutations run in. Unset, the database's default applies.
 - **Validation.** `@define_query(Model)` and `@define_mutator(Model)` parse args with a Pydantic model or `TypeAdapter` first; a failure reaches the client as upstream's validation error.
 - **Queries are shared.** Like upstream's, the builder hands back the query it built before when a step repeats one, and the query endpoint reuses a query's mapped AST and its JSON across responses. Treat a built query and its AST as immutable.
+- **Aggregates and JSON paths.** `zql.issue.count()`, `.sum("points")`, `.avg`, `.min` and `.max` reduce a query to one value, which `tx.run` returns, and inside `related(...)` give one per parent row. `.distinct("ownerID")` gives one row per distinct value, and `.group_by("ownerID").count()` one per group with its aggregate. A selector can be a leaf inside a `json()` column, `sum(lambda b: b.json("meta", "points"))`, and so can a condition's left side, `where(lambda eb: eb.cmp(eb.json("meta", "tags", 0), "=", "bug"))`.
 - **Strict building.** `create_builder(schema, strict=True)` refuses an unknown column when the query is built. Upstream only refuses it when the endpoint maps the query, failing the whole batch, so this is for your tests.
 
 ## How compatibility is checked

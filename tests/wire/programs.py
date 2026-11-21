@@ -39,10 +39,33 @@ def v(value: Any) -> Any:
     return value
 
 
+def ref(b: Any, value: Any) -> Any:
+    """`{"json": [column, *path]}` becomes `b.json(column, *path)` of the builder `b`."""
+    if isinstance(value, dict) and "json" in value:
+        column, *path = value["json"]
+        return b.json(column, *path)
+    return value
+
+
+def selector(value: Any) -> Any:
+    """An aggregate's argument: `{"json": [...]}` becomes a selector callback, `{"returns": x}` one returning `x`."""
+    if isinstance(value, dict) and "json" in value:
+        return lambda b: ref(b, value)
+    if isinstance(value, dict) and "returns" in value:
+        return lambda _b: value["returns"]
+    return value
+
+
+def aggregate(target: Any, fn: str, args: list[Any]) -> Any:
+    return getattr(target, fn)() if not args else getattr(target, fn)(selector(args[0]))
+
+
 def expr(eb: ExpressionBuilder, e: list[Any]) -> Any:
     match e[0]:
         case "cmp":
-            return eb.cmp(e[1], v(e[2])) if len(e) == 3 else eb.cmp(e[1], e[2], v(e[3]))
+            if len(e) == 3:
+                return eb.cmp(ref(eb, e[1]), ref(eb, v(e[2])))
+            return eb.cmp(ref(eb, e[1]), e[2], ref(eb, v(e[3])))
         case "cmpLit":
             return eb.cmp_lit(v(e[1]), e[2], v(e[3]))
         case "and":
@@ -79,6 +102,12 @@ def apply(q: Query, ops: list[list[Any]]) -> Query:
                 q = q.start(op[1]) if op[2] is None else q.start(op[1], inclusive=op[2])
             case "one":
                 q = q.one()
+            case "count" | "sum" | "avg" | "min" | "max":
+                q = aggregate(q, op[0], op[1:])
+            case "distinct":
+                q = q.distinct(*op[1])
+            case "groupBy":
+                q = aggregate(q.group_by(*op[1]), op[2], op[3:])
             case _:
                 raise Exception(f"bad op {js_string(op[0])}")
     return q
@@ -99,7 +128,10 @@ def make_queries(schema: Schema) -> Any:
             # `zql[table]` is undefined in the TypeScript twin, which fails on the first op read off it.
             for op in ops:
                 method = {"whereFn": "where"}.get(op[0], op[0])
-                if method in ("where", "whereExists", "related", "orderBy", "limit", "start", "one"):
+                if method in (
+                    "where", "whereExists", "related", "orderBy", "limit", "start", "one", "count", "sum", "avg",
+                    "min", "max", "distinct", "groupBy",
+                ):  # fmt: skip
                     raise TypeError(f"Cannot read properties of undefined (reading '{method}')")
                 raise Exception(f"bad op {js_string(op[0])}")
             return None  # ty: ignore[invalid-return-type]
@@ -257,11 +289,17 @@ def _dest(schema: Schema, table: str, relationship: str) -> str | None:
     return hops[-1].dest_schema if hops else None
 
 
-def _sub_program(schema: Schema, table: str, relationship: str, depth: int) -> st.SearchStrategy[Any]:
+def _sub_program(
+    schema: Schema, table: str, relationship: str, depth: int, *, exists: bool = False
+) -> st.SearchStrategy[Any]:
+    """The program a `related` or `exists` callback runs. An `exists` refuses an aggregate, so it seldom gets one."""
     dest = _dest(schema, table, relationship)
     if dest is None or depth <= 0:
         return st.none()
-    return st.none() | _ops(schema, dest, depth - 1).map(lambda ops: {"ops": ops})
+    ops = _ops(schema, dest, depth - 1)
+    if exists:
+        ops = _rarely(_plain_ops(schema, dest, depth - 1), ops, 10)
+    return st.none() | ops.map(lambda ops: {"ops": ops})
 
 
 def _exists_opts() -> st.SearchStrategy[Any]:
@@ -291,14 +329,45 @@ def _start_rows(schema: Schema, table: str) -> st.SearchStrategy[Any]:
     return _rarely(st.lists(entry, max_size=2).map(dict), st.just(["a"]), 30)
 
 
+_SEGMENTS = st.sampled_from(["a", "b", "k", "n", 0, 1])
+# Paths `json()` refuses: none at all, and numbers that are no array index on every engine.
+_BAD_PATHS = st.sampled_from([[], [-1], [1.5], [2**31], ["a", -2]])
+
+
+def _json_ref(schema: Schema, table: str) -> st.SearchStrategy[dict[str, Any]]:
+    """`{"json": [column, *path]}`: mostly a json column of `table` and a path into the seeded values, the odd
+    other column, which the mapper refuses, or path `json()` refuses."""
+    json_columns = sorted(c for c, column in schema.tables[table].columns.items() if column.type == "json")
+    column = (
+        _rarely(st.sampled_from(json_columns), _columns(schema, table), 15) if json_columns else _columns(schema, table)
+    )
+    path = _rarely(st.lists(_SEGMENTS, min_size=1, max_size=3), _BAD_PATHS, 25)
+    return st.builds(lambda c, p: {"json": [c, *p]}, column, path)
+
+
+def _json_comparison(schema: Schema, table: str) -> st.SearchStrategy[list[Any]]:
+    """A JSON leaf compared with a scalar or list, a list of one type or not, or now and then another ref."""
+    lists = st.lists(st.integers(-2, 3), max_size=3) | st.lists(st.sampled_from(["", "a", "x", "s"]), max_size=3)
+    value = scalars | st.sampled_from(["s", "x", 1, 2.5, True]) | lists | st.lists(scalars, max_size=3) | params
+    value = _rarely(value, _json_ref(schema, table), 30)
+    return _json_ref(schema, table).flatmap(
+        lambda r: (
+            st.builds(lambda v: ["cmp", r, v], value) | st.builds(lambda o, v: ["cmp", r, o, v], _ops_strategy, value)
+        )
+    )
+
+
 def _exprs(schema: Schema, table: str, depth: int) -> st.SearchStrategy[list[Any]]:
     literal = _rarely(scalars | params, containers, 10)
     leaves = st.one_of(
         _comparison(schema, table, "cmp"),
+        _json_comparison(schema, table),
         st.builds(lambda a, o, b: ["cmpLit", a, o, b], literal, _ops_strategy, literal),
         _relationships(schema, table).flatmap(
             lambda r: st.builds(
-                lambda sub, opts: ["exists", r, sub, opts], _sub_program(schema, table, r, depth), _exists_opts()
+                lambda sub, opts: ["exists", r, sub, opts],
+                _sub_program(schema, table, r, depth, exists=True),
+                _exists_opts(),
             )
         ),
     )
@@ -313,7 +382,68 @@ def _exprs(schema: Schema, table: str, depth: int) -> st.SearchStrategy[list[Any
     )
 
 
+_FNS = ["sum", "avg", "min", "max"]
+
+
+def _selector(schema: Schema, table: str) -> st.SearchStrategy[list[Any]]:
+    """An aggregate's arguments: a column, a JSON leaf, or now and then none or a callback returning no ref."""
+    usual = _columns(schema, table).map(lambda c: [c]) | _json_ref(schema, table).map(lambda r: [r])
+    return _rarely(usual, st.sampled_from([[], [{"returns": 5}]]), 10)
+
+
+def _group_columns(schema: Schema, table: str) -> st.SearchStrategy[list[Any]]:
+    # Now and then none, or one named twice.
+    columns = st.lists(_columns(schema, table), min_size=1, max_size=2, unique_by=str)
+    return _rarely(columns, st.sampled_from([[], ["id", "id"]]), 30)
+
+
+def _reductions(schema: Schema, table: str) -> st.SearchStrategy[list[Any]]:
+    """A query reduced to one value."""
+    return st.just(["count"]) | st.builds(lambda f, a: [f, *a], st.sampled_from(_FNS), _selector(schema, table))
+
+
+def _groupings(schema: Schema, table: str) -> st.SearchStrategy[list[Any]]:
+    """A `distinct()`, or a `groupBy()` with its aggregate."""
+    columns = _group_columns(schema, table)
+    return st.one_of(
+        st.builds(lambda cs: ["distinct", cs], columns),
+        st.builds(lambda cs: ["groupBy", cs, "count"], columns),
+        st.builds(lambda cs, f, a: ["groupBy", cs, f, *a], columns, st.sampled_from(_FNS), _selector(schema, table)),
+    )
+
+
+def _aggregate_ops(schema: Schema, table: str) -> st.SearchStrategy[list[Any]]:
+    return _reductions(schema, table) | _groupings(schema, table)
+
+
+def _grouped(schema: Schema, table: str, depth: int) -> st.SearchStrategy[list[list[Any]]]:
+    """Filters, a grouping, then an order by its columns and the odd count of it, as a grouping takes them."""
+    filters = st.lists(
+        _comparison(schema, table, "where") | st.builds(lambda e: ["whereFn", e], _exprs(schema, table, depth)),
+        max_size=2,
+    )
+
+    def after(grouping: list[Any]) -> st.SearchStrategy[list[list[Any]]]:
+        orders = st.lists(
+            st.builds(
+                lambda c, d: ["orderBy", c, d], st.sampled_from(grouping[1] or ["id"]), st.sampled_from(["asc", "desc"])
+            ),
+            max_size=2,
+        )
+        tail = st.just([]) | st.just([["count"]]) if grouping[0] == "distinct" else st.just([])
+        return st.builds(lambda o, t: [grouping, *o, *t], orders, tail)
+
+    return st.builds(lambda f, rest: [*f, *rest], filters, _groupings(schema, table).flatmap(after))
+
+
 def _ops(schema: Schema, table: str, depth: int) -> st.SearchStrategy[list[list[Any]]]:
+    # A third plain, a third reduced to one value, a third grouped; now and then an aggregate anywhere.
+    plain = _plain_ops(schema, table, depth)
+    reduced = st.builds(lambda ops, agg: [*ops, agg], plain, _reductions(schema, table))
+    return st.one_of(plain, reduced, _grouped(schema, table, depth))
+
+
+def _plain_ops(schema: Schema, table: str, depth: int) -> st.SearchStrategy[list[list[Any]]]:
     col = _columns(schema, table)
     rel = _relationships(schema, table)
     op = st.one_of(
@@ -321,7 +451,9 @@ def _ops(schema: Schema, table: str, depth: int) -> st.SearchStrategy[list[list[
         st.builds(lambda e: ["whereFn", e], _exprs(schema, table, depth)),
         rel.flatmap(
             lambda r: st.builds(
-                lambda sub, opts: ["whereExists", r, sub, opts], _sub_program(schema, table, r, depth), _exists_opts()
+                lambda sub, opts: ["whereExists", r, sub, opts],
+                _sub_program(schema, table, r, depth, exists=True),
+                _exists_opts(),
             )
         ),
         rel.flatmap(lambda r: st.builds(lambda sub: ["related", r, sub], _sub_program(schema, table, r, depth))),
@@ -338,4 +470,4 @@ def _ops(schema: Schema, table: str, depth: int) -> st.SearchStrategy[list[list[
         st.builds(lambda row, inc: ["start", row, inc], _start_rows(schema, table), st.none() | st.booleans()),
         st.just(["one"]),
     )
-    return st.lists(op, max_size=4)
+    return st.lists(_rarely(op, _aggregate_ops(schema, table), 15), max_size=4)

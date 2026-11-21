@@ -1,7 +1,7 @@
 """`define_mutator` and `define_mutators`: named server mutators the mutate endpoint dispatches to.
 
-Ported from rocicorp/mono `packages/zql/src/mutate/mutator.ts` and `mutator-registry.ts` at zero/v1.11.4
-(be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb). Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/zql/src/mutate/mutator.ts` and `mutator-registry.ts` at zero/v1.12.0
+(d489a3218ad603b3fd65e33cec76ae77cea7c7af). Apache-2.0, Copyright Rocicorp.
 
 A mutator here is the server half of the TypeScript mutator of the same name: the client runs its own
 optimistically, and this one runs authoritatively inside the mutation's transaction.

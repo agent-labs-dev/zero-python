@@ -350,6 +350,11 @@ BRANCHES = {
             _m(5, "item.useKept", run=True),
         ),
     ),
+    # A cleanup naming another client group fails the push before any of its mutations runs.
+    "cleanup for another client group": _scenario(
+        _push(_m(1), _cleanup({"type": "bulk", "clientGroupID": "cg2", "clientIDs": ["c1"]}), _m(2)),
+        _push(_cleanup({"clientGroupID": "cg2", "clientID": "c1", "upToMutationID": 1}), _m(1)),
+    ),
     "cleanup invalid and failing": _scenario(
         _push(_cleanup({"type": "bulk", "clientGroupID": "cg1", "clientIDs": []}), _m(1)),
         _push(_cleanup({"clientGroupID": "cg1", "clientID": "cfail", "upToMutationID": 2}), _m(2)),

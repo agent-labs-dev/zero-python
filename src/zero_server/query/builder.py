@@ -1,7 +1,8 @@
 """The ZQL query builder: a `Query` is an immutable AST under construction, in client names.
 
-Ported from rocicorp/mono `packages/zql/src/query/query-impl.ts` and `create-builder.ts` at zero/v1.11.4
-(be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb). Apache-2.0, Copyright Rocicorp.
+Ported from rocicorp/mono `packages/zql/src/query/query-impl.ts`, `create-builder.ts`, `isSyntheticColumn`
+from `packages/zql/src/ivm/aggregate.ts` and `groupOrdering` from `group-by.ts` at zero/v1.12.0
+(d489a3218ad603b3fd65e33cec76ae77cea7c7af). Apache-2.0, Copyright Rocicorp.
 
 The errors match upstream's message for message, because a query endpoint reports them to the client.
 
@@ -14,11 +15,12 @@ derived from it, keyed by the step and its arguments. Python's keys are exact wh
 upstream folds a `flip` of `'yes'` into `true`, and Python keeps them apart (see docs/compat.md).
 """
 
+import dataclasses
 import math
 import re
 import weakref
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Generic
 
@@ -27,6 +29,8 @@ from typing_extensions import TypeVar
 from zero_server.protocol.ast import (
     AST,
     SUBQ_PREFIX,
+    Aggregate,
+    AggregateFunction,
     Bound,
     ColumnReference,
     Condition,
@@ -34,26 +38,62 @@ from zero_server.protocol.ast import (
     CorrelatedSubqueryCondition,
     Correlation,
     Direction,
+    JsonPathReference,
     LiteralReference,
     NameMapper,
+    Ordering,
     SimpleCondition,
     System,
     insert_related,
     map_ast,
     normalize_condition,
 )
-from zero_server.query.expression import MISSING, ExpressionBuilder, _position, and_, cmp, simplify_condition
+from zero_server.query.expression import (
+    MISSING,
+    ExpressionBuilder,
+    _position,
+    aggregate_from_selector,
+    and_,
+    cmp,
+    simplify_condition,
+)
 from zero_server.schema import Connection, Schema
 from zero_server.shared.asserts import AssertionFailedError, check
-from zero_server.shared.js import js_check_in, js_string
+from zero_server.shared.js import js_check_in, js_string, js_stringify
 
 
 @dataclass(frozen=True, slots=True)
 class Format:
-    """The shape of a query's result: a row or a list, and the same for each relationship."""
+    """The shape of a query's result: a row or a list, and the same for each relationship. With `aggregate`,
+    the result is that one value instead, and the query is singular."""
 
     singular: bool = False
     relationships: dict[str, "Format"] = field(default_factory=dict)
+    aggregate: Aggregate | None = None
+
+
+# The columns a grouped or aggregate row carries besides its own: `_0_key`, then the payload columns.
+_SYNTHETIC_COLUMNS = frozenset({"_0_key", "_0_value", "_0_sum", "_0_count", "_0_rows"})
+
+
+def is_synthetic_column(column: object) -> bool:
+    return column in _SYNTHETIC_COLUMNS
+
+
+def group_ordering(ast: AST) -> Ordering:
+    """The order of a grouped query's rows: its `orderBy`, which names only grouped columns, then the rest
+    of them ascending."""
+    # Upstream falls back to a count's distinct columns, which z2s moves into `group_by` before it asks.
+    columns = ast.group_by
+    assert columns is not None
+    ordering: list[tuple[str, Any]] = []
+    for column, direction in ast.order_by or ():
+        if column in columns and not any(c == column for c, _ in ordering):
+            ordering.append((column, direction))
+    for column in columns:
+        if not any(c == column for c, _ in ordering):
+            ordering.append((column, "asc"))
+    return tuple(ordering)
 
 
 # The queries built last, each holding the chain it came from. V8 keeps a query nothing holds until
@@ -193,12 +233,14 @@ class Query(Generic[R, C]):
         return self._copy(type(self), ast, format or self._format)
 
     def _with_relationship[Q: Query[Any, Any]](self: Q, name: str, sub: AnyQuery, entry: CorrelatedSubquery) -> Q:
-        format = Format(self._format.singular, {**self._format.relationships, name: sub._format})
+        format = dataclasses.replace(self._format, relationships={**self._format.relationships, name: sub._format})
         query = self._with("related", insert_related(self._ast.related, entry), format)
         return self._keep(("related", name, id(sub._ast)), query)
 
     def one(self) -> "OneQuery[R, C]":
         """At most one row: `tx.run` returns it, or `None`."""
+        self._assert_not_aggregated("one")
+        self._assert_not_distinct("one")
 
         def build() -> OneQuery[R, C]:
             ast = self._ast._copy()
@@ -206,6 +248,106 @@ class Query(Generic[R, C]):
             return self._copy(OneQuery, ast, Format(True, self._format.relationships))
 
         return self._derive(("one",), build)
+
+    def _assert_not_aggregated(self, method: str) -> None:
+        """A bound applied after an aggregate would go in the same AST fields as one before it, where it bounds
+        the rows the aggregate reduces, so it must come first."""
+        aggregate = self._format.aggregate
+        if aggregate is not None:
+            raise Exception(f"{method}() must come before {aggregate.fn}(): it bounds the rows the aggregate reduces")
+
+    def _assert_not_distinct(self, method: str) -> None:
+        if self._ast.group_by:
+            kind = "groupBy()" if self._ast.aggregate is not None else "distinct()"
+            raise Exception(f"{method}() does not support {kind} yet")
+
+    def _aggregate(self, fn: AggregateFunction, selector: Any = None) -> AnyQuery:
+        if self._strict and isinstance(selector, str):  # python-only: strict mode
+            self._check_column(selector)
+        self._assert_not_aggregated(fn)
+        # A count of a distinct() counts its rows, the distinct combinations; a groupBy() has its aggregate.
+        distinct = self._ast.group_by
+        if distinct and (fn != "count" or self._ast.aggregate is not None):
+            self._assert_not_distinct(fn)
+        aggregate = Aggregate(fn=fn, distinct=distinct) if distinct else aggregate_from_selector(fn, selector)
+
+        def build() -> AnyQuery:
+            ast = self._ast._copy()
+            ast.group_by = None
+            ast.aggregate = aggregate
+            format = dataclasses.replace(self._format, singular=True, aggregate=aggregate)
+            return self._copy(Query, ast, format)
+
+        return self._derive(("aggregate", fn, _tag(aggregate.field), _tag(aggregate.path)), build)
+
+    def count(self) -> AnyQuery:
+        """The number of rows. `tx.run` returns the number."""
+        return self._aggregate("count")
+
+    def sum(self, selector: Any = None) -> AnyQuery:
+        """The sum of a column, or of a JSON leaf: `sum(lambda b: b.json("meta", "points"))`. `None` for no rows."""
+        return self._aggregate("sum", selector)
+
+    def avg(self, selector: Any = None) -> AnyQuery:
+        return self._aggregate("avg", selector)
+
+    def min(self, selector: Any = None) -> AnyQuery:
+        return self._aggregate("min", selector)
+
+    def max(self, selector: Any = None) -> AnyQuery:
+        return self._aggregate("max", selector)
+
+    def distinct[Q: Query[Any, Any]](self: Q, *columns: C) -> Q:
+        """One row of `columns` per distinct combination of their values."""
+        self._assert_groupable("distinct", columns)
+        return self._derive(("distinct", _tag(columns)), lambda: self._with("group_by", tuple(columns)))
+
+    def group_by(self, *columns: C) -> "GroupedQuery":
+        """The rows grouped by `columns`, for an aggregate per group: `group_by("owner_id").count()`."""
+        self._assert_groupable("groupBy", columns)
+        return GroupedQuery(self, tuple(columns))
+
+    def _group_aggregate(self, columns: tuple[str, ...], fn: AggregateFunction, selector: Any) -> AnyQuery:
+        if self._strict and isinstance(selector, str):  # python-only: strict mode
+            self._check_column(selector)
+        if fn in columns:
+            raise Exception(f'groupBy(): the column "{fn}" has the same name as the {fn}() value')
+        aggregate = aggregate_from_selector(fn, selector)
+
+        def build() -> AnyQuery:
+            ast = self._ast._copy()
+            ast.group_by = columns
+            ast.aggregate = aggregate
+            return self._copy(type(self), ast, self._format)
+
+        return self._derive(("group_by", fn, _tag(columns), _tag(aggregate.field), _tag(aggregate.path)), build)
+
+    def _assert_groupable(self, method: str, columns: Sequence[Any]) -> None:
+        self._assert_not_aggregated(method)
+        self._assert_not_distinct(method)
+        if not columns:
+            raise Exception(f"{method}() needs at least one column")
+        table_columns = self._schema.tables[self._table].columns
+        for i, column in enumerate(columns):
+            schema = table_columns.get(column) if isinstance(column, str) else None
+            if schema is None:
+                raise Exception(f'{method}(): "{js_string(column)}" is not a column of "{self._table}"')
+            if schema.type == "json":
+                raise Exception(f'{method}() does not support the json column "{column}"')
+            if columns.index(column) != i:
+                raise Exception(f'{method}(): "{column}" is named twice')
+            # The rows carry the synthetic columns too.
+            if is_synthetic_column(column):
+                raise Exception(
+                    f'{method}(): "{column}" is the name of a synthetic column, which a grouped row has too'
+                )
+        ast = self._ast
+        if ast.limit is not None or ast.start is not None:
+            raise Exception(f"{method}() does not support limit(), start() or one() yet")
+        if ast.related is not None:
+            raise Exception(f"{method}() does not support related() yet")
+        for column, _ in ast.order_by or ():
+            _assert_group_column(column, columns)
 
     def where[Q: Query[Any, Any]](
         self: Q, field_or_factory: C | Callable[[ExpressionBuilder], Condition], *args: Any
@@ -267,6 +409,7 @@ class Query(Generic[R, C]):
         """Nest the rows of `relationship` under each row, shaped by `cb` if given."""
         if relationship.startswith(SUBQ_PREFIX):
             raise Exception(f'Relationship names may not start with "{SUBQ_PREFIX}". That is a reserved prefix.')
+        self._assert_not_distinct("related")
         related = self._relationship(relationship)
         base_key = ("related_base", relationship)
         q = self._find(base_key)
@@ -283,11 +426,18 @@ class Query(Generic[R, C]):
                     ),
                 )
             sub = _as_query(cb(q) if cb else q)
+            _assert_subquery_not_grouped(sub, "related")
             check(len(hop.source_field) >= 1, "The source of a relationship must specify at last 1 field")
             check(len(hop.dest_field) >= 1, "The destination of a relationship must specify at last 1 field")
             check(
                 len(hop.source_field) == len(hop.dest_field),
                 "The source and destination of a relationship must have the same number of fields",
+            )
+            # A `related` under an aggregate reads as a junction's destination, so a direct one cannot nest one.
+            aggregate = sub._format.aggregate
+            check(
+                aggregate is None or sub._ast.related is None,
+                "an aggregate relationship does not support related() on its subquery",
             )
             found = self._find(("related", relationship, id(sub._ast)))
             if found is not None:
@@ -295,8 +445,10 @@ class Query(Generic[R, C]):
             entry = CorrelatedSubquery(
                 system=self._system,
                 correlation=Correlation(parent_field=hop.source_field, child_field=hop.dest_field),
-                subquery=sub._ast,
+                # The aggregate lives on this entry, so the subquery does not reduce itself too.
+                subquery=sub._ast if aggregate is None else _without_aggregate(sub._ast),
                 source=sub,
+                aggregate=aggregate,
             )
             return self._with_relationship(relationship, sub, entry)
 
@@ -312,10 +464,14 @@ class Query(Generic[R, C]):
                 ),
             )
         sub = _as_query(cb(q) if cb else q)
+        _assert_subquery_not_grouped(sub, "related")
         _check_keys(first, second)
         found = self._find(("related", relationship, id(sub._ast)))
         if found is not None:
             return found
+        aggregate = sub._format.aggregate
+        if aggregate is not None:
+            return self._with_relationship(relationship, sub, self._junction_aggregate(relationship, sub, aggregate))
         entry = CorrelatedSubquery(
             system=self._system,
             correlation=Correlation(parent_field=first.source_field, child_field=first.dest_field),
@@ -336,7 +492,48 @@ class Query(Generic[R, C]):
         )
         return self._with_relationship(relationship, sub, entry)
 
+    def _junction_aggregate(self, relationship: str, sub: AnyQuery, aggregate: Aggregate) -> CorrelatedSubquery:
+        """The entry of an aggregate over a junction relationship. A `where` on the destination applies;
+        nesting and bounding it do not yet."""
+        first, second = self._relationship(relationship)
+        dest = sub._ast
+        check(
+            dest.related is None and dest.limit is None and dest.start is None,
+            "an aggregate over a junction relationship does not yet support related/limit/start on the destination",
+        )
+        correlation = Correlation(parent_field=first.source_field, child_field=first.dest_field)
+        to_dest = Correlation(parent_field=second.source_field, child_field=second.dest_field)
+        dest = _without_aggregate(dest)
+        if aggregate.fn == "count":
+            # A count of the junction rows whose destination exists and passes its `where`, which is also where
+            # the server applies the destination's read permissions. The destination is never materialized.
+            exists = CorrelatedSubqueryCondition(
+                related=CorrelatedSubquery(correlation=to_dest, subquery=dest, system=self._system, source=sub),
+                op="EXISTS",
+            )
+            return CorrelatedSubquery(
+                correlation=correlation,
+                subquery=AST(table=first.dest_schema, alias=relationship, where=exists),
+                system=self._system,
+                aggregate=Aggregate(fn="count"),
+                source=sub,
+            )
+        # The other functions need the destination's column, one hop past the junction.
+        return CorrelatedSubquery(
+            correlation=correlation,
+            subquery=AST(
+                table=first.dest_schema,
+                alias=relationship,
+                related=(CorrelatedSubquery(correlation=to_dest, subquery=dest, system=self._system, source=sub),),
+            ),
+            system=self._system,
+            aggregate=aggregate,
+            source=sub,
+        )
+
     def start[Q: Query[Any, Any]](self: Q, row: Mapping[str, Any], *, inclusive: bool = False) -> Q:
+        self._assert_not_aggregated("start")
+        self._assert_not_distinct("start")
         # Upstream stores any row as given: one that is not a mapping only fails once it is used.
         if isinstance(row, Mapping):
             for column in row:
@@ -347,6 +544,8 @@ class Query(Generic[R, C]):
         )
 
     def limit[Q: Query[Any, Any]](self: Q, limit: int | float) -> Q:
+        self._assert_not_aggregated("limit")
+        self._assert_not_distinct("limit")
         if not (type(limit) is int and 0 <= limit < 2**31):  # The usual limit passes both checks.
             if _js_negative(limit):
                 raise Exception("Limit must be non-negative")
@@ -368,6 +567,8 @@ class Query(Generic[R, C]):
                 "Order by is not supported in junction relationships yet. Junction relationship being ordered: "
                 + self._junction
             )
+        if self._ast.group_by:
+            _assert_group_column(field, self._ast.group_by)
         order_by = self._ast.order_by
         return self._derive(
             ("order_by", _tag(field), _tag(direction)),
@@ -394,6 +595,7 @@ class Query(Generic[R, C]):
                     self._new(hop.dest_schema, AST(table=hop.dest_schema, alias=f"{SUBQ_PREFIX}{relationship}"), None),
                 )
             sub = _as_query(cb(q) if cb else q)
+            _assert_exists_subquery(sub)
             return CorrelatedSubqueryCondition(
                 related=CorrelatedSubquery(
                     system=self._system,
@@ -414,6 +616,7 @@ class Query(Generic[R, C]):
                 base_key, self._new(second.dest_schema, AST(table=second.dest_schema, alias=alias), relationship)
             )
         to_dest = _as_query(cb(q) if cb else q)
+        _assert_exists_subquery(to_dest)
         return CorrelatedSubqueryCondition(
             related=CorrelatedSubquery(
                 system=self._system,
@@ -449,6 +652,59 @@ class OneQuery(Query[R, C]):
     """A query `one()` narrowed to a single row. Its methods keep it singular."""
 
 
+class GroupedQuery:
+    """`query.group_by(*columns)`, waiting for its aggregate. Each is a query derived from `query`."""
+
+    __slots__ = ("_columns", "_query")
+
+    def __init__(self, query: AnyQuery, columns: tuple[str, ...]) -> None:
+        self._query = query
+        self._columns = columns
+
+    def count(self) -> AnyQuery:
+        """One row per group: its columns and `count`, the number of rows in it."""
+        return self._query._group_aggregate(self._columns, "count", None)
+
+    def sum(self, selector: Any = None) -> AnyQuery:
+        return self._query._group_aggregate(self._columns, "sum", selector)
+
+    def avg(self, selector: Any = None) -> AnyQuery:
+        return self._query._group_aggregate(self._columns, "avg", selector)
+
+    def min(self, selector: Any = None) -> AnyQuery:
+        return self._query._group_aggregate(self._columns, "min", selector)
+
+    def max(self, selector: Any = None) -> AnyQuery:
+        return self._query._group_aggregate(self._columns, "max", selector)
+
+
+def _without_aggregate(ast: AST) -> AST:
+    out = ast._copy()
+    out.aggregate = None
+    return out
+
+
+def _assert_group_column(column: Any, columns: Sequence[Any]) -> None:
+    """The rows of a `distinct()` or `groupBy()` can only be ordered by its columns."""
+    if column not in columns:
+        names = ", ".join(js_stringify(c) for c in columns)
+        raise Exception(
+            f'orderBy("{js_string(column)}"): the rows can only be ordered by the grouped columns ({names})'
+        )
+
+
+def _assert_subquery_not_grouped(sub: AnyQuery, method: str) -> None:
+    group_by, aggregate = sub._ast.group_by, sub._ast.aggregate
+    if group_by or (aggregate is not None and aggregate.distinct):
+        kind = "groupBy()" if group_by and aggregate is not None else "distinct()"
+        raise Exception(f"{method}() does not support a {kind} subquery yet")
+
+
+def _assert_exists_subquery(sub: AnyQuery) -> None:
+    check(sub._ast.aggregate is None, "exists() does not support an aggregate subquery")
+    _assert_subquery_not_grouped(sub, "exists")
+
+
 _SCALAR_TYPES = (str, int, bool, type(None))
 
 
@@ -475,6 +731,8 @@ def _position_key(position: object) -> Any:
     kind = type(position)
     if kind is ColumnReference:
         return kind, _tag(position.name)  # ty: ignore[unresolved-attribute]
+    if kind is JsonPathReference:
+        return kind, _tag(position.value.name), _tag(position.path)  # ty: ignore[unresolved-attribute]
     if kind is LiteralReference:
         return kind, _tag(position.value)  # ty: ignore[unresolved-attribute]
     return kind, _tag(position.anchor), _tag(position.field)  # ty: ignore[unresolved-attribute]
@@ -605,4 +863,4 @@ def create_builder(schema: Schema, *, strict: bool = False) -> Builder:
     return Builder(schema, strict=strict)
 
 
-__all__ = ["MISSING", "Builder", "OneQuery", "Query", "UnknownColumnError", "create_builder"]
+__all__ = ["MISSING", "Builder", "GroupedQuery", "OneQuery", "Query", "UnknownColumnError", "create_builder"]

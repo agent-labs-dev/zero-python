@@ -1,7 +1,7 @@
 """The mutate endpoint: exactly-once processing of a push from zero-cache.
 
-Ported from rocicorp/mono `packages/zero-server/src/process-mutations.ts` at zero/v1.11.4
-(be94346faaf4ee7e7b2cf983f6e5accae3a6b4fb), with `MutationAlreadyProcessedError` from
+Ported from rocicorp/mono `packages/zero-server/src/process-mutations.ts` at zero/v1.12.0
+(d489a3218ad603b3fd65e33cec76ae77cea7c7af), with `MutationAlreadyProcessedError` from
 `packages/zero-cache/src/services/mutagen/error.ts`. Apache-2.0, Copyright Rocicorp.
 
 Each mutation runs inside the same database transaction that bumps its client's `lastMutationID`.
@@ -129,10 +129,9 @@ class OutOfOrderMutation(Exception):
     error_name = "Error"
 
     def __init__(self, client_id: str, received_mutation_id: float, last_mutation_id: float) -> None:
-        super().__init__(
-            f"Client {client_id} sent mutation ID {js_number(received_mutation_id)} "
-            f"but expected {js_number(last_mutation_id)}"
-        )
+        super().__init__(f"Client {client_id} sent mutation ID {js_number(received_mutation_id)} out of order")
+        # Kept out of the message, which is returned to the client; the server logs it separately.
+        self.last_mutation_id = last_mutation_id
 
 
 class MutationAlreadyProcessedError(Exception):
@@ -140,13 +139,24 @@ class MutationAlreadyProcessedError(Exception):
 
     def __init__(self, client_id: str, received: float, actual: float) -> None:
         super().__init__(
-            f"Ignoring mutation from {client_id} with ID {js_number(received)} as it was already processed. "
-            f"Expected: {js_number(actual)}"
+            f"Ignoring mutation from {client_id} with ID {js_number(received)} as it was already processed"
         )
+        # Kept out of the message, which is returned to the client; the server logs it separately.
+        self.last_mutation_id = actual
         check(
             received < actual,
             f"MutationAlreadyProcessedError: received ({js_number(received)}) must be < actual ({js_number(actual)})",
         )
+
+
+class CleanupClientGroupMismatch(Exception):
+    """A cleanup mutation named a client group other than the push's. A push may clean up only its own
+    client group's results, so this fails the push instead of being ignored like other cleanup errors."""
+
+    error_name = "Error"
+
+    def __init__(self) -> None:
+        super().__init__("Cleanup mutation does not target the client group of this push")
 
 
 class DatabaseTransactionError(Exception):
@@ -251,10 +261,16 @@ async def handle_mutate[T](
         async with _session(db_provider) as db:
             transactor = _Transactor(db, push_body, params)
 
+            # A cleanup naming another client group fails the push before any mutation in it runs, so the
+            # push changes nothing at all.
+            for m in push_body.mutations:
+                if m.type == "custom" and m.name == CLEANUP_RESULTS_MUTATION_NAME:
+                    _assert_cleanup_client_group(m, push_body.client_group_id)
+
             for m, mutation_id in zip(push_body.mutations, mutation_ids, strict=True):
                 if m.type == "custom" and m.name == CLEANUP_RESULTS_MUTATION_NAME:
                     try:
-                        await _process_cleanup_results_mutation(db, m, params)
+                        await _process_cleanup_results_mutation(db, m, push_body.client_group_id, params)
                     except Exception as error:
                         # A failed cleanup costs disk, not correctness, so it does not fail the push.
                         logger.warning("Failed to process cleanup mutation for client %s", m.client_id, exc_info=error)
@@ -387,10 +403,10 @@ class _Transactor[T]:
                     return _app_error_response(mutation_id, app_error)
                 return result
             except OutOfOrderMutation as error:
-                logger.error("%s", error)
+                logger.error("Expected mutation ID %s: %s", js_number(error.last_mutation_id), error)
                 raise
             except MutationAlreadyProcessedError as error:
-                logger.warning("%s", error)
+                logger.warning("Expected mutation ID %s: %s", js_number(error.last_mutation_id), error)
                 return MutationResponse(
                     id=mutation_id,
                     result=MutationZeroError(error="alreadyProcessed", details=str(error)),
@@ -496,10 +512,23 @@ def _app_error_response(mutation_id: MutationID, error: ApplicationError) -> Mut
     )
 
 
+def _assert_cleanup_client_group(mutation: CustomMutation, client_group_id: str) -> None:
+    """Raises `CleanupClientGroupMismatch` when a cleanup names a client group other than the push's. Args
+    that do not parse are left for the cleanup itself to report."""
+    try:
+        args = parse_wire(_cleanup_results_arg(), mutation.args[0] if mutation.args else None)
+    except ValidationError:
+        return
+    if args.client_group_id != client_group_id:
+        raise CleanupClientGroupMismatch
+
+
 async def _process_cleanup_results_mutation[T](
-    db_provider: Database[T], mutation: CustomMutation, params: MutateParams
+    db_provider: Database[T], mutation: CustomMutation, client_group_id: str, params: MutateParams
 ) -> None:
-    """Deletes acknowledged results. An internal mutation, so it never touches `lastMutationID`."""
+    """Deletes acknowledged results. An internal mutation, so it never touches `lastMutationID`.
+
+    The push was checked first for a cleanup naming another client group, so `args` names this one."""
     try:
         args = parse_wire(_cleanup_results_arg(), mutation.args[0] if mutation.args else None)
     except ValidationError as error:
@@ -516,7 +545,7 @@ async def _process_cleanup_results_mutation[T](
         delete,
         TransactionProviderInput(
             upstream_schema=params.schema_,
-            client_group_id=args.client_group_id,
+            client_group_id=client_group_id,
             client_id=client_id,
             mutation_id=0,
         ),

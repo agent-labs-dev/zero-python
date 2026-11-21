@@ -63,6 +63,36 @@ _FEW = st.sampled_from(["a", "b"])
 """Names from a vocabulary of two, so that siblings tie and a sort compares them field by field."""
 
 
+def json_paths() -> st.SearchStrategy[list[Any]]:
+    """Valid JSON paths: object keys, and array indexes up to the largest every engine takes."""
+    return st.lists(names | st.integers(0, 3) | st.just(2**31 - 1), min_size=1, max_size=3)
+
+
+def json_refs(few: bool = False) -> st.SearchStrategy[dict[str, Any]]:
+    return st.builds(lambda c, p: {"type": "json", "value": c, "path": p}, columns(few), json_paths())
+
+
+def _json_condition(op: str, left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "simple", "op": op, "left": left, "right": right}
+
+
+def json_conditions(static: bool, few: bool = False) -> st.SearchStrategy[dict[str, Any]]:
+    """A JSON path compared as the wire allows: `IN`/`NOT IN` with a list of one type or `null`, the rest with
+    a scalar."""
+    scalar = st.sampled_from([1, "1", True, None]) if few else (st.none() | scalars)
+    homogeneous = st.lists(strings(max_size=3), max_size=3) | st.lists(numbers, max_size=3)
+    homogeneous |= st.lists(st.booleans(), max_size=3)
+    in_right = st.builds(lambda v: {"type": "literal", "value": v}, st.none() | homogeneous)
+    other_right = st.builds(lambda v: {"type": "literal", "value": v}, scalar)
+    if static:
+        in_right |= parameters()
+        other_right |= parameters()
+    others = [o for o in (["=", "<"] if few else SIMPLE_OPS) if o not in ("IN", "NOT IN")]
+    return st.builds(_json_condition, st.sampled_from(["IN", "NOT IN"]), json_refs(few), in_right) | st.builds(
+        _json_condition, st.sampled_from(others), json_refs(few), other_right
+    )
+
+
 def simple_conditions(static: bool, few: bool = False) -> st.SearchStrategy[dict[str, Any]]:
     right = (literals(few) | parameters()) if static else literals(few)
     left = (literals(few) | columns(few) | parameters()) if static else (literals(few) | columns(few))
@@ -71,7 +101,23 @@ def simple_conditions(static: bool, few: bool = False) -> st.SearchStrategy[dict
         st.sampled_from(["=", "<"] if few else SIMPLE_OPS),
         left,
         right,
+    ) | json_conditions(static, few)
+
+
+def aggregates(few: bool = False) -> st.SearchStrategy[dict[str, Any]]:
+    """Valid aggregates: a count, of rows, a column or distinct columns, or another function of a column or a
+    JSON leaf in one."""
+    names_ = _FEW if few else names
+    count = st.builds(lambda f: _optional({"fn": "count"}, field=f), st.none() | names_) | st.builds(
+        lambda d: {"fn": "count", "distinct": d}, st.lists(names_, min_size=1, max_size=2)
     )
+    other = st.builds(
+        lambda fn, f, path: _optional({"fn": fn, "field": f}, path=path),
+        st.sampled_from(["sum", "avg", "min", "max"]),
+        names_,
+        st.none() | json_paths(),
+    )
+    return count | other
 
 
 def _optional(d: dict[str, Any], **maybe: Any) -> dict[str, Any]:
@@ -91,14 +137,18 @@ def asts(static: bool = False, depth: int = 2, few: bool = False) -> st.SearchSt
         def subquery() -> st.SearchStrategy[dict[str, Any]]:
             assert sub is not None
             return st.builds(
-                lambda corr, sq, alias, system, hidden: _optional(
-                    {"correlation": corr, "subquery": {**sq, "alias": alias}}, system=system, hidden=hidden
+                lambda corr, sq, alias, system, hidden, aggregate: _optional(
+                    {"correlation": corr, "subquery": {**sq, "alias": alias}},
+                    system=system,
+                    hidden=hidden,
+                    aggregate=aggregate,
                 ),
                 st.builds(lambda p, c: {"parentField": p, "childField": c}, keys(), keys()),
                 sub,
                 names_,
                 st.none() | st.sampled_from(["permissions", "client", "test"]),
                 st.none() | st.booleans(),
+                st.none() | st.none() | aggregates(few),
             )
 
         leaf = simple_conditions(static, few)
@@ -120,7 +170,7 @@ def asts(static: bool = False, depth: int = 2, few: bool = False) -> st.SearchSt
             max_leaves=8 if few else 5,
         )
         return st.builds(
-            lambda table, schema, alias, where, related, limit, order_by, start: _optional(
+            lambda table, schema, alias, where, related, limit, order_by, start, aggregate, group_by: _optional(
                 {"table": table},
                 schema=schema,
                 alias=alias,
@@ -129,6 +179,8 @@ def asts(static: bool = False, depth: int = 2, few: bool = False) -> st.SearchSt
                 limit=limit,
                 orderBy=order_by,
                 start=start,
+                aggregate=aggregate,
+                groupBy=group_by,
             ),
             names,
             st.none() | names,
@@ -143,6 +195,8 @@ def asts(static: bool = False, depth: int = 2, few: bool = False) -> st.SearchSt
                 st.dictionaries(names, json_values, max_size=2),
                 st.booleans(),
             ),
+            st.none() | st.none() | aggregates(few),
+            st.none() | st.none() | st.lists(names_, min_size=1, max_size=2),
         )
 
     strategy = build(None)
@@ -325,16 +379,20 @@ def push_bodies(mutations: st.SearchStrategy[dict[str, Any]] | None = None) -> s
 
 
 def cleanup_args() -> st.SearchStrategy[dict[str, Any]]:
+    """Mostly for the push's own client group, `cg1`; the odd one for another, which fails the whole push."""
+    group = st.sampled_from(["cg1"] * 9 + ["cg2"])
     single = st.builds(
-        lambda type_, client_id, up_to: _optional(
-            {"clientGroupID": "cg1", "clientID": client_id, "upToMutationID": up_to}, type=type_
+        lambda type_, group, client_id, up_to: _optional(
+            {"clientGroupID": group, "clientID": client_id, "upToMutationID": up_to}, type=type_
         ),
         st.none() | st.just("single"),
+        group,
         client_ids,
         mutation_ids,
     )
     bulk = st.builds(
-        lambda ids: {"type": "bulk", "clientGroupID": "cg1", "clientIDs": ids},
+        lambda group, ids: {"type": "bulk", "clientGroupID": group, "clientIDs": ids},
+        group,
         st.lists(client_ids, min_size=1, max_size=3, unique=True),
     )
     return single | bulk
